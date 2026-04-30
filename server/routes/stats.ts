@@ -72,6 +72,27 @@ statsRouter.get("/orgs", async (req, res) => {
   }
 });
 
+statsRouter.delete("/reset", async (req, res) => {
+  try {
+    const instanceId = req.query.instance_id ? Number(req.query.instance_id) : null;
+    if (instanceId) {
+      await query(`DELETE FROM queue_joins WHERE instance_id = $1`, [instanceId]);
+      await query(`DELETE FROM matches WHERE instance_id = $1`, [instanceId]);
+      await query(
+        `UPDATE stats SET entradas = 0, partidas = 0, dms = 0 WHERE instance_id = $1`,
+        [instanceId],
+      );
+    } else {
+      await query(`DELETE FROM queue_joins`, []);
+      await query(`DELETE FROM matches`, []);
+      await query(`UPDATE stats SET entradas = 0, partidas = 0, dms = 0`, []);
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 statsRouter.get("/summary", async (req, res) => {
   try {
     const period = String(req.query.period ?? "week");

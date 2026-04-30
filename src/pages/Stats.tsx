@@ -35,6 +35,8 @@ export default function Stats() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [resetting, setResetting] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -51,6 +53,17 @@ export default function Stats() {
     }
   }, [period]);
 
+  const handleReset = useCallback(async () => {
+    setResetting(true);
+    try {
+      await fetch("/api/stats/reset", { method: "DELETE" });
+      setConfirmReset(false);
+      await load();
+    } finally {
+      setResetting(false);
+    }
+  }, [load]);
+
   useEffect(() => {
     load();
     const t = setInterval(load, 30_000);
@@ -66,10 +79,19 @@ export default function Stats() {
       <div className="border-b border-white/10 bg-[#0d0d18]">
         <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center text-sm font-bold">S</div>
+            <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-8 h-8 drop-shadow">
+              <defs>
+                <linearGradient id="sg" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0%" stopColor="#fbbf24" />
+                  <stop offset="100%" stopColor="#d97706" />
+                </linearGradient>
+              </defs>
+              <path d="M24 3L6 10v14c0 9.5 7.5 18.4 18 21 10.5-2.6 18-11.5 18-21V10L24 3z" fill="url(#sg)" />
+              <text x="24" y="31" textAnchor="middle" fontFamily="Arial Black,Arial,sans-serif" fontWeight="900" fontSize="22" fill="#1a0a00">E</text>
+            </svg>
             <div>
-              <div className="text-sm font-bold tracking-widest text-violet-400 uppercase">Statistics</div>
-              <div className="text-xs text-white/40">EmpireBot · Ranking de Orgs</div>
+              <div className="text-sm font-bold tracking-widest text-amber-400 uppercase">Empire</div>
+              <div className="text-xs text-white/40">Statistics · Ranking de Orgs</div>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -85,6 +107,12 @@ export default function Stats() {
               className="text-xs text-white/40 hover:text-white/70 transition-colors border border-white/10 hover:border-white/20 rounded-lg px-3 py-1.5 disabled:opacity-40"
             >
               {loading ? "…" : "↻ Atualizar"}
+            </button>
+            <button
+              onClick={() => setConfirmReset(true)}
+              className="text-xs text-red-400/70 hover:text-red-400 transition-colors border border-red-500/20 hover:border-red-500/40 rounded-lg px-3 py-1.5"
+            >
+              🗑 Resetar
             </button>
           </div>
         </div>
@@ -239,6 +267,35 @@ export default function Stats() {
           )}
         </div>
       </div>
+
+      {/* Confirm reset modal */}
+      {confirmReset && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-[#0d0d18] border border-red-500/30 rounded-2xl p-6 max-w-sm w-full shadow-2xl">
+            <div className="text-2xl mb-2">⚠️</div>
+            <div className="text-white font-semibold text-lg mb-1">Resetar estatísticas?</div>
+            <div className="text-white/50 text-sm mb-6">
+              Isso apaga <b className="text-white/70">todo o histórico</b> de entradas e partidas. A ação não pode ser desfeita.
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setConfirmReset(false)}
+                disabled={resetting}
+                className="flex-1 py-2.5 rounded-xl border border-white/10 text-white/50 hover:text-white/80 hover:border-white/20 text-sm transition-all disabled:opacity-40"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleReset}
+                disabled={resetting}
+                className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-sm font-semibold transition-all disabled:opacity-40"
+              >
+                {resetting ? "Resetando…" : "Sim, resetar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

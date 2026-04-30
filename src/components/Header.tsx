@@ -6,13 +6,11 @@ export function Header({ instance }: { instance: InstanceState | null }) {
   return (
     <div className="card p-5 sm:p-6">
       <div className="flex items-center gap-4">
-        <div className="grid place-items-center w-12 h-12 rounded-xl bg-accent/15 ring-1 ring-accent/30">
-          <CrownIcon className="w-6 h-6 text-accent" />
-        </div>
+        <EmpireLogo />
         <div className="flex-1">
           <div className="flex items-baseline gap-3 flex-wrap">
-            <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
-              IMPERIUNS
+            <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight bg-gradient-to-r from-amber-300 via-yellow-200 to-amber-400 bg-clip-text text-transparent">
+              EMPIRE
             </h1>
             <span className="text-[11px] uppercase tracking-[0.3em] text-slate-400">
               Painel de Controle
@@ -59,10 +57,45 @@ function Dot({ className = "" }: { className?: string }) {
   return <span className={`w-1.5 h-1.5 rounded-full ${className}`} />;
 }
 
-function CrownIcon({ className = "" }: { className?: string }) {
+function EmpireLogo() {
   return (
-    <svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden>
-      <path d="M3 7l4 4 5-7 5 7 4-4-2 12H5L3 7zm2 14h14v-2H5v2z" />
-    </svg>
+    <div className="relative shrink-0 w-12 h-12">
+      <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-full h-full drop-shadow-lg">
+        <defs>
+          <linearGradient id="shieldGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#fbbf24" />
+            <stop offset="50%" stopColor="#f59e0b" />
+            <stop offset="100%" stopColor="#d97706" />
+          </linearGradient>
+          <linearGradient id="shieldGloss" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.25" />
+            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {/* Shield shape */}
+        <path
+          d="M24 3L6 10v14c0 9.5 7.5 18.4 18 21 10.5-2.6 18-11.5 18-21V10L24 3z"
+          fill="url(#shieldGrad)"
+        />
+        {/* Gloss overlay */}
+        <path
+          d="M24 3L6 10v14c0 1 .05 2 .15 3L24 10.5 41.85 27c.1-1 .15-2 .15-3V10L24 3z"
+          fill="url(#shieldGloss)"
+        />
+        {/* Bold E letter */}
+        <text
+          x="24"
+          y="31"
+          textAnchor="middle"
+          fontFamily="Arial Black, Arial, sans-serif"
+          fontWeight="900"
+          fontSize="22"
+          fill="#1a0a00"
+          letterSpacing="-1"
+        >
+          E
+        </text>
+      </svg>
+    </div>
   );
 }

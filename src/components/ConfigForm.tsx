@@ -271,7 +271,7 @@ export function ConfigForm({
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `imperiuns-config-${instanceId}.json`;
+    a.download = `empire-config-${instanceId}.json`;
     a.click();
     URL.revokeObjectURL(url);
   }
