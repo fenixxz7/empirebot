@@ -4,6 +4,7 @@ import { configRouter } from "./config.js";
 import { orgsRouter } from "./orgs.js";
 import { logsRouter } from "./logs.js";
 import { discoveryRouter } from "./discovery.js";
+import { pool } from "../db/pool.js";
 
 export function mountApi(app: Express): void {
   app.use("/api/instances", instancesRouter);
@@ -11,4 +12,14 @@ export function mountApi(app: Express): void {
   app.use("/api/orgs", orgsRouter);
   app.use("/api/logs", logsRouter);
   app.use("/api/discovery", discoveryRouter);
+
+  // Health check para monitoramento externo
+  app.get("/health", async (_req, res) => {
+    try {
+      await pool.query("SELECT 1");
+      res.json({ ok: true, db: "ok", ts: new Date().toISOString() });
+    } catch {
+      res.status(503).json({ ok: false, db: "error", ts: new Date().toISOString() });
+    }
+  });
 }

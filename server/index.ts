@@ -62,6 +62,23 @@ async function main() {
     });
   }
 
+  // Rotação de logs: remove registros com mais de 7 dias, roda a cada 6h
+  async function rotateLogs() {
+    try {
+      const r = await query<{ count: string }>(
+        `WITH deleted AS (
+           DELETE FROM logs WHERE ts < NOW() - INTERVAL '7 days' RETURNING id
+         ) SELECT COUNT(*)::text AS count FROM deleted`
+      );
+      const n = Number(r[0]?.count ?? "0");
+      if (n > 0) console.log(`[logs] rotação: ${n} registro(s) removido(s)`);
+    } catch (err) {
+      console.error("[logs] erro na rotação:", err);
+    }
+  }
+  rotateLogs();
+  setInterval(rotateLogs, 6 * 60 * 60 * 1000);
+
   httpServer.listen(PORT, "0.0.0.0", async () => {
     console.log(`[server] listening on http://0.0.0.0:${PORT}`);
 

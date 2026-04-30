@@ -53,6 +53,12 @@ export class DiscordRest {
         continue;
       }
 
+      // Retry em 5xx com backoff exponencial (máx 3 tentativas)
+      if (res.status >= 500 && attempts < 3) {
+        await sleep(Math.min(8_000, 1_000 * Math.pow(2, attempts - 1)));
+        continue;
+      }
+
       const text = await res.text();
       if (!res.ok) {
         return {

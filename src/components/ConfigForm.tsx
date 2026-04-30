@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Org, OrgChannel } from "@shared/types";
 import { api } from "@/lib/api";
 
@@ -69,6 +69,7 @@ export function ConfigForm({
   const [newOrgName, setNewOrgName] = useState("");
   const [newOrgGuild, setNewOrgGuild] = useState("");
   const [newOrgCategory, setNewOrgCategory] = useState<Category>("Mobile");
+  const importRef = useRef<HTMLInputElement>(null);
 
   async function reload() {
     setLoading(true);
@@ -259,6 +260,38 @@ export function ConfigForm({
       setFeedback(e instanceof Error ? e.message : "Erro ao salvar");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function exportConfig() {
+    const res = await fetch(`/api/config/${instanceId}/export`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `imperiuns-config-${instanceId}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function handleImport(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const json = JSON.parse(text);
+      await api(`/api/config/${instanceId}/import`, {
+        method: "POST",
+        body: JSON.stringify(json),
+      });
+      await reload();
+      await reloadOrgs();
+      setFeedback("Configuração importada com sucesso.");
+      setTimeout(() => setFeedback(null), 4000);
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : "Erro ao importar");
+    } finally {
+      if (importRef.current) importRef.current.value = "";
     }
   }
 
@@ -533,26 +566,53 @@ export function ConfigForm({
         </p>
       </Section>
 
-      <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
-        <button
-          onClick={save}
-          disabled={saving || running}
-          title={running ? "Pare o bot antes de alterar a configuração" : ""}
-          className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          <SaveIcon className="w-4 h-4" />
-          {saving ? "Salvando…" : "SALVAR CONFIGURAÇÃO"}
-        </button>
-        {running && (
-          <span className="text-xs text-amber-300">
-            Bot rodando — pare em "Controle" antes de salvar.
-          </span>
-        )}
-        {feedback && (
-          <span className={`text-sm ${feedback.startsWith("Configuração") ? "text-emerald-300" : "text-rose-300"}`}>
-            {feedback}
-          </span>
-        )}
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
+          <button
+            onClick={save}
+            disabled={saving || running}
+            title={running ? "Pare o bot antes de alterar a configuração" : ""}
+            className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <SaveIcon className="w-4 h-4" />
+            {saving ? "Salvando…" : "SALVAR CONFIGURAÇÃO"}
+          </button>
+          {running && (
+            <span className="text-xs text-amber-300">
+              Bot rodando — pare em "Controle" antes de salvar.
+            </span>
+          )}
+          {feedback && (
+            <span className={`text-sm ${feedback.startsWith("Configuração") || feedback.startsWith("importado") ? "text-emerald-300" : "text-rose-300"}`}>
+              {feedback}
+            </span>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={exportConfig}
+            className="btn-secondary"
+            title="Baixar configuração como JSON"
+          >
+            <ExportIcon className="w-3.5 h-3.5" />
+            Exportar config
+          </button>
+          <button
+            onClick={() => importRef.current?.click()}
+            className="btn-secondary"
+            title="Importar configuração de um arquivo JSON"
+          >
+            <ImportIcon className="w-3.5 h-3.5" />
+            Importar config
+          </button>
+          <input
+            ref={importRef}
+            type="file"
+            accept=".json"
+            className="hidden"
+            onChange={handleImport}
+          />
+        </div>
       </div>
     </div>
   );
@@ -760,4 +820,10 @@ function SettingsIcon({ className = "" }) {
 }
 function SaveIcon({ className = "" }) {
   return (<svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden><path d="M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7l-4-4zM12 19a3 3 0 1 1 0-6 3 3 0 0 1 0 6zM7 8h7V5H7v3z"/></svg>);
+}
+function ExportIcon({ className = "" }) {
+  return (<svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden><path d="M13 3v8h3l-4 5-4-5h3V3h2zm-9 16h16v2H4v-2z"/></svg>);
+}
+function ImportIcon({ className = "" }) {
+  return (<svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden><path d="M11 3v8H8l4 5 4-5h-3V3h-2zm-7 16h16v2H4v-2z"/></svg>);
 }

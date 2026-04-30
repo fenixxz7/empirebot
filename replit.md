@@ -153,12 +153,28 @@ src/                  React app (App, components, lib/api)
   independentes — o runner não precisa ter entrado com player para a mensagem
   ser enviada.
 
+## Bloco E — implementado
+
+- **Retry 5xx** (`server/discord/rest.ts`): após 429 já havia retry; agora
+  respostas `>= 500` também fazem até 3 tentativas com backoff exponencial
+  (1s → 2s → 4s, máx 8s).
+- **`/health`** (`server/routes/index.ts`): endpoint GET que faz `SELECT 1` no
+  Postgres e retorna `{ ok, db, ts }` (503 se DB offline).
+- **Rotação de logs** (`server/index.ts`): job a cada 6h deleta registros com
+  mais de 7 dias na tabela `logs`. Roda também no boot.
+- **Export config** (`GET /api/config/:id/export`): retorna JSON com `version`,
+  `exported_at`, campos de `instance_configs` e lista de orgs selecionadas.
+  Content-Disposition faz download direto.
+- **Import config** (`POST /api/config/:id/import`): aceita o mesmo JSON,
+  atualiza `instance_configs` e `instance_orgs`, registra evento nos logs.
+- **Botões no painel** (`src/components/ConfigForm.tsx`): "Exportar config" e
+  "Importar config" abaixo do botão salvar. Import usa `<input type="file">`
+  hidden acionado por ref.
+
 ## Próximos blocos planejados
 
-- **Bloco E** — Telemetria refinada e endurecimento:
-  - Rotação de tokens com countdown no painel.
-  - Rate-limit bucket por rota, retry em 5xx.
-  - Export/import de configuração.
+- Rotação de tokens com countdown no painel.
+- Estatísticas por org (orgs com mais partidas/entradas).
 
 ## Preferências do usuário
 

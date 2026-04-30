@@ -194,3 +194,97 @@ configRouter.put("/:instanceId", async (req, res) => {
 
   res.json({ ok: true, discovery, discovery_skipped });
 });
+
+// Export: devolve JSON com toda a configuração da instância
+configRouter.get("/:instanceId/export", async (req, res) => {
+  const id = Number(req.params.instanceId);
+
+  const cfg = await query<{
+    allowed_categories: string; delay_seconds: number;
+    rotation_minutes: number; allowed_modes: string;
+    message_main: string; message_per_org: string; image_url: string | null;
+  }>(
+    `SELECT allowed_categories, delay_seconds, rotation_minutes,
+            allowed_modes, message_main, message_per_org, image_url
+     FROM instance_configs WHERE instance_id = $1`,
+    [id],
+  );
+
+  const orgs = await query<{ org_id: number; org_name: string; guild_id: string | null }>(
+    `SELECT io.org_id, o.name AS org_name, o.guild_id
+     FROM instance_orgs io JOIN orgs o ON o.id = io.org_id
+     WHERE io.instance_id = $1`,
+    [id],
+  );
+
+  const payload = {
+    version: 1,
+    exported_at: new Date().toISOString(),
+    config: cfg[0] ?? {},
+    selected_orgs: orgs,
+  };
+
+  res.setHeader("Content-Disposition", `attachment; filename="imperiuns-config-${id}.json"`);
+  res.json(payload);
+});
+
+// Import: recebe JSON exportado e reaplica configuração (sem tokens)
+configRouter.post("/:instanceId/import", async (req, res) => {
+  const id = Number(req.params.instanceId);
+  const body = req.body as {
+    version?: number;
+    config?: {
+      allowed_categories?: string;
+      delay_seconds?: number;
+      rotation_minutes?: number;
+      allowed_modes?: string;
+      message_main?: string;
+      message_per_org?: string;
+      image_url?: string | null;
+    };
+    selected_orgs?: { org_id: number }[];
+  };
+
+  if (!body?.config) {
+    return res.status(400).json({ error: "JSON inválido — campo 'config' ausente." });
+  }
+
+  const c = body.config;
+  const cats = (c.allowed_categories ?? "Mobile")
+    .split(/[\s,;\n]+/).map((s: string) => s.trim()).filter(Boolean);
+  const primaryCategory = cats[0] ?? "Mobile";
+
+  await query(
+    `UPDATE instance_configs
+     SET category = $2, allowed_categories = $3,
+         delay_seconds = $4, rotation_minutes = $5,
+         allowed_modes = $6, message_main = $7, message_per_org = $8,
+         image_url = $9, updated_at = NOW()
+     WHERE instance_id = $1`,
+    [
+      id, primaryCategory, cats.join("\n"),
+      c.delay_seconds ?? 12, c.rotation_minutes ?? 90,
+      c.allowed_modes ?? "1x1\n3x3",
+      c.message_main ?? "", c.message_per_org ?? "",
+      c.image_url ?? null,
+    ],
+  );
+
+  if (Array.isArray(body.selected_orgs) && body.selected_orgs.length > 0) {
+    await query(`DELETE FROM instance_orgs WHERE instance_id = $1`, [id]);
+    for (const o of body.selected_orgs) {
+      await query(
+        `INSERT INTO instance_orgs (instance_id, org_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+        [id, o.org_id],
+      );
+    }
+  }
+
+  await query(
+    `INSERT INTO logs (instance_id, level, source, message)
+     VALUES ($1, 'INFO', 'config', 'Configuração importada via arquivo JSON')`,
+    [id],
+  );
+
+  res.json({ ok: true });
+});
