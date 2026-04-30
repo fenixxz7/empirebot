@@ -114,10 +114,7 @@ export class DiscordRest {
   }
 
   sendMessage(channelId: string, content: string, imageUrl?: string | null) {
-    const body: Record<string, unknown> = {
-      content,
-      allowed_mentions: { parse: ["users"] },
-    };
+    const body: Record<string, unknown> = { content };
     if (imageUrl && imageUrl.trim()) {
       body.embeds = [{ image: { url: imageUrl.trim() } }];
     }
