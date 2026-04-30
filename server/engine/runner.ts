@@ -281,6 +281,9 @@ export class QueueRunner {
       const ranked = await this.rankCandidatesByPlayers(eligible, token.token);
       candidate = ranked.choice;
       candidatePlayers = ranked.players;
+      // Avança o cursor antes de sair — garante round-robin real entre orgs.
+      // Sem isso, o bot ficaria preso na mesma org enquanto ela tiver vagas.
+      this.orgCursor = (this.orgCursor + 1) % totalOrgs;
       break;
     }
 
