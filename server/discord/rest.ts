@@ -95,6 +95,13 @@ export class DiscordRest {
     return this.request<DiscordMessage[]>("GET", `/channels/${channelId}/pins`);
   }
 
+  sendMessage(channelId: string, content: string) {
+    return this.request<{ id: string }>("POST", `/channels/${channelId}/messages`, {
+      content,
+      allowed_mentions: { parse: ["users"] },
+    });
+  }
+
   /**
    * Clica num botão de mensagem como o usuário (selfbot).
    * Usa o endpoint genérico de interactions do Discord.

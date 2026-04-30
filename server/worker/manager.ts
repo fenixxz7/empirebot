@@ -1,6 +1,7 @@
 import { GatewayClient, type ReadyData } from "./gateway.js";
 import { query } from "../db/pool.js";
 import { QueueRunner, type ActiveToken } from "../engine/runner.js";
+import { MatchHandler, type MatchToken } from "../engine/match_handler.js";
 import { runAutoDiscoveryForInstance } from "../discord/discovery.js";
 
 interface WorkerEntry {
@@ -13,6 +14,7 @@ interface WorkerEntry {
 class Manager {
   private workers = new Map<number, WorkerEntry[]>();
   private runners = new Map<number, QueueRunner>();
+  private matchHandlers = new Map<number, MatchHandler>();
   private discoveryRan = new Set<number>();
 
   private async runAutoDiscovery(
@@ -143,6 +145,27 @@ class Manager {
       `Iniciados ${entries.length} worker(s) — conectando ao Discord…`,
     );
 
+    // Inicia o detector de partidas
+    const matchHandler = new MatchHandler(instanceId, this);
+    this.matchHandlers.set(instanceId, matchHandler);
+
+    // Escuta CHANNEL_CREATE em todos os tokens
+    for (const e of entries) {
+      e.client.on("dispatch", (eventName: string, eventData: any) => {
+        if (eventName !== "CHANNEL_CREATE") return;
+        const matchTokens: MatchToken[] = (this.workers.get(instanceId) ?? [])
+          .filter((w) => w.client.isReady())
+          .map((w) => ({
+            tokenId: w.tokenId,
+            position: w.position,
+            token: w.token,
+            userId: w.client.getUserId() ?? "",
+          }))
+          .filter((t) => t.userId !== "");
+        matchHandler.onChannelCreate(eventData, matchTokens).catch(() => {});
+      });
+    }
+
     // Inicia o motor de filas
     const runner = new QueueRunner(instanceId, this);
     this.runners.set(instanceId, runner);
@@ -160,12 +183,13 @@ class Manager {
     // Limpa flag de descoberta para o próximo start poder rodar de novo
     this.discoveryRan.delete(instanceId);
 
-    // Para o motor de filas primeiro
+    // Para o motor de filas e o detector de partidas
     const runner = this.runners.get(instanceId);
     if (runner) {
       runner.stop();
       this.runners.delete(instanceId);
     }
+    this.matchHandlers.delete(instanceId);
     await query(`DELETE FROM active_queues WHERE instance_id = $1`, [
       instanceId,
     ]);

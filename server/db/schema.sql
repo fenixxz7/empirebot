@@ -106,3 +106,21 @@ CREATE TABLE IF NOT EXISTS active_queues (
 
 CREATE INDEX IF NOT EXISTS idx_active_queues_instance
   ON active_queues (instance_id);
+
+-- Fase 9/10 — partidas detectadas e mensagens enviadas
+CREATE TABLE IF NOT EXISTS matches (
+  id            BIGSERIAL PRIMARY KEY,
+  instance_id   INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+  channel_id    TEXT NOT NULL,
+  channel_name  TEXT,
+  guild_id      TEXT,
+  org_id        INTEGER REFERENCES orgs(id) ON DELETE SET NULL,
+  org_name      TEXT,
+  mode          TEXT,
+  category      TEXT,
+  embed_valor   TEXT,
+  adversary_id  TEXT,
+  msg_sent      BOOLEAN NOT NULL DEFAULT FALSE,
+  detected_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (instance_id, channel_id)
+);

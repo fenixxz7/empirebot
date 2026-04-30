@@ -66,7 +66,7 @@ src/                  React app (App, components, lib/api)
   O badge ao lado da org mostra "N filas" (não "N canais") já que cada card
   é uma fila distinta.
 
-## Estado atual (Bloco D concluído)
+## Estado atual (Bloco D — Fases 9 e 10 adicionadas)
 
 - Painel renderiza, controla start/stop da instância e salva configuração.
 - Worker abre conexão WSS com `gateway.discord.gg` para cada token salvo,
@@ -133,13 +133,32 @@ src/                  React app (App, components, lib/api)
   `LogsConsole.tsx` aplica cor por nível e tag pintada por origem.
 - `active_queues` é zerada na parada da instância e no boot do servidor.
 
+## Fases 9 e 10 — implementadas
+
+- **MatchHandler** (`server/engine/match_handler.ts`): listener independente do
+  runner de filas. Ativado por `CHANNEL_CREATE` no gateway para qualquer token
+  da instância.
+  - Detecta padrões: `fila-XXXX`, `partida-N`, `sua-partida-N`.
+  - Adversário: 1) `permission_overwrites` tipo user (id ≠ nosso token),
+    2) fallback: aguarda 2s, lê primeira mensagem do canal e extrai menção.
+  - Idempotência via tabela `matches (instance_id, channel_id) UNIQUE`.
+  - Libera slot em `active_queues` para a org da guild (match = fila consumida).
+  - Incrementa `stats.partidas` e `stats.dms`.
+  - Resolve template: mensagem global ou por-org (`message_per_org` no formato
+    `org_name | mensagem` ou `guild_id | mensagem`).
+  - Substitui variáveis: `{adversary_mention}`, `{adversary_id}`,
+    `{channel_name}`, `{org_name}`, `{mode}`, `{format}`, `{value}`.
+  - Envia via `POST /channels/:id/messages` com o token ativo.
+- Loop de filas (runner) e loop de partidas (match_handler) são completamente
+  independentes — o runner não precisa ter entrado com player para a mensagem
+  ser enviada.
+
 ## Próximos blocos planejados
 
-- **E** — detecção de canais `partida-N` / `fila-XXXX` (via gateway
-  CHANNEL_CREATE / GUILD_MEMBER_ADD) e envio da mensagem com variáveis
-  (`{adversary_mention}`, etc.) e imagem opcional.
-- **F** — polimento, rotação de tokens por minutos, tratamento de 429
-  mais inteligente, contagem de DMs.
+- **Bloco E** — Telemetria refinada e endurecimento:
+  - Rotação de tokens com countdown no painel.
+  - Rate-limit bucket por rota, retry em 5xx.
+  - Export/import de configuração.
 
 ## Preferências do usuário
 

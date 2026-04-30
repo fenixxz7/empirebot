@@ -95,6 +95,26 @@ export async function initDatabase(): Promise<void> {
     await pool.query(`DELETE FROM org_channels`);
   }
 
+  // Migração: tabela de partidas detectadas (Fase 9/10)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS matches (
+      id            BIGSERIAL PRIMARY KEY,
+      instance_id   INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+      channel_id    TEXT NOT NULL,
+      channel_name  TEXT,
+      guild_id      TEXT,
+      org_id        INTEGER REFERENCES orgs(id) ON DELETE SET NULL,
+      org_name      TEXT,
+      mode          TEXT,
+      category      TEXT,
+      embed_valor   TEXT,
+      adversary_id  TEXT,
+      msg_sent      BOOLEAN NOT NULL DEFAULT FALSE,
+      detected_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (instance_id, channel_id)
+    )
+  `);
+
   // Garante que ninguém ficou com fila "fantasma" entre boots
   await pool.query(`DELETE FROM active_queues`);
 
