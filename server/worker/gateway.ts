@@ -157,6 +157,22 @@ export class GatewayClient extends EventEmitter {
           };
           this.userId = ready.user_id;
           this.ready = true;
+          // Assina eventos de thread em todas as guilds (OP 14)
+          // Sem isso, Discord não envia CHANNEL_CREATE para threads privadas
+          const guilds: Array<{ id: string }> = msg.d.guilds ?? [];
+          for (const g of guilds) {
+            if (g.id) {
+              this.send({
+                op: 14,
+                d: {
+                  guild_id: g.id,
+                  typing: false,
+                  threads: true,
+                  activities: false,
+                },
+              });
+            }
+          }
           this.emit("ready", ready);
         } else if (msg.t === "RESUMED") {
           this.ready = true;
@@ -195,13 +211,40 @@ export class GatewayClient extends EventEmitter {
       op: 2,
       d: {
         token: this.token,
+        capabilities: 16381,
         properties: {
-          $os: "linux",
-          $browser: "chrome",
-          $device: "chrome",
+          os: "Windows",
+          browser: "Chrome",
+          device: "",
+          system_locale: "pt-BR",
+          browser_user_agent:
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+          browser_version: "124.0.0.0",
+          os_version: "10",
+          referrer: "https://discord.com/",
+          referring_domain: "discord.com",
+          referrer_current: "",
+          referring_domain_current: "",
+          release_channel: "stable",
+          client_build_number: 310168,
+          client_event_source: null,
+        },
+        presence: {
+          status: "online",
+          since: 0,
+          activities: [],
+          afk: false,
         },
         compress: false,
-        large_threshold: 50,
+        client_state: {
+          guild_versions: {},
+          highest_last_message_id: "0",
+          read_state_version: 0,
+          user_guild_settings_version: -1,
+          user_settings_version: -1,
+          private_channels_version: "0",
+          api_code_version: 0,
+        },
       },
     });
   }
