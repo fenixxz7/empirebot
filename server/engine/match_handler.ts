@@ -190,9 +190,9 @@ export class MatchHandler {
       }
     }
 
-    // Tentativa 2: primeira mensagem no canal (aguarda 2s p/ bot da org postar)
+    // Tentativa 2: primeira mensagem no canal (aguarda 1s p/ bot da org postar)
     if (!adversaryId) {
-      await sleep(2000);
+      await sleep(1000);
       const rest = new DiscordRest(sender.token);
       const { data: msgs } = await rest.channelMessages(event.id, 5);
       if (msgs && msgs.length > 0) {
@@ -315,12 +315,12 @@ export class MatchHandler {
 
     // Envia mensagem (com imagem opcional, se configurada no painel)
     // Antes do POST: dispara "está digitando…" e espera um tempo
-    // proporcional ao tamanho da mensagem para parecer humano.
+    // proporcional ao tamanho da mensagem para parecer humano (sem exagero).
     const rest = new DiscordRest(sender.token);
     await rest.triggerTyping(event.id).catch(() => {});
     const typingMs = Math.min(
-      6000,
-      1200 + content.length * (35 + Math.random() * 50),
+      2500,
+      800 + content.length * (12 + Math.random() * 18),
     );
     await sleep(typingMs);
     const result = await rest.sendMessage(event.id, content, config.image_url);

@@ -44,6 +44,9 @@ interface CycleConfig {
 }
 
 const STARTUP_GRACE_MS = 5000;
+// Intervalo fixo do tick — rápido para não atrasar reconhecimento e sweep.
+// O cooldown entre entradas de fila é controlado separadamente por nextJoinAt.
+const TICK_INTERVAL_MS = 2500;
 const NO_TOKEN_LOG_INTERVAL_MS = 30_000;
 const NO_WORK_LOG_INTERVAL_MS = 60_000;
 const PLAYER_CACHE_MS = 25_000;
@@ -58,7 +61,7 @@ const LONG_BREAK_AFTER_MIN = 7;
 const LONG_BREAK_AFTER_MAX = 14;
 const LONG_BREAK_MS_MIN = 60_000;
 const LONG_BREAK_MS_MAX = 180_000;
-// Backoff extra após rate limit (429), por cima do delay normal.
+// Backoff extra após rate limit (429), por cima do cooldown de fila.
 const RATE_LIMIT_BACKOFF_MIN_MS = 25_000;
 const RATE_LIMIT_BACKOFF_MAX_MS = 55_000;
 
@@ -78,6 +81,9 @@ export class QueueRunner {
   private nextBreakAt = randInt(LONG_BREAK_AFTER_MIN, LONG_BREAK_AFTER_MAX);
   private extraDelayMs = 0;
   private lastSweepAt = 0;
+  // Timestamp a partir do qual é permitido tentar entrar em uma nova fila.
+  // Separado do tick para que o tick rode rápido e não atrase outras tarefas.
+  private nextJoinAt = 0;
 
   constructor(
     private readonly instanceId: number,
@@ -100,12 +106,10 @@ export class QueueRunner {
 
   private async tick(): Promise<void> {
     if (this.stopped) return;
-    let baseDelayMs = 12_000;
     try {
-      // Sweep de filas fantasmas a cada 30s (idempotente)
+      // Sweep de filas fantasmas a cada 30s (idempotente) — roda independente do cooldown de fila
       await this.sweepGhostQueues();
       const cfg = await this.loadConfig();
-      baseDelayMs = Math.max(1000, cfg.delay_seconds * 1000);
       await this.iterate(cfg);
     } catch (err) {
       await this.manager.log(
@@ -115,17 +119,9 @@ export class QueueRunner {
         `tick falhou: ${(err as Error).message}`,
       );
     } finally {
+      // Tick rápido e fixo — o cooldown entre entradas é gerenciado por nextJoinAt
       if (!this.stopped) {
-        // Jitter mais largo (0.6–1.7) para parecer menos robótico
-        const jitter = 0.6 + Math.random() * 1.1;
-        let next = Math.max(800, Math.floor(baseDelayMs * jitter));
-
-        // Aplica delay extra (rate limit / long break) acumulado e zera
-        if (this.extraDelayMs > 0) {
-          next += this.extraDelayMs;
-          this.extraDelayMs = 0;
-        }
-        this.timer = setTimeout(() => this.tick(), next);
+        this.timer = setTimeout(() => this.tick(), TICK_INTERVAL_MS);
       }
     }
   }
@@ -195,6 +191,10 @@ export class QueueRunner {
   }
 
   private async iterate(cfg: CycleConfig): Promise<void> {
+    // Cooldown entre entradas de fila — o tick roda rápido mas a entrada
+    // só acontece quando o intervalo configurado pelo usuário já passou.
+    if (Date.now() < this.nextJoinAt) return;
+
     const tokens = this.manager.getActiveTokens(this.instanceId);
     if (tokens.length === 0) {
       this.maybeLog("noToken", "Aguardando ao menos um token conectado…");
@@ -297,9 +297,22 @@ export class QueueRunner {
 
     const token = tokens[0]!;
 
+    // Pequena pausa humanizada antes de clicar (350-1500ms)
     await sleep(350 + Math.floor(Math.random() * 1150));
 
     await this.joinQueue(candidate, token, activeRows.length, candidatePlayers);
+
+    // Define o próximo momento permitido para entrar em fila.
+    // Jitter mais largo (0.6–1.7) para parecer menos robótico.
+    const baseDelayMs = Math.max(1000, cfg.delay_seconds * 1000);
+    const jitter = 0.6 + Math.random() * 1.1;
+    let cooldown = Math.max(800, Math.floor(baseDelayMs * jitter));
+    // Adiciona delay extra acumulado (rate limit / long break) e zera
+    if (this.extraDelayMs > 0) {
+      cooldown += this.extraDelayMs;
+      this.extraDelayMs = 0;
+    }
+    this.nextJoinAt = Date.now() + cooldown;
   }
 
   private async rankCandidatesByPlayers(
