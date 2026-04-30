@@ -178,6 +178,19 @@ export class GatewayClient extends EventEmitter {
           this.ready = true;
           this.emit("resumed");
         } else {
+          // OP 14 também no GUILD_CREATE: guilds grandes chegam como unavailable
+          // no READY e ficam disponíveis depois via GUILD_CREATE
+          if (msg.t === "GUILD_CREATE" && msg.d?.id) {
+            this.send({
+              op: 14,
+              d: {
+                guild_id: msg.d.id,
+                typing: false,
+                threads: true,
+                activities: false,
+              },
+            });
+          }
           this.emit("dispatch", msg.t, msg.d);
         }
         break;

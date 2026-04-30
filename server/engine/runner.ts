@@ -224,10 +224,13 @@ export class QueueRunner {
     }
 
     if (!candidate) {
-      const msg = advancedDueToFull
-        ? `Todas as orgs no limite — ${activeRows.length} fila(s) ativa(s).`
-        : `Nada novo pra entrar — ${activeRows.length} fila(s) ativa(s).`;
-      this.maybeLog("noWork", msg);
+      if (advancedDueToFull) {
+        // Reseta cursor pra org 0: próximo tick já começa da primeira
+        this.orgCursor = 0;
+        this.maybeLog("noWork", `Todas as orgs no limite — ${activeRows.length} fila(s) ativa(s).`);
+      } else {
+        this.maybeLog("noWork", `Nada novo pra entrar — ${activeRows.length} fila(s) ativa(s).`);
+      }
       return;
     }
 

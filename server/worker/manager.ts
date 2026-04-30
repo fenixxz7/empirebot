@@ -3,6 +3,7 @@ import { query } from "../db/pool.js";
 import { QueueRunner, type ActiveToken } from "../engine/runner.js";
 import { MatchHandler, type MatchToken } from "../engine/match_handler.js";
 import { runAutoDiscoveryForInstance } from "../discord/discovery.js";
+import { DiscordRest } from "../discord/rest.js";
 import type { WebSocketServer } from "ws";
 import { WebSocket } from "ws";
 
@@ -179,7 +180,7 @@ class Manager {
 
     for (const e of entries) {
       e.client.on("dispatch", (eventName: string, eventData: any) => {
-        // Log diagnóstico: registra todos os eventos de canal/thread pra depuração
+        // Log diagnóstico: todos os eventos relevantes de canal/thread
         if (CHANNEL_EVENTS.has(eventName) || eventName.startsWith("THREAD")) {
           this.log(
             instanceId,
@@ -189,10 +190,9 @@ class Manager {
           ).catch(() => {});
         }
 
-        // THREAD_LIST_SYNC: lista threads que o token já faz parte ao reconectar
+        // THREAD_LIST_SYNC: lista de threads ao reconectar
         if (eventName === "THREAD_LIST_SYNC") {
           const threads: any[] = eventData?.threads ?? [];
-          // Prioriza o token que recebeu o evento como sender
           const matchTokens = this.buildMatchTokens(instanceId, e.tokenId);
           for (const t of threads) {
             matchHandler.onChannelCreate(t, matchTokens).catch(() => {});
@@ -200,10 +200,41 @@ class Manager {
           return;
         }
 
+        // THREAD_MEMBERS_UPDATE: fallback quando o token é adicionado a uma thread
+        // Discord nem sempre envia CHANNEL_CREATE para threads privadas em guilds grandes
+        if (eventName === "THREAD_MEMBERS_UPDATE") {
+          const addedMembers: Array<{ user_id?: string }> = eventData?.added_members ?? [];
+          const myId = e.client.getUserId();
+          const wasAdded = myId && addedMembers.some((m) => m.user_id === myId);
+          if (wasAdded && eventData?.id) {
+            const matchTokens = this.buildMatchTokens(instanceId, e.tokenId);
+            // Busca os detalhes da thread via REST para pegar nome e tipo
+            const rest = new DiscordRest(e.token);
+            rest.request<{ id: string; name: string; type: number; guild_id?: string; parent_id?: string }>(
+              "GET",
+              `/channels/${eventData.id}`,
+            ).then(({ data }) => {
+              if (data) matchHandler.onChannelCreate(data, matchTokens).catch(() => {});
+            }).catch(() => {});
+          }
+          return;
+        }
+
+        // GUILD_CREATE: log de quantas threads existem na guild no momento da conexão
+        if (eventName === "GUILD_CREATE") {
+          const threads: any[] = eventData?.threads ?? [];
+          if (threads.length > 0) {
+            const matchTokens = this.buildMatchTokens(instanceId, e.tokenId);
+            for (const t of threads) {
+              matchHandler.onChannelCreate(t, matchTokens).catch(() => {});
+            }
+          }
+          return;
+        }
+
         if (!CHANNEL_EVENTS.has(eventName)) return;
 
-        // Prioriza o token que recebeu o evento como sender
-        // (importante para threads privadas onde só esse token tem acesso)
+        // CHANNEL_CREATE / THREAD_CREATE: caminho principal
         const matchTokens = this.buildMatchTokens(instanceId, e.tokenId);
         matchHandler.onChannelCreate(eventData, matchTokens).catch(() => {});
       });
