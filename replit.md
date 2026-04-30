@@ -223,6 +223,43 @@ src/                  React app (App, components, lib/api)
   - UI (`src/components/ConfigForm.tsx`): nova Section "Imagem na mensagem
     (URL)" com input + preview da imagem.
 
+## Camada anti-ban / "comportamento humano"
+
+Implementado para aumentar a vida útil dos tokens (objetivo: 2-3h por
+conta sem queimar). Tudo em `server/engine/runner.ts` e
+`server/engine/match_handler.ts`:
+
+- **Typing indicator antes de mandar mensagem** (`rest.triggerTyping`):
+  no `MatchHandler.handleMatch`, antes do `sendMessage` em canal de
+  partida, dispara `POST /channels/:id/typing` e espera 1.2-6.0s
+  (proporcional ao tamanho do texto). Faz aparecer "está digitando…" no
+  Discord, exatamente como um humano.
+- **`humanize(content)`**: remove espaços duplicados, normaliza linhas, e
+  com chance de 18% adiciona um espaço sutil no fim ou um ponto extra.
+  Pequenas variações que tornam a string menos detectável como template
+  fixo, sem desfigurar a mensagem do usuário.
+- **Jitter mais largo no QueueRunner**: ciclo era 0.7-1.3× o `delay_seconds`,
+  agora é 0.6-1.7× — mais imprevisível.
+- **Long break**: a cada 7-14 ações bem-sucedidas, dorme 60-180s extras
+  antes do próximo lance. Simula desatenção humana e segura ações/hora.
+- **Backoff em rate limit (429)**: ao receber 429 do Discord, soma 25-55s
+  no `extraDelayMs` antes do próximo tick. Reduz o risco de escalada de
+  ban quando o Discord avisa que estamos rápidos demais.
+
+## Sweep de filas fantasmas
+
+Em `server/engine/runner.ts` (`sweepGhostQueues`):
+
+- A cada 30s, remove `active_queues` com `joined_at` > 12 minutos. Filas
+  que não viram partida nesse tempo quase sempre foram canceladas/resetadas
+  pelo bot da org (fila estourou, alguém saiu, etc) e ficavam como
+  "fantasmas" travando o slot. Resultado prático: as orgs deixavam de
+  receber novas tentativas porque `active_queues` por org `>= max_queues`,
+  mesmo com slots reais livres.
+- Quando o sweep remove algo, força `orgCursor = 0` para o round-robin
+  recomeçar do topo no próximo tick (volta na org 1 e tenta de novo).
+- Atualiza `stats.na_fila` com a contagem real após o sweep.
+
 ## Próximos blocos planejados
 
 - Estatísticas por org (orgs com mais partidas/entradas).

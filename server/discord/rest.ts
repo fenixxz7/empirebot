@@ -108,6 +108,11 @@ export class DiscordRest {
     return this.request<DiscordMessage[]>("GET", `/channels/${channelId}/pins`);
   }
 
+  /** Dispara o "está digitando…" no canal (POST /channels/:id/typing). */
+  triggerTyping(channelId: string) {
+    return this.request<unknown>("POST", `/channels/${channelId}/typing`);
+  }
+
   sendMessage(channelId: string, content: string, imageUrl?: string | null) {
     const body: Record<string, unknown> = {
       content,

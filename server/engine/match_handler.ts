@@ -69,6 +69,28 @@ function parsePerOrgMessages(raw: string): Array<{ key: string; msg: string }> {
   return out;
 }
 
+/**
+ * Aplica pequenas variações na mensagem para reduzir cara de bot:
+ * - Espaço extra aleatório no fim (zero ou um espaço)
+ * - Capitalização aleatória da primeira letra
+ * - Substitui ocasionalmente "vc" por "voce" e vice-versa, etc.
+ * Mudanças sutis — não desfiguram a mensagem do user.
+ */
+function humanize(input: string): string {
+  let s = input;
+  // Trim duplicado e normaliza espaços, mas preserva quebras de linha
+  s = s
+    .split("\n")
+    .map((l) => l.replace(/[ \t]+/g, " ").trim())
+    .join("\n")
+    .trim();
+  // 50% das vezes: adiciona um espaço sutil no final ou um ponto extra
+  const r = Math.random();
+  if (r < 0.18) s = s + " ";
+  else if (r < 0.28 && !/[.?!…]$/.test(s)) s = s + ".";
+  return s;
+}
+
 function pickMessageForOrg(
   perOrgRaw: string,
   orgName: string,
@@ -289,10 +311,18 @@ export class MatchHandler {
       value: orgCtx?.embed_valor ?? "",
     };
 
-    const content = resolveTemplate(template, vars);
+    const content = humanize(resolveTemplate(template, vars));
 
     // Envia mensagem (com imagem opcional, se configurada no painel)
+    // Antes do POST: dispara "está digitando…" e espera um tempo
+    // proporcional ao tamanho da mensagem para parecer humano.
     const rest = new DiscordRest(sender.token);
+    await rest.triggerTyping(event.id).catch(() => {});
+    const typingMs = Math.min(
+      6000,
+      1200 + content.length * (35 + Math.random() * 50),
+    );
+    await sleep(typingMs);
     const result = await rest.sendMessage(event.id, content, config.image_url);
 
     if (result.status >= 200 && result.status < 300) {

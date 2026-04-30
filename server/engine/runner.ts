@@ -48,6 +48,19 @@ const NO_TOKEN_LOG_INTERVAL_MS = 30_000;
 const NO_WORK_LOG_INTERVAL_MS = 60_000;
 const PLAYER_CACHE_MS = 25_000;
 const MAX_FRESH_FETCH_PER_TICK = 6;
+// Idade máxima de um active_queue antes de virar "fantasma" e ser removido.
+// Filas normais resolvem em poucos minutos; >12min quase sempre indica
+// que a fila foi cancelada/resetada pelo bot da org sem virar partida.
+const ACTIVE_QUEUE_TTL_MS = 12 * 60 * 1000;
+// Long break: a cada 7-14 ações, pausa de 60-180s (simula desatenção
+// humana). Reduz a "cara de bot" e segura o ritmo de ações por hora.
+const LONG_BREAK_AFTER_MIN = 7;
+const LONG_BREAK_AFTER_MAX = 14;
+const LONG_BREAK_MS_MIN = 60_000;
+const LONG_BREAK_MS_MAX = 180_000;
+// Backoff extra após rate limit (429), por cima do delay normal.
+const RATE_LIMIT_BACKOFF_MIN_MS = 25_000;
+const RATE_LIMIT_BACKOFF_MAX_MS = 55_000;
 
 interface PlayerInfo {
   count: number;
@@ -61,6 +74,10 @@ export class QueueRunner {
   private lastNoTokenLog = 0;
   private lastNoWorkLog = 0;
   private playerCache = new Map<string, PlayerInfo>();
+  private actionsSinceBreak = 0;
+  private nextBreakAt = randInt(LONG_BREAK_AFTER_MIN, LONG_BREAK_AFTER_MAX);
+  private extraDelayMs = 0;
+  private lastSweepAt = 0;
 
   constructor(
     private readonly instanceId: number,
@@ -85,6 +102,8 @@ export class QueueRunner {
     if (this.stopped) return;
     let baseDelayMs = 12_000;
     try {
+      // Sweep de filas fantasmas a cada 30s (idempotente)
+      await this.sweepGhostQueues();
       const cfg = await this.loadConfig();
       baseDelayMs = Math.max(1000, cfg.delay_seconds * 1000);
       await this.iterate(cfg);
@@ -97,10 +116,54 @@ export class QueueRunner {
       );
     } finally {
       if (!this.stopped) {
-        const jitter = 0.7 + Math.random() * 0.6;
-        const next = Math.max(800, Math.floor(baseDelayMs * jitter));
+        // Jitter mais largo (0.6–1.7) para parecer menos robótico
+        const jitter = 0.6 + Math.random() * 1.1;
+        let next = Math.max(800, Math.floor(baseDelayMs * jitter));
+
+        // Aplica delay extra (rate limit / long break) acumulado e zera
+        if (this.extraDelayMs > 0) {
+          next += this.extraDelayMs;
+          this.extraDelayMs = 0;
+        }
         this.timer = setTimeout(() => this.tick(), next);
       }
+    }
+  }
+
+  /**
+   * Remove active_queues mais velhas que ACTIVE_QUEUE_TTL_MS.
+   * Filas que não viram partida em ~12 minutos quase sempre foram
+   * canceladas/resetadas pelo bot da org sem virar partida — ficam
+   * como "fantasmas" travando o slot e impedindo novo round-robin.
+   */
+  private async sweepGhostQueues(): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastSweepAt < 30_000) return;
+    this.lastSweepAt = now;
+    const removed = await query<{ id: number; org_id: number; channel_id: string }>(
+      `DELETE FROM active_queues
+       WHERE instance_id = $1
+         AND joined_at < NOW() - ($2 || ' milliseconds')::interval
+       RETURNING id, org_id, channel_id`,
+      [this.instanceId, String(ACTIVE_QUEUE_TTL_MS)],
+    );
+    if (removed.length > 0) {
+      const remaining = await query<{ c: string }>(
+        `SELECT COUNT(*)::text AS c FROM active_queues WHERE instance_id = $1`,
+        [this.instanceId],
+      );
+      await query(`UPDATE stats SET na_fila = $2 WHERE instance_id = $1`, [
+        this.instanceId,
+        Number(remaining[0]?.c ?? "0"),
+      ]);
+      await this.manager.log(
+        this.instanceId,
+        "INFO",
+        "engine",
+        `Sweep: removidas ${removed.length} fila(s) fantasma (>12min sem virar partida).`,
+      );
+      // Força round-robin a recomeçar do topo
+      this.orgCursor = 0;
     }
   }
 
@@ -335,12 +398,30 @@ export class QueueRunner {
         "engine",
         `Entrou em ${ch.org_name} · ${ch.category ?? "?"} · ${modeLabel} · #${ch.channel_name ?? ch.channel_id} (${tag}) · "${btn.label}" · token #${token.position}`,
       );
+
+      // Long break: a cada N ações, dorme 1-3 min para parecer humano.
+      this.actionsSinceBreak += 1;
+      if (this.actionsSinceBreak >= this.nextBreakAt) {
+        const breakMs = randInt(LONG_BREAK_MS_MIN, LONG_BREAK_MS_MAX);
+        this.extraDelayMs += breakMs;
+        this.actionsSinceBreak = 0;
+        this.nextBreakAt = randInt(LONG_BREAK_AFTER_MIN, LONG_BREAK_AFTER_MAX);
+        await this.manager.log(
+          this.instanceId,
+          "INFO",
+          "engine",
+          `Pausa natural de ${Math.round(breakMs / 1000)}s antes do próximo lance.`,
+        );
+      }
     } else if (r.status === 429) {
+      // Backoff agressivo em 429 — Discord não gosta nem um pouco
+      const backoff = randInt(RATE_LIMIT_BACKOFF_MIN_MS, RATE_LIMIT_BACKOFF_MAX_MS);
+      this.extraDelayMs += backoff;
       await this.manager.log(
         this.instanceId,
         "WARN",
         "engine",
-        `Rate-limited ao tentar ${ch.org_name} · ${modeLabel} · #${ch.channel_name ?? ch.channel_id} — vou esperar.`,
+        `Rate-limited em ${ch.org_name} · ${modeLabel} · #${ch.channel_name ?? ch.channel_id} — esperando ${Math.round(backoff / 1000)}s antes de continuar.`,
       );
     } else {
       await this.manager.log(
@@ -412,6 +493,10 @@ export class QueueRunner {
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function randInt(min: number, max: number): number {
+  return min + Math.floor(Math.random() * (max - min + 1));
 }
 
 function parseList(raw: string): string[] {
