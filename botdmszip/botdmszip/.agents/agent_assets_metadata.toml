@@ -1,0 +1,20 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "IaqVL6eyIfhSznbCAvvIv"
+uri = "file://output/01_roadmap_imperiuns_bot.pdf"
+type = "pdf"
+title = "Roadmap — Imperiuns Bot (Documento 1/2)"
+
+[[outputs]]
+id = "TGfdGln46uKxRQF6AXIXT"
+uri = "file://output/02_deepdive_imperiuns_bot.pdf"
+type = "pdf"
+title = "Deep Dive — Imperiuns Bot (Documento 2/2)"
+
+[[outputs]]
+id = "D723PFk_ijLWyFLoC4S0e"
+uri = "file://output/03_mapa_mental_imperiuns_bot.pdf"
+type = "pdf"
+title = "Mapa Mental / Workflow — Imperiuns Bot"

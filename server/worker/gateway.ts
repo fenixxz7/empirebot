@@ -1,0 +1,275 @@
+import WebSocket from "ws";
+import { EventEmitter } from "node:events";
+
+const GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json";
+
+export interface ReadyData {
+  user_id: string;
+  username: string;
+  discriminator: string;
+  global_name: string | null;
+  display_handle: string;
+}
+
+type GwEvents =
+  | "ready"
+  | "resumed"
+  | "dispatch"
+  | "close"
+  | "fatal"
+  | "debug";
+
+export class GatewayClient extends EventEmitter {
+  private ws: WebSocket | null = null;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
+  private firstHeartbeatTimer: NodeJS.Timeout | null = null;
+  private heartbeatInterval = 0;
+  private lastSeq: number | null = null;
+  private sessionId: string | null = null;
+  private resumeUrl: string | null = null;
+  private acked = true;
+  private closed = false;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private userId: string | null = null;
+  private ready = false;
+
+  constructor(private readonly token: string, private readonly label = "token") {
+    super();
+  }
+
+  getSessionId(): string | null {
+    return this.sessionId;
+  }
+
+  getUserId(): string | null {
+    return this.userId;
+  }
+
+  isReady(): boolean {
+    return this.ready && !!this.sessionId;
+  }
+
+  on(event: GwEvents, listener: (...args: any[]) => void): this {
+    return super.on(event, listener);
+  }
+
+  start(): void {
+    this.closed = false;
+    this.connect();
+  }
+
+  stop(): void {
+    this.closed = true;
+    this.clearTimers();
+    if (this.ws) {
+      try {
+        this.ws.removeAllListeners();
+        this.ws.close(1000);
+      } catch {
+        /* noop */
+      }
+      this.ws = null;
+    }
+  }
+
+  private connect(): void {
+    let url: string;
+    if (this.resumeUrl) {
+      url = this.resumeUrl.includes("?")
+        ? this.resumeUrl
+        : `${this.resumeUrl}/?v=10&encoding=json`;
+    } else {
+      url = GATEWAY_URL;
+    }
+
+    const ws = new WebSocket(url);
+    this.ws = ws;
+    this.acked = true;
+
+    ws.on("open", () => this.emit("debug", `${this.label} ws open`));
+    ws.on("message", (data) => this.onMessage(data.toString()));
+    ws.on("close", (code, reason) => this.onClose(code, reason.toString()));
+    ws.on("error", (err) =>
+      this.emit("debug", `${this.label} ws error: ${err.message}`),
+    );
+  }
+
+  private onMessage(raw: string): void {
+    let msg: any;
+    try {
+      msg = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (msg.s !== null && msg.s !== undefined) this.lastSeq = msg.s;
+
+    switch (msg.op) {
+      case 10: {
+        // HELLO
+        this.heartbeatInterval = msg.d.heartbeat_interval;
+        this.startHeartbeat();
+        if (this.sessionId && this.resumeUrl) {
+          this.sendResume();
+        } else {
+          this.sendIdentify();
+        }
+        break;
+      }
+      case 11:
+        // HEARTBEAT ACK
+        this.acked = true;
+        break;
+      case 1:
+        // server requested heartbeat
+        this.sendHeartbeat();
+        break;
+      case 7:
+        // RECONNECT
+        this.emit("debug", `${this.label} server asked reconnect`);
+        this.softReconnect();
+        break;
+      case 9:
+        // INVALID SESSION — start fresh after a small delay
+        this.emit("debug", `${this.label} invalid session`);
+        this.sessionId = null;
+        this.resumeUrl = null;
+        setTimeout(() => this.sendIdentify(), 1500 + Math.random() * 3500);
+        break;
+      case 0: {
+        // DISPATCH
+        if (msg.t === "READY") {
+          this.sessionId = msg.d.session_id;
+          this.resumeUrl = msg.d.resume_gateway_url;
+          const user = msg.d.user ?? {};
+          const discriminator = String(user.discriminator ?? "0");
+          const handle =
+            discriminator === "0"
+              ? user.global_name
+                ? `${user.username} (${user.global_name})`
+                : user.username
+              : `${user.username}#${discriminator}`;
+          const ready: ReadyData = {
+            user_id: String(user.id ?? ""),
+            username: String(user.username ?? ""),
+            discriminator,
+            global_name: user.global_name ?? null,
+            display_handle: handle,
+          };
+          this.userId = ready.user_id;
+          this.ready = true;
+          this.emit("ready", ready);
+        } else if (msg.t === "RESUMED") {
+          this.ready = true;
+          this.emit("resumed");
+        } else {
+          this.emit("dispatch", msg.t, msg.d);
+        }
+        break;
+      }
+    }
+  }
+
+  private startHeartbeat(): void {
+    this.clearHeartbeat();
+    const jitter = Math.random();
+    this.firstHeartbeatTimer = setTimeout(() => {
+      this.sendHeartbeat();
+      this.heartbeatTimer = setInterval(() => {
+        if (!this.acked) {
+          this.emit("debug", `${this.label} heartbeat not acked, reconnecting`);
+          this.softReconnect();
+          return;
+        }
+        this.sendHeartbeat();
+      }, this.heartbeatInterval);
+    }, this.heartbeatInterval * jitter);
+  }
+
+  private sendHeartbeat(): void {
+    this.acked = false;
+    this.send({ op: 1, d: this.lastSeq });
+  }
+
+  private sendIdentify(): void {
+    this.send({
+      op: 2,
+      d: {
+        token: this.token,
+        properties: {
+          $os: "linux",
+          $browser: "chrome",
+          $device: "chrome",
+        },
+        compress: false,
+        large_threshold: 50,
+      },
+    });
+  }
+
+  private sendResume(): void {
+    this.send({
+      op: 6,
+      d: {
+        token: this.token,
+        session_id: this.sessionId,
+        seq: this.lastSeq,
+      },
+    });
+  }
+
+  private send(payload: unknown): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(JSON.stringify(payload));
+    } catch (err) {
+      this.emit("debug", `${this.label} send fail: ${(err as Error).message}`);
+    }
+  }
+
+  private softReconnect(): void {
+    if (this.ws) {
+      try {
+        this.ws.close(4000);
+      } catch {
+        /* noop */
+      }
+    }
+  }
+
+  private onClose(code: number, reason: string): void {
+    this.ready = false;
+    this.emit("close", code, reason);
+    this.clearHeartbeat();
+    this.ws = null;
+    if (this.closed) return;
+
+    // Codes that mean "do not reconnect"
+    const fatal = [4004, 4010, 4011, 4012, 4013, 4014];
+    if (fatal.includes(code)) {
+      this.emit("fatal", code);
+      return;
+    }
+
+    const delay = 2000 + Math.random() * 3000;
+    this.reconnectTimer = setTimeout(() => this.connect(), delay);
+  }
+
+  private clearHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    if (this.firstHeartbeatTimer) {
+      clearTimeout(this.firstHeartbeatTimer);
+      this.firstHeartbeatTimer = null;
+    }
+  }
+
+  private clearTimers(): void {
+    this.clearHeartbeat();
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+}
