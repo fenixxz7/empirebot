@@ -61,17 +61,6 @@ export interface Token {
   username: string | null;
 }
 
-export interface InstanceConfig {
-  category: Category;
-  delay_seconds: number;
-  rotation_minutes: number;
-  allowed_modes: string[];
-  selected_org_ids: number[];
-  message_main: string;
-  message_per_org: string;
-  image_url: string | null;
-}
-
 export interface InstanceState {
   id: number;
   name: string;

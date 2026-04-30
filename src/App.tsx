@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { InstanceState } from "@shared/types";
 import { api } from "@/lib/api";
 import { Header } from "@/components/Header";
@@ -8,21 +8,85 @@ import { ConfigForm } from "@/components/ConfigForm";
 import { LogsConsole } from "@/components/LogsConsole";
 
 export function App() {
-  const [instance, setInstance] = useState<InstanceState | null>(null);
+  const [instances, setInstances] = useState<InstanceState[]>([]);
+  const [activeIdx, setActiveIdx] = useState(0);
+  const wsRefs = useRef<Map<number, WebSocket>>(new Map());
+
+  const instance = instances[activeIdx] ?? null;
 
   async function reload() {
     try {
       const list = await api<InstanceState[]>("/api/instances");
-      setInstance(list[0] ?? null);
+      setInstances(list);
     } catch (e) {
       console.error(e);
     }
   }
 
+  // Connect WebSocket for each instance and listen for stats updates
+  const connectWs = useCallback((inst: InstanceState) => {
+    if (wsRefs.current.has(inst.id)) return;
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const ws = new WebSocket(`${proto}://${location.host}/ws/${inst.id}`);
+    wsRefs.current.set(inst.id, ws);
+
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === "stats") {
+          const p = msg.payload;
+          setInstances((prev) =>
+            prev.map((item) =>
+              item.id === inst.id
+                ? {
+                    ...item,
+                    running: p.running ?? item.running,
+                    connected: p.connected ?? item.connected,
+                    user_handle: p.user_handle ?? item.user_handle,
+                    uptime_seconds: p.uptime_seconds ?? item.uptime_seconds,
+                    stats: {
+                      entradas: p.entradas ?? item.stats.entradas,
+                      na_fila: p.na_fila ?? item.stats.na_fila,
+                      partidas: p.partidas ?? item.stats.partidas,
+                      dms: p.dms ?? item.stats.dms,
+                    },
+                  }
+                : item,
+            ),
+          );
+        }
+      } catch { /* noop */ }
+    };
+
+    ws.onclose = () => {
+      wsRefs.current.delete(inst.id);
+      // Reconnect after 3s
+      setTimeout(() => {
+        if (wsRefs.current.has(inst.id)) return;
+        connectWs(inst);
+      }, 3000);
+    };
+    ws.onerror = () => ws.close();
+  }, []);
+
   useEffect(() => {
     reload();
-    const id = setInterval(reload, 2000);
+    const id = setInterval(reload, 5000);
     return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    for (const inst of instances) {
+      connectWs(inst);
+    }
+  }, [instances.map((i) => i.id).join(",")]);
+
+  useEffect(() => {
+    return () => {
+      for (const ws of wsRefs.current.values()) {
+        ws.close();
+      }
+    };
   }, []);
 
   async function toggle() {
@@ -43,6 +107,28 @@ export function App() {
   return (
     <div className="min-h-screen px-4 sm:px-6 lg:px-10 py-8">
       <div className="mx-auto max-w-5xl space-y-6">
+        {/* Instance tabs */}
+        {instances.length > 1 && (
+          <div className="flex gap-2">
+            {instances.map((inst, idx) => (
+              <button
+                key={inst.id}
+                onClick={() => setActiveIdx(idx)}
+                className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
+                  idx === activeIdx
+                    ? "bg-emerald-500 text-black"
+                    : "bg-white/10 text-slate-300 hover:bg-white/20"
+                }`}
+              >
+                {inst.name}
+                {inst.running && (
+                  <span className="ml-2 inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+
         <Header instance={instance} />
 
         <div className="grid lg:grid-cols-2 gap-6">

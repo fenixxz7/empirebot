@@ -8,7 +8,11 @@ servidores Discord. Reconstrução do projeto original do usuário.
 - Node 20 + TypeScript (ESM), Express + Vite middleware (mesmo processo, porta 5000)
 - React 18 + TailwindCSS, tema dark navy
 - PostgreSQL via `pg`
-- WebSocket (`ws`) para conexão direta com o Discord Gateway
+- WebSocket (`ws`) para conexão direta com o Discord Gateway e para streaming em tempo real de stats/logs para o painel (`/ws/:instanceId`)
+
+## Instâncias
+
+O sistema seed dois bots: BOT1 e BOT2. O painel mostra abas de instância no topo para alternar entre elas.
 
 ## Comandos
 

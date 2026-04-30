@@ -3,10 +3,11 @@ import express from "express";
 import { createServer as createHttpServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { WebSocketServer, WebSocket } from "ws";
 import { initDatabase } from "./db/init.js";
 import { mountApi } from "./routes/index.js";
 import { query } from "./db/pool.js";
-import { manager } from "./worker/manager.js";
+import { manager, setWsServer } from "./worker/manager.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 5000);
@@ -29,6 +30,25 @@ async function main() {
   mountApi(app);
 
   const httpServer = createHttpServer(app);
+
+  // WebSocket server — /ws/:instanceId
+  const wss = new WebSocketServer({ noServer: true });
+  setWsServer(wss);
+
+  httpServer.on("upgrade", (req, socket, head) => {
+    const url = req.url ?? "";
+    const m = url.match(/^\/ws\/(\d+)$/);
+    if (!m) return; // Let Vite (HMR) handle other upgrade requests
+    const instanceId = Number(m[1]);
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit("connection", ws, req, instanceId);
+    });
+  });
+
+  wss.on("connection", (ws: WebSocket, _req: unknown, instanceId: number) => {
+    (ws as any).__instanceId = instanceId;
+    ws.on("error", () => {/* noop */});
+  });
 
   if (isProd) {
     const distPath = path.join(__dirname, "..", "dist");

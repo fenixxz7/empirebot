@@ -3,6 +3,27 @@ import { query } from "../db/pool.js";
 import { QueueRunner, type ActiveToken } from "../engine/runner.js";
 import { MatchHandler, type MatchToken } from "../engine/match_handler.js";
 import { runAutoDiscoveryForInstance } from "../discord/discovery.js";
+import type { WebSocketServer } from "ws";
+import { WebSocket } from "ws";
+
+let _wss: WebSocketServer | null = null;
+
+export function setWsServer(wss: WebSocketServer) {
+  _wss = wss;
+}
+
+function broadcast(instanceId: number, payload: unknown) {
+  if (!_wss) return;
+  const msg = JSON.stringify(payload);
+  for (const client of _wss.clients) {
+    if (
+      (client as any).__instanceId === instanceId &&
+      client.readyState === WebSocket.OPEN
+    ) {
+      try { client.send(msg); } catch { /* noop */ }
+    }
+  }
+}
 
 interface WorkerEntry {
   tokenId: number;
@@ -263,15 +284,68 @@ class Manager {
     message: string,
   ): Promise<void> => {
     try {
-      await query(
+      const rows = await query<{ id: number; ts: string }>(
         `INSERT INTO logs (instance_id, level, source, message)
-         VALUES ($1, $2, $3, $4)`,
+         VALUES ($1, $2, $3, $4)
+         RETURNING id, to_char(ts AT TIME ZONE 'America/Sao_Paulo', 'HH24:MI:SS') AS ts`,
         [instanceId, level, source, message],
       );
+      const row = rows[0];
+      if (row) {
+        broadcast(instanceId, {
+          type: "log",
+          payload: { id: row.id, ts: row.ts, level, source, message },
+        });
+      }
     } catch {
       /* noop */
     }
+    // Broadcast stats snapshot after every log entry
+    this.broadcastStats(instanceId).catch(() => {});
   };
+
+  private async broadcastStats(instanceId: number): Promise<void> {
+    try {
+      const rows = await query<{
+        running: boolean; entradas: number; na_fila: number;
+        partidas: number; dms: number; started_at: string | null;
+        tokens_active: number; first_handle: string | null;
+      }>(`
+        SELECT i.running,
+               s.entradas, s.na_fila, s.partidas, s.dms, s.started_at,
+               COALESCE(t.active, 0) AS tokens_active,
+               t.first_handle
+        FROM instances i
+        LEFT JOIN stats s ON s.instance_id = i.id
+        LEFT JOIN (
+          SELECT instance_id,
+                 COUNT(*) FILTER (WHERE status = 'connected')::int AS active,
+                 (ARRAY_AGG(username ORDER BY position ASC)
+                   FILTER (WHERE status = 'connected'))[1] AS first_handle
+          FROM tokens GROUP BY instance_id
+        ) t ON t.instance_id = i.id
+        WHERE i.id = $1
+      `, [instanceId]);
+      const r = rows[0];
+      if (!r) return;
+      const startedAt = r.started_at ? new Date(r.started_at).getTime() : null;
+      const uptime = r.running && startedAt
+        ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0;
+      broadcast(instanceId, {
+        type: "stats",
+        payload: {
+          running: r.running,
+          connected: (r.tokens_active ?? 0) > 0,
+          user_handle: r.first_handle ?? null,
+          uptime_seconds: uptime,
+          entradas: r.entradas ?? 0,
+          na_fila: r.na_fila ?? 0,
+          partidas: r.partidas ?? 0,
+          dms: r.dms ?? 0,
+        },
+      });
+    } catch { /* noop */ }
+  }
 
 }
 
