@@ -1,0 +1,14 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "3rFZDVOu39HyVyqGF0Ahk"
+uri = "file://imperiuns-bot.tar.gz"
+type = "unspecified"
+title = "imperiuns-bot.tar.gz — Pacote VPS"
+
+[[outputs]]
+id = "Ub334mmZh5ydR-y5H5DE1"
+uri = "file://README.md"
+type = "text"
+title = "README.md — Documentação completa"
