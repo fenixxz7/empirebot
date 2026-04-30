@@ -192,6 +192,22 @@ src/                  React app (App, components, lib/api)
     `manager.updateRotationMinutes` na hora (sem precisar reiniciar bot).
   - UI (`src/components/StatsGrid.tsx`): card "Próxima rotação" aparece ao
     lado do Uptime quando a instância está rodando e tem >1 token ativo.
+- **MatchPoller (`server/engine/match_poller.ts`) — fallback de detecção
+  via REST**: o gateway Discord às vezes não dispatcha `CHANNEL_CREATE`/
+  `THREAD_CREATE` para selfbots (especialmente em guilds grandes ou para
+  threads privadas), então a tabela `matches` ficava vazia mesmo com filas
+  acontecendo. O poller roda a cada 8s por instância:
+  - Para cada org selecionada com `guild_id`, faz `GET /guilds/:gid/channels`
+    e `GET /guilds/:gid/threads/active`.
+  - Filtra por nome (`partida-N`, `sua-partida-N`, `fila-N`) e tipo (texto
+    para partidas, threads p/ filas).
+  - Verifica se algum dos nossos `userId` aparece nas
+    `permission_overwrites` (canal de texto) ou se a thread vem com a flag
+    de "membro" (active threads endpoint).
+  - Cache local de 30 min de IDs já vistos para não reprocessar; a tabela
+    `matches` (UNIQUE) garante idempotência mesmo se o cache reseta.
+  - Dispara o mesmo `MatchHandler.onChannelCreate` que o gateway usa,
+    então toda a lógica (mensagem, imagem, stats) é compartilhada.
 - **Imagem na mensagem de partida** (`server/discord/rest.ts`,
   `server/engine/match_handler.ts`): novo campo `instance_configs.image_url`.
   Se preenchido, `sendMessage` anexa um embed com `{ image: { url } }` na

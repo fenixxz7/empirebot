@@ -2,6 +2,7 @@ import { GatewayClient, type ReadyData } from "./gateway.js";
 import { query } from "../db/pool.js";
 import { QueueRunner, type ActiveToken } from "../engine/runner.js";
 import { MatchHandler, type MatchToken } from "../engine/match_handler.js";
+import { MatchPoller } from "../engine/match_poller.js";
 import { runAutoDiscoveryForInstance } from "../discord/discovery.js";
 import { DiscordRest } from "../discord/rest.js";
 import type { WebSocketServer } from "ws";
@@ -45,6 +46,7 @@ class Manager {
   private workers = new Map<number, WorkerEntry[]>();
   private runners = new Map<number, QueueRunner>();
   private matchHandlers = new Map<number, MatchHandler>();
+  private matchPollers = new Map<number, MatchPoller>();
   private discoveryRan = new Set<number>();
   private rotation = new Map<number, RotationState>();
   private rotationTimer: NodeJS.Timeout | null = null;
@@ -267,6 +269,14 @@ class Manager {
     const runner = new QueueRunner(instanceId, this);
     this.runners.set(instanceId, runner);
     runner.start();
+
+    // Poller REST como fallback do gateway p/ detectar partidas/filas
+    const poller = new MatchPoller(instanceId, {
+      log: (id, level, source, message) => this.log(id, level, source, message),
+      getMatchTokens: (id) => this.buildMatchTokens(id),
+    }, matchHandler);
+    this.matchPollers.set(instanceId, poller);
+    poller.start();
   }
 
   async stop(instanceId: number): Promise<void> {
@@ -290,6 +300,11 @@ class Manager {
     if (runner) {
       runner.stop();
       this.runners.delete(instanceId);
+    }
+    const poller = this.matchPollers.get(instanceId);
+    if (poller) {
+      poller.stop();
+      this.matchPollers.delete(instanceId);
     }
     this.matchHandlers.delete(instanceId);
     await query(`DELETE FROM active_queues WHERE instance_id = $1`, [

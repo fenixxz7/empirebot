@@ -83,6 +83,13 @@ export class DiscordRest {
     return this.request<DiscordChannel[]>("GET", `/guilds/${guildId}/channels`);
   }
 
+  listGuildActiveThreads(guildId: string) {
+    return this.request<{
+      threads: DiscordChannel[];
+      members: Array<{ id: string; user_id: string }>;
+    }>("GET", `/guilds/${guildId}/threads/active`);
+  }
+
   channelMessages(channelId: string, limit = 25) {
     return this.request<DiscordMessage[]>(
       "GET",
@@ -159,6 +166,10 @@ export interface DiscordChannel {
   name: string;
   parent_id: string | null;
   position?: number;
+  guild_id?: string;
+  permission_overwrites?: Array<{ id: string; type: number; allow?: string; deny?: string }>;
+  thread_metadata?: { archived?: boolean; locked?: boolean };
+  member?: { user_id?: string };
 }
 
 export interface DiscordEmbed {
