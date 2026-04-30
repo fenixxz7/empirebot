@@ -98,6 +98,17 @@ messagesRouter.delete("/:instanceId/:msgId", async (req, res) => {
   res.json({ ok: true });
 });
 
+messagesRouter.get("/:instanceId/queue/snapshot", async (req, res) => {
+  const id = Number(req.params.instanceId);
+  const responder = dmResponders.get(id);
+  if (!responder) {
+    res.json({ enabled: false, processing: null, waiting: [], respondedToday: 0, respondedTotal: 0 });
+    return;
+  }
+  const snapshot = await responder.getSnapshot();
+  res.json(snapshot);
+});
+
 messagesRouter.delete("/:instanceId/responded/clear", async (req, res) => {
   const id = Number(req.params.instanceId);
   await query(`DELETE FROM dm_responded WHERE instance_id = $1`, [id]);
