@@ -421,6 +421,12 @@ export class QueueRunner {
         `UPDATE tokens SET last_used_at = NOW() WHERE id = $1`,
         [token.tokenId],
       );
+      // Grava histórico de entradas para estatísticas por org/período
+      await query(
+        `INSERT INTO queue_joins (instance_id, org_id, org_name, mode, category)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [this.instanceId, ch.org_id, ch.org_name, ch.mode, ch.category],
+      );
       this.playerCache.delete(`${ch.channel_id}:${ch.message_id}`);
       await this.manager.log(
         this.instanceId,

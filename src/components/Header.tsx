@@ -10,13 +10,19 @@ export function Header({ instance }: { instance: InstanceState | null }) {
           <CrownIcon className="w-6 h-6 text-accent" />
         </div>
         <div className="flex-1">
-          <div className="flex items-baseline gap-3">
+          <div className="flex items-baseline gap-3 flex-wrap">
             <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
               IMPERIUNS
             </h1>
             <span className="text-[11px] uppercase tracking-[0.3em] text-slate-400">
               Painel de Controle
             </span>
+            <a
+              href="/stats"
+              className="ml-auto text-[11px] uppercase tracking-widest text-violet-400 hover:text-violet-300 transition-colors border border-violet-500/30 hover:border-violet-400/50 rounded-lg px-3 py-1"
+            >
+              📊 Statistics
+            </a>
           </div>
           <div className="mt-2 flex flex-wrap gap-2">
             <span className={connected ? "pill-ok" : "pill-stop"}>

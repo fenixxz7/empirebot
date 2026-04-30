@@ -115,6 +115,23 @@ export async function initDatabase(): Promise<void> {
     )
   `);
 
+  // Histórico de entradas por org (para estatísticas por período)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS queue_joins (
+      id          BIGSERIAL PRIMARY KEY,
+      instance_id INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+      org_id      INTEGER REFERENCES orgs(id) ON DELETE SET NULL,
+      org_name    TEXT,
+      mode        TEXT,
+      category    TEXT,
+      joined_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS queue_joins_instance_joined
+      ON queue_joins (instance_id, joined_at DESC)
+  `);
+
   // Garante que ninguém ficou com fila "fantasma" entre boots
   await pool.query(`DELETE FROM active_queues`);
 
