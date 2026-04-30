@@ -21,6 +21,7 @@ interface ChannelRow {
   mode: string | null;
   message_id: string;
   embed_title: string | null;
+  embed_valor: string | null;
   application_id: string | null;
   buttons: Array<{
     label: string;
@@ -297,7 +298,9 @@ export class QueueRunner {
 
     const success = r.status >= 200 && r.status < 300;
     const tag = playersInQueue > 0 ? `🎯 com ${playersInQueue} player(s)` : "vazia (esperando)";
-    const queueLabel = ch.embed_title ? ` · "${ch.embed_title}"` : "";
+    const modeLabel = ch.embed_valor
+      ? `${ch.mode ?? "?"} | ${ch.embed_valor}`
+      : (ch.mode ?? "?");
 
     if (success) {
       await query(
@@ -329,21 +332,21 @@ export class QueueRunner {
         this.instanceId,
         "INFO",
         "engine",
-        `Entrou em ${ch.org_name} · ${ch.category ?? "?"} · ${ch.mode ?? "?"} · #${ch.channel_name ?? ch.channel_id}${queueLabel} (${tag}) · "${btn.label}" · token #${token.position}`,
+        `Entrou em ${ch.org_name} · ${ch.category ?? "?"} · ${modeLabel} · #${ch.channel_name ?? ch.channel_id} (${tag}) · "${btn.label}" · token #${token.position}`,
       );
     } else if (r.status === 429) {
       await this.manager.log(
         this.instanceId,
         "WARN",
         "engine",
-        `Rate-limited ao tentar ${ch.org_name} · ${ch.channel_name ?? ch.channel_id}${queueLabel} — vou esperar.`,
+        `Rate-limited ao tentar ${ch.org_name} · ${modeLabel} · #${ch.channel_name ?? ch.channel_id} — vou esperar.`,
       );
     } else {
       await this.manager.log(
         this.instanceId,
         "ERROR",
         "engine",
-        `Falhou ${ch.org_name} · ${ch.channel_name ?? ch.channel_id}${queueLabel}: HTTP ${r.status} ${r.error?.slice(0, 120) ?? ""}`,
+        `Falhou ${ch.org_name} · ${modeLabel} · #${ch.channel_name ?? ch.channel_id}: HTTP ${r.status} ${r.error?.slice(0, 120) ?? ""}`,
       );
     }
   }
@@ -361,6 +364,7 @@ export class QueueRunner {
       mode: string | null;
       message_id: string;
       embed_title: string | null;
+      embed_valor: string | null;
       application_id: string | null;
       buttons: ChannelRow["buttons"];
       org_id: number;
@@ -369,7 +373,7 @@ export class QueueRunner {
       max_queues: number;
     }>(
       `SELECT oc.channel_id, oc.channel_name, oc.category, oc.mode, oc.message_id,
-              oc.embed_title, oc.application_id, oc.buttons,
+              oc.embed_title, oc.embed_valor, oc.application_id, oc.buttons,
               o.id AS org_id, o.name AS org_name,
               o.guild_id, o.max_queues
        FROM org_channels oc

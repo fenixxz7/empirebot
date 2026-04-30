@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS org_channels (
   mode            TEXT,
   message_id      TEXT NOT NULL DEFAULT '',
   embed_title     TEXT,
+  embed_valor     TEXT,
   application_id  TEXT,
   buttons         JSONB NOT NULL DEFAULT '[]'::jsonb,
   last_scanned_at TIMESTAMPTZ,

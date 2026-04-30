@@ -93,10 +93,19 @@ function extractEmbedTitle(msg: DiscordMessage): string | null {
   for (const e of msg.embeds ?? []) {
     if (e.title) return e.title.trim();
     if (e.description) {
-      // Pega a primeira linha não-vazia da description (ex: "1x1 Mobile R$100,00")
       const first = e.description.split("\n").map((l) => l.trim()).find(Boolean);
       if (first) return first.slice(0, 120);
     }
+  }
+  return null;
+}
+
+function extractEmbedValor(msg: DiscordMessage): string | null {
+  for (const e of msg.embeds ?? []) {
+    const field = (e.fields ?? []).find(
+      (f) => f.name.toLowerCase().includes("valor") || f.name.toLowerCase().includes("value"),
+    );
+    if (field) return field.value.trim();
   }
   return null;
 }
@@ -169,17 +178,19 @@ export async function discoverOrg(
 
       const applicationId = queueMsg.author?.id ?? null;
       const embedTitle = extractEmbedTitle(queueMsg);
+      const embedValor = extractEmbedValor(queueMsg);
 
       await query(
         `INSERT INTO org_channels (org_id, channel_id, channel_name, category, mode,
-                                   message_id, embed_title, application_id, buttons,
+                                   message_id, embed_title, embed_valor, application_id, buttons,
                                    last_scanned_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, NOW())
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, NOW())
          ON CONFLICT (org_id, channel_id, message_id) DO UPDATE
            SET channel_name = EXCLUDED.channel_name,
                category = EXCLUDED.category,
                mode = EXCLUDED.mode,
                embed_title = EXCLUDED.embed_title,
+               embed_valor = EXCLUDED.embed_valor,
                application_id = EXCLUDED.application_id,
                buttons = EXCLUDED.buttons,
                last_scanned_at = NOW()`,
@@ -191,6 +202,7 @@ export async function discoverOrg(
           mode,
           queueMsg.id,
           embedTitle,
+          embedValor,
           applicationId,
           JSON.stringify(buttons),
         ],

@@ -34,6 +34,9 @@ export async function initDatabase(): Promise<void> {
   await pool.query(
     `ALTER TABLE org_channels ADD COLUMN IF NOT EXISTS embed_title TEXT`,
   );
+  await pool.query(
+    `ALTER TABLE org_channels ADD COLUMN IF NOT EXISTS embed_valor TEXT`,
+  );
   // Cada canal pode ter VÁRIAS filas (mensagens) — chave única vira (org, canal, msg)
   await pool.query(
     `ALTER TABLE org_channels ALTER COLUMN message_id SET DEFAULT ''`,
