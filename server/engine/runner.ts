@@ -58,7 +58,6 @@ export class QueueRunner {
   private timer: NodeJS.Timeout | null = null;
   private stopped = false;
   private orgCursor = 0;
-  private tokenRotation = 0;
   private lastNoTokenLog = 0;
   private lastNoWorkLog = 0;
   private playerCache = new Map<string, PlayerInfo>();
@@ -71,7 +70,6 @@ export class QueueRunner {
   start(): void {
     this.stopped = false;
     this.orgCursor = 0;
-    this.tokenRotation = 0;
     this.timer = setTimeout(() => this.tick(), STARTUP_GRACE_MS);
   }
 
@@ -216,7 +214,7 @@ export class QueueRunner {
         continue;
       }
 
-      const token = tokens[this.tokenRotation % tokens.length];
+      const token = tokens[0]!;
       const ranked = await this.rankCandidatesByPlayers(eligible, token.token);
       candidate = ranked.choice;
       candidatePlayers = ranked.players;
@@ -234,8 +232,7 @@ export class QueueRunner {
       return;
     }
 
-    const token = tokens[this.tokenRotation % tokens.length];
-    this.tokenRotation = (this.tokenRotation + 1) % Math.max(1, tokens.length);
+    const token = tokens[0]!;
 
     await sleep(350 + Math.floor(Math.random() * 1150));
 

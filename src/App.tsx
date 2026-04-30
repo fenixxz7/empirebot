@@ -44,6 +44,8 @@ export function App() {
                     connected: p.connected ?? item.connected,
                     user_handle: p.user_handle ?? item.user_handle,
                     uptime_seconds: p.uptime_seconds ?? item.uptime_seconds,
+                    next_rotation_seconds:
+                      p.next_rotation_seconds ?? item.next_rotation_seconds,
                     stats: {
                       entradas: p.entradas ?? item.stats.entradas,
                       na_fila: p.na_fila ?? item.stats.na_fila,

@@ -33,11 +33,21 @@ interface WorkerEntry {
   client: GatewayClient;
 }
 
+interface RotationState {
+  index: number;
+  startedAt: number;
+  minutes: number;
+}
+
+const ROTATION_TICK_MS = 5_000;
+
 class Manager {
   private workers = new Map<number, WorkerEntry[]>();
   private runners = new Map<number, QueueRunner>();
   private matchHandlers = new Map<number, MatchHandler>();
   private discoveryRan = new Set<number>();
+  private rotation = new Map<number, RotationState>();
+  private rotationTimer: NodeJS.Timeout | null = null;
 
   private async runAutoDiscovery(
     instanceId: number,
@@ -67,6 +77,19 @@ class Manager {
 
   async start(instanceId: number): Promise<void> {
     await this.stopInternal(instanceId, /* logStop */ false);
+
+    // Carrega rotation_minutes da config para iniciar o ciclo de rotação
+    const cfgRows = await query<{ rotation_minutes: number }>(
+      `SELECT rotation_minutes FROM instance_configs WHERE instance_id = $1`,
+      [instanceId],
+    );
+    const rotationMinutes = Math.max(1, cfgRows[0]?.rotation_minutes ?? 90);
+    this.rotation.set(instanceId, {
+      index: 0,
+      startedAt: Date.now(),
+      minutes: rotationMinutes,
+    });
+    this.ensureRotationLoop();
 
     const tokens = await query<{ id: number; value: string; position: number }>(
       `SELECT id, value, position FROM tokens
@@ -256,6 +279,11 @@ class Manager {
   ): Promise<void> {
     // Limpa flag de descoberta para o próximo start poder rodar de novo
     this.discoveryRan.delete(instanceId);
+    this.rotation.delete(instanceId);
+    if (this.rotation.size === 0 && this.rotationTimer) {
+      clearInterval(this.rotationTimer);
+      this.rotationTimer = null;
+    }
 
     // Para o motor de filas e o detector de partidas
     const runner = this.runners.get(instanceId);
@@ -328,16 +356,17 @@ class Manager {
   /**
    * Retorna a lista de tokens conectados (com session_id válido) para
    * uma instância — usado pelo motor de filas pra clicar nos botões.
+   * A ordem começa pelo token "ativo" da rotação atual.
    */
   getActiveTokens(instanceId: number): ActiveToken[] {
     const entries = this.workers.get(instanceId) ?? [];
-    const out: ActiveToken[] = [];
+    const ready: ActiveToken[] = [];
     for (const e of entries) {
       if (!e.client.isReady()) continue;
       const sessionId = e.client.getSessionId();
       const userId = e.client.getUserId();
       if (!sessionId || !userId) continue;
-      out.push({
+      ready.push({
         tokenId: e.tokenId,
         position: e.position,
         token: e.token,
@@ -345,7 +374,60 @@ class Manager {
         userId,
       });
     }
-    return out;
+    if (ready.length === 0) return ready;
+    const rot = this.rotation.get(instanceId);
+    const idx = rot ? rot.index % ready.length : 0;
+    if (idx === 0) return ready;
+    return [...ready.slice(idx), ...ready.slice(0, idx)];
+  }
+
+  /** Segundos até o próximo swap de token na rotação. */
+  getNextRotationSeconds(instanceId: number): number {
+    const rot = this.rotation.get(instanceId);
+    if (!rot) return 0;
+    const total = rot.minutes * 60;
+    const elapsed = (Date.now() - rot.startedAt) / 1000;
+    return Math.max(0, Math.floor(total - elapsed));
+  }
+
+  /** Atualiza rotation_minutes em memória (chamado quando a config é salva). */
+  updateRotationMinutes(instanceId: number, minutes: number): void {
+    const rot = this.rotation.get(instanceId);
+    if (!rot) return;
+    rot.minutes = Math.max(1, minutes);
+  }
+
+  private ensureRotationLoop(): void {
+    if (this.rotationTimer) return;
+    this.rotationTimer = setInterval(() => {
+      for (const instanceId of this.rotation.keys()) {
+        this.tickRotation(instanceId).catch((err) =>
+          console.error("[rotation]", err),
+        );
+      }
+    }, ROTATION_TICK_MS);
+  }
+
+  private async tickRotation(instanceId: number): Promise<void> {
+    const rot = this.rotation.get(instanceId);
+    if (!rot) return;
+    const elapsed = Date.now() - rot.startedAt;
+    if (elapsed < rot.minutes * 60_000) return;
+
+    const ready = (this.workers.get(instanceId) ?? []).filter((w) =>
+      w.client.isReady(),
+    );
+    rot.startedAt = Date.now();
+    if (ready.length <= 1) return;
+
+    rot.index = (rot.index + 1) % ready.length;
+    const next = ready[rot.index]!;
+    await this.log(
+      instanceId,
+      "INFO",
+      "worker",
+      `Rotação de tokens: agora usando token #${next.position}${next.client.getUserId() ? ` (${next.client.getUserId()})` : ""} — próximo swap em ${rot.minutes} min`,
+    );
   }
 
   log = async (
@@ -413,6 +495,7 @@ class Manager {
           na_fila: r.na_fila ?? 0,
           partidas: r.partidas ?? 0,
           dms: r.dms ?? 0,
+          next_rotation_seconds: this.getNextRotationSeconds(instanceId),
         },
       });
     } catch { /* noop */ }

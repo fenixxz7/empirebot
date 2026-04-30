@@ -60,6 +60,7 @@ export function ConfigForm({
   const [allowedModes, setAllowedModes] = useState("1x1\n3x3");
   const [messageMain, setMessageMain] = useState("");
   const [messagePerOrg, setMessagePerOrg] = useState("");
+  const [imageUrl, setImageUrl] = useState("");
   const [selectedOrgIds, setSelectedOrgIds] = useState<Set<number>>(new Set());
   const [feedback, setFeedback] = useState<string | null>(null);
   const [openOrgId, setOpenOrgId] = useState<number | null>(null);
@@ -88,6 +89,7 @@ export function ConfigForm({
       setAllowedModes(cfg.config.allowed_modes);
       setMessageMain(cfg.config.message_main);
       setMessagePerOrg(cfg.config.message_per_org);
+      setImageUrl(cfg.config.image_url ?? "");
     }
     setSelectedOrgIds(new Set(cfg.selected_org_ids));
     setLoading(false);
@@ -230,7 +232,7 @@ export function ConfigForm({
           allowed_modes: allowedModes,
           message_main: messageMain,
           message_per_org: messagePerOrg,
-          image_url: null,
+          image_url: imageUrl.trim() || null,
           tokens_raw: tokensRaw,
           selected_org_ids: Array.from(selectedOrgIds),
         }),
@@ -564,6 +566,32 @@ export function ConfigForm({
         <p className="text-xs text-slate-500 mt-2">
           Prioridade por org. Aceita nome da org ou guild_id.
         </p>
+      </Section>
+
+      <Section title="Imagem na mensagem (URL)">
+        <input
+          className="input"
+          type="url"
+          placeholder="https://… (deixe vazio para enviar só texto)"
+          value={imageUrl}
+          onChange={(e) => setImageUrl(e.target.value)}
+        />
+        <p className="text-xs text-slate-500 mt-2">
+          Cole a URL pública de uma imagem (PNG/JPG/GIF). Ela vai junto com a
+          mensagem dentro da partida, em todas as orgs.
+        </p>
+        {imageUrl.trim() && (
+          <div className="mt-3">
+            <img
+              src={imageUrl.trim()}
+              alt="preview"
+              className="max-h-32 rounded-lg border border-white/10 bg-navy-950/40"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).style.display = "none";
+              }}
+            />
+          </div>
+        )}
       </Section>
 
       <div className="flex flex-col gap-3">

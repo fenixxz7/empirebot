@@ -101,11 +101,19 @@ export class DiscordRest {
     return this.request<DiscordMessage[]>("GET", `/channels/${channelId}/pins`);
   }
 
-  sendMessage(channelId: string, content: string) {
-    return this.request<{ id: string }>("POST", `/channels/${channelId}/messages`, {
+  sendMessage(channelId: string, content: string, imageUrl?: string | null) {
+    const body: Record<string, unknown> = {
       content,
       allowed_mentions: { parse: ["users"] },
-    });
+    };
+    if (imageUrl && imageUrl.trim()) {
+      body.embeds = [{ image: { url: imageUrl.trim() } }];
+    }
+    return this.request<{ id: string }>(
+      "POST",
+      `/channels/${channelId}/messages`,
+      body,
+    );
   }
 
   /**

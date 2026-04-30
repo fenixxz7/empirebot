@@ -58,7 +58,7 @@ instancesRouter.get("/", async (_req, res) => {
       },
       tokens_active: r.tokens_active ?? 0,
       tokens_total: r.tokens_total ?? 0,
-      next_rotation_seconds: 0,
+      next_rotation_seconds: manager.getNextRotationSeconds(r.id),
     };
   });
 

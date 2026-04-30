@@ -143,6 +143,11 @@ configRouter.put("/:instanceId", async (req, res) => {
     }
   }
 
+  // Atualiza rotation_minutes em memória pra próxima rotação usar o novo valor
+  if (typeof rotation_minutes === "number" && rotation_minutes > 0) {
+    manager.updateRotationMinutes(id, rotation_minutes);
+  }
+
   // Se a instância estava rodando, paramos automaticamente — o operador
   // precisa religar manualmente. (UI também desabilita o botão, isso é
   // a rede de segurança caso alguém bata direto na API.)

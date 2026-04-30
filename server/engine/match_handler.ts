@@ -255,8 +255,10 @@ export class MatchHandler {
     const cfg = await query<{
       message_main: string;
       message_per_org: string;
+      image_url: string | null;
     }>(
-      `SELECT message_main, message_per_org FROM instance_configs WHERE instance_id = $1`,
+      `SELECT message_main, message_per_org, image_url
+       FROM instance_configs WHERE instance_id = $1`,
       [this.instanceId],
     );
     const config = cfg[0];
@@ -289,9 +291,9 @@ export class MatchHandler {
 
     const content = resolveTemplate(template, vars);
 
-    // Envia mensagem
+    // Envia mensagem (com imagem opcional, se configurada no painel)
     const rest = new DiscordRest(sender.token);
-    const result = await rest.sendMessage(event.id, content);
+    const result = await rest.sendMessage(event.id, content, config.image_url);
 
     if (result.status >= 200 && result.status < 300) {
       await query(
@@ -302,11 +304,12 @@ export class MatchHandler {
         `UPDATE stats SET dms = dms + 1 WHERE instance_id = $1`,
         [this.instanceId],
       );
+      const imgTag = config.image_url ? " · com imagem" : "";
       await this.host.log(
         this.instanceId,
         "INFO",
         "match",
-        `Mensagem enviada em #${event.name}${adversaryId ? ` para <@${adversaryId}>` : ""} · token #${sender.position}`,
+        `Mensagem enviada em #${event.name}${adversaryId ? ` para <@${adversaryId}>` : ""} · token #${sender.position}${imgTag}`,
       );
     } else {
       await this.host.log(

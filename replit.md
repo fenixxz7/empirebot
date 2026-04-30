@@ -175,9 +175,33 @@ src/                  React app (App, components, lib/api)
   "Importar config" abaixo do botão salvar. Import usa `<input type="file">`
   hidden acionado por ref.
 
+## Bloco F — implementado
+
+- **Rotação automática de tokens** (`server/worker/manager.ts`): timer global
+  (tick de 5s) decrementa um contador por instância carregado de
+  `instance_configs.rotation_minutes`. Quando chega a zero, avança o índice
+  do token ativo (round-robin) e reseta o contador.
+  - `getActiveTokens(instanceId)` rotaciona o array antes de devolver, então
+    o token "rotacionado" é o `tokens[0]` que o runner usa por padrão.
+  - O runner (`server/engine/runner.ts`) ficou simples: usa `tokens[0]`,
+    sem manter contador próprio.
+  - `manager.getNextRotationSeconds(id)` é exposto via
+    `GET /api/instances` e via `WS broadcast` em cada evento de stats
+    (`payload.next_rotation_seconds`).
+  - Salvar config com `rotation_minutes` novo chama
+    `manager.updateRotationMinutes` na hora (sem precisar reiniciar bot).
+  - UI (`src/components/StatsGrid.tsx`): card "Próxima rotação" aparece ao
+    lado do Uptime quando a instância está rodando e tem >1 token ativo.
+- **Imagem na mensagem de partida** (`server/discord/rest.ts`,
+  `server/engine/match_handler.ts`): novo campo `instance_configs.image_url`.
+  Se preenchido, `sendMessage` anexa um embed com `{ image: { url } }` na
+  mensagem enviada no canal de partida. Log da partida inclui tag
+  "· com imagem" quando há URL.
+  - UI (`src/components/ConfigForm.tsx`): nova Section "Imagem na mensagem
+    (URL)" com input + preview da imagem.
+
 ## Próximos blocos planejados
 
-- Rotação de tokens com countdown no painel.
 - Estatísticas por org (orgs com mais partidas/entradas).
 
 ## Preferências do usuário
@@ -186,6 +210,6 @@ src/                  React app (App, components, lib/api)
 - Sem login no painel (uso pessoal em VPS).
 - Tokens são guardados em texto puro no Postgres (decisão explícita do
   usuário neste momento).
-- Apenas BOT1 por enquanto. BOT2 fica pra mais tarde.
+- BOT1 e BOT2 ambos ativos (abas no topo do painel).
 - Orgs: o usuário vai mandar os IDs reais; quando vier, atualizar o seed em
   `server/db/init.ts` e cadastrar via `guild_id`.
