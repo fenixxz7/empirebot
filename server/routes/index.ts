@@ -5,6 +5,7 @@ import { orgsRouter } from "./orgs.js";
 import { logsRouter } from "./logs.js";
 import { discoveryRouter } from "./discovery.js";
 import { statsRouter } from "./stats.js";
+import { messagesRouter } from "./messages.js";
 import { pool } from "../db/pool.js";
 
 export function mountApi(app: Express): void {
@@ -14,6 +15,7 @@ export function mountApi(app: Express): void {
   app.use("/api/logs", logsRouter);
   app.use("/api/discovery", discoveryRouter);
   app.use("/api/stats", statsRouter);
+  app.use("/api/messages", messagesRouter);
 
   // Health check para monitoramento externo
   app.get("/health", async (_req, res) => {

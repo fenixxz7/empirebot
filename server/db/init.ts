@@ -152,6 +152,45 @@ export async function initDatabase(): Promise<void> {
     `ALTER TABLE stats ADD COLUMN IF NOT EXISTS bloqueadas INTEGER NOT NULL DEFAULT 0`,
   );
 
+  // ── DM Responder ─────────────────────────────────────────────────────────
+  // Mensagens a enviar nos message requests recebidos
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS dm_messages (
+      id          SERIAL PRIMARY KEY,
+      instance_id INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+      position    INTEGER NOT NULL DEFAULT 0,
+      name        TEXT    NOT NULL DEFAULT '',
+      body        TEXT    NOT NULL DEFAULT '',
+      created_at  TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  // Configuração do DM responder por instância
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS dm_config (
+      instance_id      INTEGER PRIMARY KEY REFERENCES instances(id) ON DELETE CASCADE,
+      enabled          BOOLEAN NOT NULL DEFAULT FALSE,
+      min_delay_msg    REAL    NOT NULL DEFAULT 1.5,
+      max_delay_msg    REAL    NOT NULL DEFAULT 2.5,
+      min_delay_user   REAL    NOT NULL DEFAULT 10,
+      max_delay_user   REAL    NOT NULL DEFAULT 15
+    )
+  `);
+  // Usuários já respondidos (evita responder duas vezes)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS dm_responded (
+      instance_id INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+      user_id     TEXT    NOT NULL,
+      responded_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (instance_id, user_id)
+    )
+  `);
+  // Seed dm_config para todas as instâncias existentes
+  await pool.query(`
+    INSERT INTO dm_config (instance_id)
+    SELECT id FROM instances
+    ON CONFLICT (instance_id) DO NOTHING
+  `);
+
   // Garante que ninguém ficou com fila "fantasma" entre boots
   await pool.query(`DELETE FROM active_queues`);
 

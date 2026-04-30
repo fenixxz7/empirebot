@@ -3,10 +3,13 @@ import { query } from "../db/pool.js";
 import { QueueRunner, type ActiveToken } from "../engine/runner.js";
 import { MatchHandler, type MatchToken } from "../engine/match_handler.js";
 import { MatchPoller } from "../engine/match_poller.js";
+import { DmResponder } from "../engine/dm-responder.js";
 import { runAutoDiscoveryForInstance } from "../discord/discovery.js";
 import { DiscordRest } from "../discord/rest.js";
 import type { WebSocketServer } from "ws";
 import { WebSocket } from "ws";
+
+export const dmResponders = new Map<number, DmResponder>();
 
 let _wss: WebSocketServer | null = null;
 

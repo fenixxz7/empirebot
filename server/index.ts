@@ -7,7 +7,8 @@ import { WebSocketServer, WebSocket } from "ws";
 import { initDatabase } from "./db/init.js";
 import { mountApi } from "./routes/index.js";
 import { query } from "./db/pool.js";
-import { manager, setWsServer } from "./worker/manager.js";
+import { manager, setWsServer, dmResponders } from "./worker/manager.js";
+import { DmResponder } from "./engine/dm-responder.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 5000);
@@ -15,6 +16,21 @@ const isProd = process.env.NODE_ENV === "production";
 
 async function main() {
   await initDatabase();
+
+  // Inicializa um DmResponder por instância (roda independente do bot principal)
+  {
+    const allInstances = await query<{ id: number }>(`SELECT id FROM instances`);
+    for (const inst of allInstances) {
+      const responder = new DmResponder(inst.id);
+      dmResponders.set(inst.id, responder);
+    }
+    const enabledCfg = await query<{ instance_id: number }>(
+      `SELECT instance_id FROM dm_config WHERE enabled = TRUE`
+    );
+    for (const cfg of enabledCfg) {
+      dmResponders.get(cfg.instance_id)?.start();
+    }
+  }
 
   const app = express();
   app.use(express.json({ limit: "1mb" }));

@@ -113,6 +113,20 @@ export class DiscordRest {
     return this.request<unknown>("POST", `/channels/${channelId}/typing`);
   }
 
+  /** Lista os DM message requests pendentes do usuário autenticado. */
+  listMessageRequests() {
+    return this.request<DiscordDMChannel[]>("GET", `/users/@me/message-requests`);
+  }
+
+  /** Envia uma mensagem numa DM (para selfbot, isso aceita o request implicitamente). */
+  sendDM(channelId: string, content: string) {
+    return this.request<{ id: string }>(
+      "POST",
+      `/channels/${channelId}/messages`,
+      { content },
+    );
+  }
+
   sendMessage(channelId: string, content: string, imageUrl?: string | null) {
     const body: Record<string, unknown> = { content };
     if (imageUrl && imageUrl.trim()) {
@@ -160,6 +174,15 @@ function snowflake(): string {
   // 64-bit snowflake aproximado (suficiente como nonce)
   const ms = BigInt(Date.now() - DISCORD_EPOCH);
   return ((ms << 22n) | BigInt(Math.floor(Math.random() * 4096))).toString();
+}
+
+export interface DiscordDMChannel {
+  id: string;
+  type: number; // 1 = DM
+  recipients?: Array<{ id: string; username: string; global_name?: string }>;
+  is_message_request?: boolean;
+  is_message_request_timestamp?: string;
+  last_message_id?: string | null;
 }
 
 export interface DiscordChannel {
