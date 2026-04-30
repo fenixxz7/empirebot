@@ -182,24 +182,6 @@ export class QueueRunner {
     }
     await this.refreshNaFila(activeRows.length);
 
-    // Partidas desta sessão por org (desde que o bot foi iniciado)
-    const matchRows = await query<{ org_id: number; cnt: string }>(
-      `SELECT m.org_id, COUNT(*)::text AS cnt
-       FROM matches m
-       WHERE m.instance_id = $1
-         AND m.org_id IS NOT NULL
-         AND m.detected_at >= COALESCE(
-           (SELECT started_at FROM stats WHERE instance_id = $1),
-           NOW() - INTERVAL '24 hours'
-         )
-       GROUP BY m.org_id`,
-      [this.instanceId],
-    );
-    const matchesPerOrg = new Map<number, number>();
-    for (const r of matchRows) {
-      matchesPerOrg.set(r.org_id, Number(r.cnt));
-    }
-
     const orgIds = cfg.selected_org_ids;
     const totalOrgs = orgIds.length;
     let attempts = 0;
@@ -212,11 +194,9 @@ export class QueueRunner {
       const orgChannels = channels.filter((c) => c.org_id === currentOrgId);
       const maxForOrg = orgChannels[0]?.max_queues ?? 5;
       const activeForOrg = activePerOrg.get(currentOrgId) ?? 0;
-      const matchedForOrg = matchesPerOrg.get(currentOrgId) ?? 0;
-      // Capacidade total usada = filas ativas + partidas já iniciadas nesta sessão
-      const usedCapacity = activeForOrg + matchedForOrg;
 
-      if (usedCapacity >= maxForOrg) {
+      // max_queues é limite concorrente: se já tem o máximo de filas ativas, pula
+      if (activeForOrg >= maxForOrg) {
         this.orgCursor = (this.orgCursor + 1) % totalOrgs;
         attempts++;
         advancedDueToFull = true;
@@ -244,9 +224,8 @@ export class QueueRunner {
     }
 
     if (!candidate) {
-      const totalMatches = [...matchesPerOrg.values()].reduce((a, b) => a + b, 0);
       const msg = advancedDueToFull
-        ? `Todas as orgs saturadas — ${activeRows.length} fila(s) ativa(s) + ${totalMatches} partida(s) nesta sessão.`
+        ? `Todas as orgs no limite — ${activeRows.length} fila(s) ativa(s).`
         : `Nada novo pra entrar — ${activeRows.length} fila(s) ativa(s).`;
       this.maybeLog("noWork", msg);
       return;
