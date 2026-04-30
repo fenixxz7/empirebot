@@ -323,7 +323,18 @@ export class MatchHandler {
       800 + content.length * (12 + Math.random() * 18),
     );
     await sleep(typingMs);
-    const result = await rest.sendMessage(event.id, content, config.image_url);
+    let result = await rest.sendMessage(event.id, content, config.image_url);
+
+    // Selfbots não suportam embeds — 400 com imagem: tenta novamente sem ela
+    if (result.status === 400 && config.image_url) {
+      await this.host.log(
+        this.instanceId,
+        "WARN",
+        "match",
+        `HTTP 400 com imagem em #${event.name} — reenviando sem embed`,
+      );
+      result = await rest.sendMessage(event.id, content, null);
+    }
 
     if (result.status >= 200 && result.status < 300) {
       await query(

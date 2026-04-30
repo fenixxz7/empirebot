@@ -55,12 +55,11 @@ const MAX_FRESH_FETCH_PER_TICK = 6;
 // Filas normais resolvem em poucos minutos; >12min quase sempre indica
 // que a fila foi cancelada/resetada pelo bot da org sem virar partida.
 const ACTIVE_QUEUE_TTL_MS = 12 * 60 * 1000;
-// Long break: a cada 7-14 ações, pausa de 60-180s (simula desatenção
-// humana). Reduz a "cara de bot" e segura o ritmo de ações por hora.
-const LONG_BREAK_AFTER_MIN = 7;
-const LONG_BREAK_AFTER_MAX = 14;
-const LONG_BREAK_MS_MIN = 60_000;
-const LONG_BREAK_MS_MAX = 180_000;
+// Long break: a cada 25-35 ações, pausa de ~15s (simula desatenção humana breve).
+const LONG_BREAK_AFTER_MIN = 25;
+const LONG_BREAK_AFTER_MAX = 35;
+const LONG_BREAK_MS_MIN = 13_000;
+const LONG_BREAK_MS_MAX = 17_000;
 // Backoff extra após rate limit (429), por cima do cooldown de fila.
 const RATE_LIMIT_BACKOFF_MIN_MS = 25_000;
 const RATE_LIMIT_BACKOFF_MAX_MS = 55_000;
@@ -426,7 +425,7 @@ export class QueueRunner {
           this.instanceId,
           "INFO",
           "engine",
-          `Pausa natural de ${Math.round(breakMs / 1000)}s antes do próximo lance.`,
+          `Pausa de ${Math.round(breakMs / 1000)}s após ${this.nextBreakAt} entradas.`,
         );
       }
     } else if (r.status === 429) {
