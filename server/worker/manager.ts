@@ -203,6 +203,13 @@ class Manager {
       "THREAD_LIST_SYNC",
     ]);
 
+    const matchPatterns = [
+      /^fila-\d+$/i,
+      /^partida-\d+$/i,
+      /^sua[\s_-]partida[\s_-]\d+$/i,
+    ];
+    const seenMessageChannels = new Set<string>();
+
     for (const e of entries) {
       e.client.on("dispatch", (eventName: string, eventData: any) => {
         // Log diagnóstico: todos os eventos relevantes de canal/thread
@@ -213,6 +220,51 @@ class Manager {
             "match",
             `GW event: ${eventName} | ch=${eventData?.name ?? eventData?.id ?? "?"} type=${eventData?.type ?? "?"} guild=${eventData?.guild_id ?? "?"} | token#${e.position}`,
           ).catch(() => {});
+        }
+
+        // MESSAGE_CREATE: fallback para detectar partidas/filas
+        // Quando o bot da org manda o card mencionando nosso user, o
+        // CHANNEL_CREATE/THREAD_CREATE pode não ter chegado mas o
+        // MESSAGE_CREATE chega. Aí buscamos info do canal via REST.
+        if (eventName === "MESSAGE_CREATE" && eventData?.channel_id) {
+          const chId = String(eventData.channel_id);
+          if (seenMessageChannels.has(chId)) return;
+          const myId = e.client.getUserId();
+          const mentions: any[] = eventData?.mentions ?? [];
+          const mentioned =
+            !!myId &&
+            mentions.some((m) => String(m?.id ?? m) === myId);
+          if (!mentioned) return;
+          seenMessageChannels.add(chId);
+          // Limita o set para não crescer infinito
+          if (seenMessageChannels.size > 5000) {
+            const first = seenMessageChannels.values().next().value;
+            if (first) seenMessageChannels.delete(first);
+          }
+          const rest = new DiscordRest(e.token);
+          rest.request<{
+            id: string;
+            name: string;
+            type: number;
+            guild_id?: string;
+            parent_id?: string | null;
+            permission_overwrites?: any[];
+            thread_metadata?: any;
+          }>("GET", `/channels/${chId}`)
+            .then(({ data }) => {
+              if (!data || !data.name) return;
+              if (!matchPatterns.some((r) => r.test(data.name))) return;
+              const matchTokens = this.buildMatchTokens(instanceId, e.tokenId);
+              this.log(
+                instanceId,
+                "INFO",
+                "match",
+                `Detectado via MESSAGE_CREATE: #${data.name} (token #${e.position})`,
+              ).catch(() => {});
+              matchHandler.onChannelCreate(data, matchTokens).catch(() => {});
+            })
+            .catch(() => {});
+          return;
         }
 
         // THREAD_LIST_SYNC: lista de threads ao reconectar

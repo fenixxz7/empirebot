@@ -192,6 +192,13 @@ src/                  React app (App, components, lib/api)
     `manager.updateRotationMinutes` na hora (sem precisar reiniciar bot).
   - UI (`src/components/StatsGrid.tsx`): card "Próxima rotação" aparece ao
     lado do Uptime quando a instância está rodando e tem >1 token ativo.
+- **MESSAGE_CREATE como detector adicional** (`server/worker/manager.ts`):
+  além de `CHANNEL_CREATE`/`THREAD_CREATE` (que às vezes não chega para
+  selfbots em guilds com threads privadas), ouvimos `MESSAGE_CREATE`. Se
+  uma mensagem nova menciona o nosso `userId`, a gente busca info do canal
+  via REST. Se o nome bate `partida-N`/`fila-N`, dispara o handler. Cache
+  de canais já vistos (Set local de até 5k IDs) para não buscar info da
+  API a cada mensagem em canais conhecidos.
 - **MatchPoller (`server/engine/match_poller.ts`) — fallback de detecção
   via REST**: o gateway Discord às vezes não dispatcha `CHANNEL_CREATE`/
   `THREAD_CREATE` para selfbots (especialmente em guilds grandes ou para

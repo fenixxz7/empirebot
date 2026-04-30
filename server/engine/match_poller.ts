@@ -97,6 +97,8 @@ export class MatchPoller {
 
       for (const o of orgs) {
         const gid = o.guild_id!;
+        let foundChannels = 0;
+        let foundThreads = 0;
 
         const chRes = await this.safe(() => rest.listGuildChannels(gid));
         if (chRes && chRes.status === 200 && Array.isArray(chRes.data)) {
@@ -109,6 +111,13 @@ export class MatchPoller {
             );
             if (!hasMe) continue;
             seen.add(c.id);
+            foundChannels += 1;
+            await this.host.log(
+              this.instanceId,
+              "INFO",
+              "match",
+              `Poller achou canal #${c.name} em ${o.name}`,
+            );
             await this.handler.onChannelCreate(
               {
                 id: c.id,
@@ -125,15 +134,21 @@ export class MatchPoller {
 
         const thRes = await this.safe(() => rest.listGuildActiveThreads(gid));
         if (thRes && thRes.status === 200 && thRes.data?.threads) {
-          const memberThreadIds = new Set(
-            (thRes.data.members ?? []).map((m) => m.id),
-          );
+          // Não exigimos membership: o handler tem idempotência via DB e
+          // a mensagem só sai se conseguirmos POST no canal. Se não somos
+          // membros, o POST falha e o seen é "queimado" — sem efeito ruim.
           for (const t of thRes.data.threads) {
             if (!THREAD_TYPES.has(t.type)) continue;
             if (!isMatchName(t.name)) continue;
             if (seen.has(t.id)) continue;
-            if (!memberThreadIds.has(t.id)) continue;
             seen.add(t.id);
+            foundThreads += 1;
+            await this.host.log(
+              this.instanceId,
+              "INFO",
+              "match",
+              `Poller achou thread #${t.name} em ${o.name}`,
+            );
             await this.handler.onChannelCreate(
               {
                 id: t.id,
@@ -146,6 +161,22 @@ export class MatchPoller {
               tokens,
             );
           }
+        }
+
+        // Log diagnóstico — sempre logamos resumo do poller por org/tick
+        const total = (chRes?.status === 200 && Array.isArray(chRes?.data)
+          ? chRes.data.length
+          : 0);
+        const totalTh = thRes?.status === 200 && thRes?.data?.threads
+          ? thRes.data.threads.length
+          : 0;
+        if (foundChannels > 0 || foundThreads > 0) {
+          await this.host.log(
+            this.instanceId,
+            "INFO",
+            "match",
+            `Poller ${o.name}: canais=${total} threads=${totalTh} novos(canais=${foundChannels} threads=${foundThreads})`,
+          );
         }
 
         await sleep(150 + Math.random() * 200);
