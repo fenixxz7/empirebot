@@ -8,10 +8,10 @@ export function StatsGrid({
   instance: InstanceState | null;
   onResetStats: () => void;
 }) {
-  const s = instance?.stats ?? { entradas: 0, na_fila: 0, partidas: 0, dms: 0 };
+  const s = instance?.stats ?? { entradas: 0, na_fila: 0, partidas: 0, dms: 0, bloqueadas: 0 };
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <StatCard
           icon={<UsersIcon className="w-5 h-5 text-emerald-300" />}
           label="Entradas"
@@ -39,6 +39,13 @@ export function StatsGrid({
           sub="detectadas"
           value={s.dms}
           tone="cyan"
+        />
+        <StatCard
+          icon={<ShieldIcon className="w-5 h-5 text-red-400" />}
+          label="Bloqueadas"
+          sub="filas evitadas"
+          value={s.bloqueadas}
+          tone="red"
         />
       </div>
 
@@ -81,13 +88,14 @@ function StatCard({
 }: {
   icon: React.ReactNode;
   label: string; sub: string; value: number;
-  tone: "emerald" | "blue" | "fuchsia" | "cyan";
+  tone: "emerald" | "blue" | "fuchsia" | "cyan" | "red";
 }) {
   const numColor = {
     emerald: "text-emerald-300",
     blue: "text-accent",
     fuchsia: "text-fuchsia-300",
     cyan: "text-cyan-300",
+    red: "text-red-400",
   }[tone];
   return (
     <div className="stat-card">
@@ -117,4 +125,7 @@ function ResetIcon({ className = "" }) {
 }
 function RotateIcon({ className = "" }) {
   return (<svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M21 12a9 9 0 1 1-3.4-7" /><polyline points="21 4 21 9 16 9" /></svg>);
+}
+function ShieldIcon({ className = "" }) {
+  return (<svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden><path d="M12 2L4 6v6c0 5.5 3.8 10.7 8 12 4.2-1.3 8-6.5 8-12V6l-8-4zm0 10h-1V8h2v4h-1zm0 4h-2v-2h2v2z"/></svg>);
 }

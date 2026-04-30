@@ -136,6 +136,21 @@ export async function initDatabase(): Promise<void> {
   await pool.query(
     `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS blocked_names TEXT NOT NULL DEFAULT ''`,
   );
+  // Valor máximo de entrada (R$0 = sem limite)
+  await pool.query(
+    `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS max_valor NUMERIC(10,2) NOT NULL DEFAULT 0`,
+  );
+  // Estratégia de rotação de tokens: single | per_n_orgs | full_cycle
+  await pool.query(
+    `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS token_strategy TEXT NOT NULL DEFAULT 'single'`,
+  );
+  await pool.query(
+    `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS token_strategy_n INTEGER NOT NULL DEFAULT 5`,
+  );
+  // Contador de filas puladas por nome bloqueado
+  await pool.query(
+    `ALTER TABLE stats ADD COLUMN IF NOT EXISTS bloqueadas INTEGER NOT NULL DEFAULT 0`,
+  );
 
   // Garante que ninguém ficou com fila "fantasma" entre boots
   await pool.query(`DELETE FROM active_queues`);

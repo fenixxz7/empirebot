@@ -553,11 +553,11 @@ class Manager {
     try {
       const rows = await query<{
         running: boolean; entradas: number; na_fila: number;
-        partidas: number; dms: number; started_at: string | null;
+        partidas: number; dms: number; bloqueadas: number; started_at: string | null;
         tokens_active: number; first_handle: string | null;
       }>(`
         SELECT i.running,
-               s.entradas, s.na_fila, s.partidas, s.dms, s.started_at,
+               s.entradas, s.na_fila, s.partidas, s.dms, s.bloqueadas, s.started_at,
                COALESCE(t.active, 0) AS tokens_active,
                t.first_handle
         FROM instances i
@@ -587,6 +587,7 @@ class Manager {
           na_fila: r.na_fila ?? 0,
           partidas: r.partidas ?? 0,
           dms: r.dms ?? 0,
+          bloqueadas: r.bloqueadas ?? 0,
           next_rotation_seconds: this.getNextRotationSeconds(instanceId),
         },
       });

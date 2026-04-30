@@ -22,9 +22,11 @@ configRouter.get("/:instanceId", async (req, res) => {
     delay_seconds: number; rotation_minutes: number;
     allowed_modes: string; message_main: string; message_per_org: string;
     image_url: string | null; blocked_names: string;
+    max_valor: number; token_strategy: string; token_strategy_n: number;
   }>(
     `SELECT category, allowed_categories, delay_seconds, rotation_minutes,
-            allowed_modes, message_main, message_per_org, image_url, blocked_names
+            allowed_modes, message_main, message_per_org, image_url, blocked_names,
+            max_valor, token_strategy, token_strategy_n
      FROM instance_configs WHERE instance_id = $1`,
     [id]
   );
@@ -64,6 +66,7 @@ configRouter.put("/:instanceId", async (req, res) => {
     allowed_categories, delay_seconds, rotation_minutes,
     allowed_modes, message_main, message_per_org, image_url,
     tokens_raw, selected_org_ids, blocked_names,
+    max_valor, token_strategy, token_strategy_n,
   } = req.body as {
     allowed_categories: string | string[];
     delay_seconds: number;
@@ -75,6 +78,9 @@ configRouter.put("/:instanceId", async (req, res) => {
     tokens_raw: string;
     selected_org_ids: number[];
     blocked_names: string;
+    max_valor: number;
+    token_strategy: string;
+    token_strategy_n: number;
   };
 
   // allowed_categories pode chegar como array (UI) ou string CSV (terminal/api)
@@ -100,17 +106,23 @@ configRouter.put("/:instanceId", async (req, res) => {
   const allowedCategoriesStr = cats.join("\n");
   const primaryCategory = cats[0];
 
+  const validStrategies = ["single", "per_n_orgs", "full_cycle"];
+  const safeStrategy = validStrategies.includes(token_strategy) ? token_strategy : "single";
+
   await query(
     `UPDATE instance_configs
      SET category = $2, allowed_categories = $3,
          delay_seconds = $4, rotation_minutes = $5,
          allowed_modes = $6, message_main = $7, message_per_org = $8,
-         image_url = $9, blocked_names = $10, updated_at = NOW()
+         image_url = $9, blocked_names = $10,
+         max_valor = $11, token_strategy = $12, token_strategy_n = $13,
+         updated_at = NOW()
      WHERE instance_id = $1`,
     [id, primaryCategory, allowedCategoriesStr,
      delay_seconds, rotation_minutes, allowed_modes,
      message_main, message_per_org, image_url ?? null,
-     blocked_names ?? ""]
+     blocked_names ?? "",
+     Number(max_valor ?? 0), safeStrategy, Math.max(1, Number(token_strategy_n ?? 5))]
   );
 
   // Tokens: aceitamos textarea (1 por linha). Vazio = mantém os que estão.

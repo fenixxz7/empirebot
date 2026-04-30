@@ -42,6 +42,8 @@ export interface OrgChannel {
   last_scanned_at: string | null;
 }
 
+export type TokenStrategy = "single" | "per_n_orgs" | "full_cycle";
+
 export interface InstanceConfig {
   category: Category;
   allowed_categories: string;
@@ -52,6 +54,9 @@ export interface InstanceConfig {
   message_per_org: string;
   image_url: string | null;
   blocked_names: string;
+  max_valor: number;
+  token_strategy: TokenStrategy;
+  token_strategy_n: number;
 }
 
 export interface Token {
@@ -74,6 +79,7 @@ export interface InstanceState {
     na_fila: number;
     partidas: number;
     dms: number;
+    bloqueadas: number;
   };
   tokens_active: number;
   tokens_total: number;

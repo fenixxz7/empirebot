@@ -36,12 +36,17 @@ interface ChannelRow {
   max_queues: number;
 }
 
+type TokenStrategy = "single" | "per_n_orgs" | "full_cycle";
+
 interface CycleConfig {
   delay_seconds: number;
   allowed_modes: string[];
   allowed_categories: string[];
   selected_org_ids: number[];
   blockedNames: string[];
+  maxValor: number;
+  tokenStrategy: TokenStrategy;
+  tokenStrategyN: number;
 }
 
 const STARTUP_GRACE_MS = 5000;
@@ -87,6 +92,9 @@ export class QueueRunner {
   // Cursor de modo por org — controla qual modo (1x1, 2x2…) usar na próxima
   // passagem nessa org. Avança a cada entrada bem-sucedida na org.
   private orgModeCursor = new Map<number, number>();
+  // Rotação de tokens: qual token está ativo e quantas entradas já fez neste token.
+  private tokenCursor = 0;
+  private joinsOnCurrentToken = 0;
 
   constructor(
     private readonly instanceId: number,
@@ -96,6 +104,8 @@ export class QueueRunner {
   start(): void {
     this.stopped = false;
     this.orgCursor = 0;
+    this.tokenCursor = 0;
+    this.joinsOnCurrentToken = 0;
     this.timer = setTimeout(() => this.tick(), STARTUP_GRACE_MS);
   }
 
@@ -173,8 +183,12 @@ export class QueueRunner {
       allowed_modes: string;
       allowed_categories: string;
       blocked_names: string;
+      max_valor: number;
+      token_strategy: string;
+      token_strategy_n: number;
     }>(
-      `SELECT delay_seconds, allowed_modes, allowed_categories, blocked_names
+      `SELECT delay_seconds, allowed_modes, allowed_categories, blocked_names,
+              max_valor, token_strategy, token_strategy_n
        FROM instance_configs
        WHERE instance_id = $1`,
       [this.instanceId],
@@ -193,6 +207,9 @@ export class QueueRunner {
       allowed_categories: parseList(cfgRows[0]?.allowed_categories ?? ""),
       selected_org_ids: orgRows.map((r) => r.org_id),
       blockedNames: parseList(cfgRows[0]?.blocked_names ?? "").map((n) => n.toLowerCase()),
+      maxValor: Number(cfgRows[0]?.max_valor ?? 0),
+      tokenStrategy: (cfgRows[0]?.token_strategy ?? "single") as TokenStrategy,
+      tokenStrategyN: Math.max(1, cfgRows[0]?.token_strategy_n ?? 5),
     };
   }
 
@@ -222,6 +239,7 @@ export class QueueRunner {
       cfg.selected_org_ids,
       cfg.allowed_modes,
       cfg.allowed_categories,
+      cfg.maxValor,
     );
     if (channels.length === 0) {
       this.maybeLog(
@@ -292,16 +310,35 @@ export class QueueRunner {
       // Avança cursor de modo para a próxima passagem nesta org
       this.orgModeCursor.set(currentOrgId, modeCurIdx + 1);
 
-      const token = tokens[0]!;
+      // Seleciona token ativo com base na estratégia de rotação
+      const activeTokenIdx = cfg.tokenStrategy === "single"
+        ? 0
+        : this.tokenCursor % tokens.length;
+      const selectedToken = tokens[activeTokenIdx]!;
+
       const ranked = await this.rankCandidatesByPlayers(
         modeEligible.length > 0 ? modeEligible : eligible,
-        token.token,
+        selectedToken.token,
         cfg.blockedNames,
       );
       candidate = ranked.choice;
       candidatePlayers = ranked.players;
+
       // Avança o cursor de org — garante round-robin real entre orgs.
+      const prevOrgCursor = this.orgCursor;
       this.orgCursor = (this.orgCursor + 1) % totalOrgs;
+
+      // full_cycle: quando a lista de orgs fecha um ciclo completo, troca de token
+      if (cfg.tokenStrategy === "full_cycle" && this.orgCursor < prevOrgCursor) {
+        this.tokenCursor = (this.tokenCursor + 1) % tokens.length;
+        this.joinsOnCurrentToken = 0;
+        await this.manager.log(
+          this.instanceId,
+          "INFO",
+          "engine",
+          `Ciclo completo — rotacionando para token #${tokens[this.tokenCursor % tokens.length]?.position ?? this.tokenCursor + 1}.`,
+        );
+      }
       break;
     }
 
@@ -316,12 +353,29 @@ export class QueueRunner {
       return;
     }
 
-    const token = tokens[0]!;
+    // Token ativo para joinQueue
+    const tokenIdx = cfg.tokenStrategy === "single" ? 0 : this.tokenCursor % tokens.length;
+    const token = tokens[tokenIdx]!;
 
     // Pequena pausa humanizada antes de clicar (350-1500ms)
     await sleep(350 + Math.floor(Math.random() * 1150));
 
-    await this.joinQueue(candidate, token, activeRows.length, candidatePlayers);
+    const joined = await this.joinQueue(candidate, token, activeRows.length, candidatePlayers);
+
+    // per_n_orgs: conta entradas no token atual; ao atingir N, rotaciona
+    if (joined && cfg.tokenStrategy === "per_n_orgs" && tokens.length > 1) {
+      this.joinsOnCurrentToken++;
+      if (this.joinsOnCurrentToken >= cfg.tokenStrategyN) {
+        this.joinsOnCurrentToken = 0;
+        this.tokenCursor = (this.tokenCursor + 1) % tokens.length;
+        await this.manager.log(
+          this.instanceId,
+          "INFO",
+          "engine",
+          `Rotacionando token após ${cfg.tokenStrategyN} entrada(s) — próximo: token #${tokens[this.tokenCursor % tokens.length]?.position ?? this.tokenCursor + 1}.`,
+        );
+      }
+    }
 
     // Define o próximo momento permitido para entrar em fila.
     // Jitter mais largo (0.6–1.7) para parecer menos robótico.
@@ -372,6 +426,10 @@ export class QueueRunner {
             "engine",
             `Fila bloqueada em ${c.org_name} · #${c.channel_name ?? c.channel_id} — nome na lista de bloqueio.`,
           );
+          await query(
+            `UPDATE stats SET bloqueadas = bloqueadas + 1 WHERE instance_id = $1`,
+            [this.instanceId],
+          );
         }
       } else if (r.status === 404) {
         this.playerCache.set(keyOf(c), { count: 0, ts: Date.now() });
@@ -398,9 +456,9 @@ export class QueueRunner {
     token: ActiveToken,
     activeCount: number,
     playersInQueue: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const btn = pickEnterButton(ch.buttons);
-    if (!btn || !btn.custom_id) return;
+    if (!btn || !btn.custom_id) return false;
 
     const rest = new DiscordRest(token.token);
     const r = await rest.clickButton({
@@ -471,6 +529,7 @@ export class QueueRunner {
           `Pausa de ${Math.round(breakMs / 1000)}s após ${this.nextBreakAt} entradas.`,
         );
       }
+      return true;
     } else if (r.status === 429) {
       // Backoff agressivo em 429 — Discord não gosta nem um pouco
       const backoff = randInt(RATE_LIMIT_BACKOFF_MIN_MS, RATE_LIMIT_BACKOFF_MAX_MS);
@@ -481,6 +540,7 @@ export class QueueRunner {
         "engine",
         `Rate-limited em ${ch.org_name} · ${modeLabel} · #${ch.channel_name ?? ch.channel_id} — esperando ${Math.round(backoff / 1000)}s antes de continuar.`,
       );
+      return false;
     } else {
       await this.manager.log(
         this.instanceId,
@@ -488,6 +548,7 @@ export class QueueRunner {
         "engine",
         `Falhou ${ch.org_name} · ${modeLabel} · #${ch.channel_name ?? ch.channel_id}: HTTP ${r.status} ${r.error?.slice(0, 120) ?? ""}`,
       );
+      return false;
     }
   }
 
@@ -495,6 +556,7 @@ export class QueueRunner {
     orgIds: number[],
     allowedModes: string[],
     allowedCategories: string[],
+    maxValor = 0,
   ): Promise<ChannelRow[]> {
     if (orgIds.length === 0 || allowedCategories.length === 0) return [];
     const rows = await query<{
@@ -526,6 +588,13 @@ export class QueueRunner {
        ORDER BY o.priority DESC, o.id ASC, oc.mode ASC, oc.channel_id ASC, oc.id ASC`,
       [orgIds, allowedModes, allowedCategories],
     );
+    // Filtro de valor máximo — exclui filas acima do limite configurado
+    if (maxValor > 0) {
+      return rows.filter((r) => {
+        const v = parseValor(r.embed_valor);
+        return v === null || v <= maxValor;
+      });
+    }
     return rows;
   }
 
@@ -610,6 +679,17 @@ function pickEnterButton(buttons: ChannelRow["buttons"]) {
     if (found) return found;
   }
   return usable[0];
+}
+
+/**
+ * Extrai o valor numérico de uma string como "R$10,00" → 10.
+ * Retorna null se não for possível converter.
+ */
+function parseValor(v: string | null): number | null {
+  if (!v) return null;
+  const cleaned = v.replace(/[^\d,.]/g, "").replace(",", ".");
+  const n = parseFloat(cleaned);
+  return isNaN(n) ? null : n;
 }
 
 /**

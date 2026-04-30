@@ -79,13 +79,13 @@ statsRouter.delete("/reset", async (req, res) => {
       await query(`DELETE FROM queue_joins WHERE instance_id = $1`, [instanceId]);
       await query(`DELETE FROM matches WHERE instance_id = $1`, [instanceId]);
       await query(
-        `UPDATE stats SET entradas = 0, partidas = 0, dms = 0 WHERE instance_id = $1`,
+        `UPDATE stats SET entradas = 0, partidas = 0, dms = 0, bloqueadas = 0 WHERE instance_id = $1`,
         [instanceId],
       );
     } else {
       await query(`DELETE FROM queue_joins`, []);
       await query(`DELETE FROM matches`, []);
-      await query(`UPDATE stats SET entradas = 0, partidas = 0, dms = 0`, []);
+      await query(`UPDATE stats SET entradas = 0, partidas = 0, dms = 0, bloqueadas = 0`, []);
     }
     res.json({ ok: true });
   } catch (err) {

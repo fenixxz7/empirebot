@@ -51,6 +51,7 @@ export function App() {
                       na_fila: p.na_fila ?? item.stats.na_fila,
                       partidas: p.partidas ?? item.stats.partidas,
                       dms: p.dms ?? item.stats.dms,
+                      bloqueadas: p.bloqueadas ?? item.stats.bloqueadas,
                     },
                   }
                 : item,

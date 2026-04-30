@@ -23,6 +23,9 @@ type ConfigPayload = {
     message_per_org: string;
     image_url: string | null;
     blocked_names: string;
+    max_valor: number;
+    token_strategy: string;
+    token_strategy_n: number;
   } | null;
   tokens: { id: number; position: number; value_preview: string; status: string; username: string | null }[];
   selected_org_ids: number[];
@@ -63,6 +66,9 @@ export function ConfigForm({
   const [messagePerOrg, setMessagePerOrg] = useState("");
   const [imageUrl, setImageUrl] = useState("");
   const [blockedNames, setBlockedNames] = useState("");
+  const [maxValor, setMaxValor] = useState(0);
+  const [tokenStrategy, setTokenStrategy] = useState("single");
+  const [tokenStrategyN, setTokenStrategyN] = useState(5);
   const [selectedOrgIds, setSelectedOrgIds] = useState<Set<number>>(new Set());
   const [feedback, setFeedback] = useState<string | null>(null);
   const [openOrgId, setOpenOrgId] = useState<number | null>(null);
@@ -93,6 +99,9 @@ export function ConfigForm({
       setMessagePerOrg(cfg.config.message_per_org);
       setImageUrl(cfg.config.image_url ?? "");
       setBlockedNames(cfg.config.blocked_names ?? "");
+      setMaxValor(Number(cfg.config.max_valor ?? 0));
+      setTokenStrategy(cfg.config.token_strategy ?? "single");
+      setTokenStrategyN(Number(cfg.config.token_strategy_n ?? 5));
     }
     setSelectedOrgIds(new Set(cfg.selected_org_ids));
     setLoading(false);
@@ -237,6 +246,9 @@ export function ConfigForm({
           message_per_org: messagePerOrg,
           image_url: imageUrl.trim() || null,
           blocked_names: blockedNames,
+          max_valor: maxValor,
+          token_strategy: tokenStrategy,
+          token_strategy_n: tokenStrategyN,
           tokens_raw: tokensRaw,
           selected_org_ids: Array.from(selectedOrgIds),
         }),
@@ -596,6 +608,66 @@ export function ConfigForm({
             />
           </div>
         )}
+      </Section>
+
+      <Section title="Valor máximo por fila (R$)">
+        <div className="flex items-center gap-3">
+          <input
+            className="input w-32"
+            type="number"
+            min={0}
+            step={0.5}
+            placeholder="0"
+            value={maxValor}
+            onChange={(e) => setMaxValor(Number(e.target.value))}
+          />
+          <span className="text-slate-400 text-sm">{maxValor > 0 ? `Máximo: R$${maxValor.toFixed(2)}` : "Sem limite"}</span>
+        </div>
+        <p className="text-xs text-slate-500 mt-2">
+          Filas com valor acima do limite são ignoradas automaticamente. Cole <b className="text-white/50">0</b> para entrar em qualquer fila.
+        </p>
+      </Section>
+
+      <Section title="Rotação de Tokens">
+        <div className="flex flex-col gap-3">
+          {[
+            { value: "single", label: "Token único", desc: "Usa sempre o primeiro token conectado. Simples e estável." },
+            { value: "per_n_orgs", label: "Trocar a cada N entradas", desc: "Rotaciona para o próximo token após um número fixo de entradas em fila." },
+            { value: "full_cycle", label: "Trocar ao completar ciclo de orgs", desc: "Passa por todas as orgs com o token 1, depois troca para o token 2, e assim por diante." },
+          ].map((opt) => (
+            <label key={opt.value} className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${tokenStrategy === opt.value ? "border-accent/50 bg-accent/10" : "border-white/10 hover:border-white/20"}`}>
+              <input
+                type="radio"
+                name="token_strategy"
+                value={opt.value}
+                checked={tokenStrategy === opt.value}
+                onChange={() => setTokenStrategy(opt.value)}
+                className="mt-0.5 accent-blue-400"
+              />
+              <div>
+                <div className="text-sm font-semibold text-white">{opt.label}</div>
+                <div className="text-xs text-slate-400 mt-0.5">{opt.desc}</div>
+              </div>
+            </label>
+          ))}
+          {tokenStrategy === "per_n_orgs" && (
+            <div className="flex items-center gap-3 mt-1 pl-1">
+              <span className="text-sm text-slate-300">Trocar a cada</span>
+              <input
+                className="input w-20"
+                type="number"
+                min={1}
+                max={100}
+                value={tokenStrategyN}
+                onChange={(e) => setTokenStrategyN(Math.max(1, Number(e.target.value)))}
+              />
+              <span className="text-sm text-slate-300">entradas</span>
+            </div>
+          )}
+        </div>
+        <p className="text-xs text-slate-500 mt-2">
+          Com múltiplos tokens, a rotação distribui o uso entre eles. Requer ao menos 2 tokens conectados para funcionar.
+        </p>
       </Section>
 
       <Section title="Nomes a evitar (Anti-Concorrência)">
