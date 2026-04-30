@@ -170,19 +170,41 @@ class Manager {
     const matchHandler = new MatchHandler(instanceId, this);
     this.matchHandlers.set(instanceId, matchHandler);
 
-    // Escuta CHANNEL_CREATE e THREAD_CREATE em todos os tokens
+    // Captura de eventos de canal/thread do gateway
+    const CHANNEL_EVENTS = new Set([
+      "CHANNEL_CREATE",
+      "THREAD_CREATE",
+      "THREAD_LIST_SYNC",
+    ]);
+
     for (const e of entries) {
       e.client.on("dispatch", (eventName: string, eventData: any) => {
-        if (eventName !== "CHANNEL_CREATE" && eventName !== "THREAD_CREATE") return;
-        const matchTokens: MatchToken[] = (this.workers.get(instanceId) ?? [])
-          .filter((w) => w.client.isReady())
-          .map((w) => ({
-            tokenId: w.tokenId,
-            position: w.position,
-            token: w.token,
-            userId: w.client.getUserId() ?? "",
-          }))
-          .filter((t) => t.userId !== "");
+        // Log diagnóstico: registra todos os eventos de canal/thread pra depuração
+        if (CHANNEL_EVENTS.has(eventName) || eventName.startsWith("THREAD")) {
+          this.log(
+            instanceId,
+            "INFO",
+            "match",
+            `GW event: ${eventName} | ch=${eventData?.name ?? eventData?.id ?? "?"} type=${eventData?.type ?? "?"} guild=${eventData?.guild_id ?? "?"} | token#${e.position}`,
+          ).catch(() => {});
+        }
+
+        // THREAD_LIST_SYNC: lista threads que o token já faz parte ao reconectar
+        if (eventName === "THREAD_LIST_SYNC") {
+          const threads: any[] = eventData?.threads ?? [];
+          // Prioriza o token que recebeu o evento como sender
+          const matchTokens = this.buildMatchTokens(instanceId, e.tokenId);
+          for (const t of threads) {
+            matchHandler.onChannelCreate(t, matchTokens).catch(() => {});
+          }
+          return;
+        }
+
+        if (!CHANNEL_EVENTS.has(eventName)) return;
+
+        // Prioriza o token que recebeu o evento como sender
+        // (importante para threads privadas onde só esse token tem acesso)
+        const matchTokens = this.buildMatchTokens(instanceId, e.tokenId);
         matchHandler.onChannelCreate(eventData, matchTokens).catch(() => {});
       });
     }
@@ -252,6 +274,24 @@ class Manager {
 
   isRunning(instanceId: number): boolean {
     return (this.workers.get(instanceId)?.length ?? 0) > 0;
+  }
+
+  private buildMatchTokens(instanceId: number, priorityTokenId?: number): MatchToken[] {
+    const all = (this.workers.get(instanceId) ?? [])
+      .filter((w) => w.client.isReady())
+      .map((w) => ({
+        tokenId: w.tokenId,
+        position: w.position,
+        token: w.token,
+        userId: w.client.getUserId() ?? "",
+      }))
+      .filter((t) => t.userId !== "");
+
+    if (priorityTokenId == null) return all;
+    // Coloca o token que disparou o evento na frente — ele é quem está na thread
+    const priority = all.filter((t) => t.tokenId === priorityTokenId);
+    const rest = all.filter((t) => t.tokenId !== priorityTokenId);
+    return [...priority, ...rest];
   }
 
   /**
