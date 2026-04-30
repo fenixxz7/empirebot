@@ -83,6 +83,9 @@ export class QueueRunner {
   // Timestamp a partir do qual é permitido tentar entrar em uma nova fila.
   // Separado do tick para que o tick rode rápido e não atrase outras tarefas.
   private nextJoinAt = 0;
+  // Cursor de modo por org — controla qual modo (1x1, 2x2…) usar na próxima
+  // passagem nessa org. Avança a cada entrada bem-sucedida na org.
+  private orgModeCursor = new Map<number, number>();
 
   constructor(
     private readonly instanceId: number,
@@ -157,8 +160,9 @@ export class QueueRunner {
         "engine",
         `Sweep: removidas ${removed.length} fila(s) fantasma (>12min sem virar partida).`,
       );
-      // Força round-robin a recomeçar do topo
+      // Força round-robin a recomeçar do topo e limpa cursores de modo
       this.orgCursor = 0;
+      this.orgModeCursor.clear();
     }
   }
 
@@ -276,12 +280,23 @@ export class QueueRunner {
         continue;
       }
 
+      // Seleciona o modo da vez para esta org (round-robin entre modos disponíveis).
+      // Ex: 1ª passagem → 1x1, 2ª passagem → 2x2, 3ª → volta pro 1x1, etc.
+      const modesPresent = [...new Set(eligible.map((c) => c.mode ?? ""))].sort();
+      const modeCurIdx = this.orgModeCursor.get(currentOrgId) ?? 0;
+      const selectedMode = modesPresent[modeCurIdx % modesPresent.length];
+      const modeEligible = eligible.filter((c) => (c.mode ?? "") === selectedMode);
+      // Avança cursor de modo para a próxima passagem nesta org
+      this.orgModeCursor.set(currentOrgId, modeCurIdx + 1);
+
       const token = tokens[0]!;
-      const ranked = await this.rankCandidatesByPlayers(eligible, token.token);
+      const ranked = await this.rankCandidatesByPlayers(
+        modeEligible.length > 0 ? modeEligible : eligible,
+        token.token,
+      );
       candidate = ranked.choice;
       candidatePlayers = ranked.players;
-      // Avança o cursor antes de sair — garante round-robin real entre orgs.
-      // Sem isso, o bot ficaria preso na mesma org enquanto ela tiver vagas.
+      // Avança o cursor de org — garante round-robin real entre orgs.
       this.orgCursor = (this.orgCursor + 1) % totalOrgs;
       break;
     }

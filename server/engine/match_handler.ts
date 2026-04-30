@@ -341,10 +341,6 @@ export class MatchHandler {
         `UPDATE matches SET msg_sent = TRUE WHERE instance_id = $1 AND channel_id = $2`,
         [this.instanceId, event.id],
       );
-      await query(
-        `UPDATE stats SET dms = dms + 1 WHERE instance_id = $1`,
-        [this.instanceId],
-      );
       const imgTag = config.image_url ? " · com imagem" : "";
       await this.host.log(
         this.instanceId,

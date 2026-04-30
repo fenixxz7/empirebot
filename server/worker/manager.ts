@@ -222,6 +222,31 @@ class Manager {
           ).catch(() => {});
         }
 
+        // MESSAGE_CREATE: DM recebida de outro usuário → incrementa contador de DMs
+        // Detecta quando um player manda um message request para o bot.
+        // DMs não têm guild_id no payload do gateway.
+        if (
+          eventName === "MESSAGE_CREATE" &&
+          !eventData?.guild_id &&
+          eventData?.channel_id
+        ) {
+          const myId = e.client.getUserId();
+          const authorId = String(eventData?.author?.id ?? eventData?.author ?? "");
+          if (myId && authorId && authorId !== myId) {
+            query(
+              `UPDATE stats SET dms = dms + 1 WHERE instance_id = $1`,
+              [instanceId],
+            ).catch(() => {});
+            this.log(
+              instanceId,
+              "INFO",
+              "dm",
+              `Message request recebido de <@${authorId}>`,
+            ).catch(() => {});
+          }
+          return;
+        }
+
         // MESSAGE_CREATE: fallback para detectar partidas/filas
         // Quando o bot da org manda o card mencionando nosso user, o
         // CHANNEL_CREATE/THREAD_CREATE pode não ter chegado mas o
