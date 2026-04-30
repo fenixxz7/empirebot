@@ -22,6 +22,7 @@ type ConfigPayload = {
     message_main: string;
     message_per_org: string;
     image_url: string | null;
+    blocked_names: string;
   } | null;
   tokens: { id: number; position: number; value_preview: string; status: string; username: string | null }[];
   selected_org_ids: number[];
@@ -61,6 +62,7 @@ export function ConfigForm({
   const [messageMain, setMessageMain] = useState("");
   const [messagePerOrg, setMessagePerOrg] = useState("");
   const [imageUrl, setImageUrl] = useState("");
+  const [blockedNames, setBlockedNames] = useState("");
   const [selectedOrgIds, setSelectedOrgIds] = useState<Set<number>>(new Set());
   const [feedback, setFeedback] = useState<string | null>(null);
   const [openOrgId, setOpenOrgId] = useState<number | null>(null);
@@ -90,6 +92,7 @@ export function ConfigForm({
       setMessageMain(cfg.config.message_main);
       setMessagePerOrg(cfg.config.message_per_org);
       setImageUrl(cfg.config.image_url ?? "");
+      setBlockedNames(cfg.config.blocked_names ?? "");
     }
     setSelectedOrgIds(new Set(cfg.selected_org_ids));
     setLoading(false);
@@ -233,6 +236,7 @@ export function ConfigForm({
           message_main: messageMain,
           message_per_org: messagePerOrg,
           image_url: imageUrl.trim() || null,
+          blocked_names: blockedNames,
           tokens_raw: tokensRaw,
           selected_org_ids: Array.from(selectedOrgIds),
         }),
@@ -592,6 +596,19 @@ export function ConfigForm({
             />
           </div>
         )}
+      </Section>
+
+      <Section title="Nomes a evitar (Anti-Concorrência)">
+        <textarea
+          className="input font-mono text-sm resize-none h-28"
+          placeholder={"ALANA\nMARIA\nSOPHIA\nLANA"}
+          value={blockedNames}
+          onChange={(e) => setBlockedNames(e.target.value)}
+          spellCheck={false}
+        />
+        <p className="text-xs text-slate-500 mt-2">
+          Um nome por linha. Quando a fila exibir o nome de um jogador que esteja nessa lista, o bot pula a fila automaticamente (sem clicar Entrar). Funciona apenas para filas que mostram nomes — filas que só exibem IDs são ignoradas.
+        </p>
       </Section>
 
       <div className="flex flex-col gap-3">

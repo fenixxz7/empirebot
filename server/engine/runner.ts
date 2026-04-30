@@ -41,6 +41,7 @@ interface CycleConfig {
   allowed_modes: string[];
   allowed_categories: string[];
   selected_org_ids: number[];
+  blockedNames: string[];
 }
 
 const STARTUP_GRACE_MS = 5000;
@@ -171,8 +172,9 @@ export class QueueRunner {
       delay_seconds: number;
       allowed_modes: string;
       allowed_categories: string;
+      blocked_names: string;
     }>(
-      `SELECT delay_seconds, allowed_modes, allowed_categories
+      `SELECT delay_seconds, allowed_modes, allowed_categories, blocked_names
        FROM instance_configs
        WHERE instance_id = $1`,
       [this.instanceId],
@@ -190,6 +192,7 @@ export class QueueRunner {
       allowed_modes: parseList(cfgRows[0]?.allowed_modes ?? "").map(normalizeMode).filter((m): m is string => m !== null),
       allowed_categories: parseList(cfgRows[0]?.allowed_categories ?? ""),
       selected_org_ids: orgRows.map((r) => r.org_id),
+      blockedNames: parseList(cfgRows[0]?.blocked_names ?? "").map((n) => n.toLowerCase()),
     };
   }
 
@@ -293,6 +296,7 @@ export class QueueRunner {
       const ranked = await this.rankCandidatesByPlayers(
         modeEligible.length > 0 ? modeEligible : eligible,
         token.token,
+        cfg.blockedNames,
       );
       candidate = ranked.choice;
       candidatePlayers = ranked.players;
@@ -335,6 +339,7 @@ export class QueueRunner {
   private async rankCandidatesByPlayers(
     candidates: ChannelRow[],
     token: string,
+    blockedNames: string[] = [],
   ): Promise<{ choice: ChannelRow | null; players: number }> {
     const rest = new DiscordRest(token);
     const now = Date.now();
@@ -353,16 +358,33 @@ export class QueueRunner {
       const r = await rest.fetchMessage(c.channel_id, c.message_id);
       if (r.status === 200 && r.data) {
         const cnt = countPlayers(r.data);
-        this.playerCache.set(keyOf(c), { count: cnt, ts: Date.now() });
+        // -1 = fila bloqueada por nome de oponente
+        const blocked =
+          blockedNames.length > 0 && hasBlockedName(r.data, blockedNames);
+        this.playerCache.set(keyOf(c), {
+          count: blocked ? -1 : cnt,
+          ts: Date.now(),
+        });
+        if (blocked) {
+          await this.manager.log(
+            this.instanceId,
+            "WARN",
+            "engine",
+            `Fila bloqueada em ${c.org_name} · #${c.channel_name ?? c.channel_id} — nome na lista de bloqueio.`,
+          );
+        }
       } else if (r.status === 404) {
         this.playerCache.set(keyOf(c), { count: 0, ts: Date.now() });
       }
     }
 
-    const scored = candidates.map((c) => {
-      const cached = this.playerCache.get(keyOf(c));
-      return { ch: c, players: cached?.count ?? 0 };
-    });
+    // Filtra canais com count = -1 (bloqueados por nome)
+    const scored = candidates
+      .map((c) => {
+        const cached = this.playerCache.get(keyOf(c));
+        return { ch: c, players: cached?.count ?? 0 };
+      })
+      .filter((s) => s.players !== -1);
     scored.sort((a, b) => b.players - a.players);
 
     return {
@@ -588,6 +610,27 @@ function pickEnterButton(buttons: ChannelRow["buttons"]) {
     if (found) return found;
   }
   return usable[0];
+}
+
+/**
+ * Retorna true se o texto do embed contiver qualquer nome bloqueado.
+ * Compara case-insensitive contra description e fields de todos os embeds.
+ * Funciona para filas que mostram @nomes (1x1); ignora filas só com IDs.
+ */
+function hasBlockedName(msg: DiscordMessage, blockedNames: string[]): boolean {
+  if (blockedNames.length === 0) return false;
+  const parts: string[] = [];
+  for (const e of msg.embeds ?? []) {
+    if (e.description) parts.push(e.description);
+    for (const f of e.fields ?? []) {
+      if (f.value) parts.push(f.value);
+      if (f.name) parts.push(f.name);
+    }
+    if (e.title) parts.push(e.title);
+  }
+  if (msg.content) parts.push(msg.content);
+  const text = parts.join("\n").toLowerCase();
+  return blockedNames.some((name) => text.includes(name));
 }
 
 function countPlayers(msg: DiscordMessage): number {

@@ -51,6 +51,7 @@ export interface InstanceConfig {
   message_main: string;
   message_per_org: string;
   image_url: string | null;
+  blocked_names: string;
 }
 
 export interface Token {

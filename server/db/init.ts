@@ -132,6 +132,11 @@ export async function initDatabase(): Promise<void> {
       ON queue_joins (instance_id, joined_at DESC)
   `);
 
+  // Nomes bloqueados (evitar entrar em fila com esses oponentes)
+  await pool.query(
+    `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS blocked_names TEXT NOT NULL DEFAULT ''`,
+  );
+
   // Garante que ninguém ficou com fila "fantasma" entre boots
   await pool.query(`DELETE FROM active_queues`);
 

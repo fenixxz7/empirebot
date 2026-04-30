@@ -21,10 +21,10 @@ configRouter.get("/:instanceId", async (req, res) => {
     category: string; allowed_categories: string;
     delay_seconds: number; rotation_minutes: number;
     allowed_modes: string; message_main: string; message_per_org: string;
-    image_url: string | null;
+    image_url: string | null; blocked_names: string;
   }>(
     `SELECT category, allowed_categories, delay_seconds, rotation_minutes,
-            allowed_modes, message_main, message_per_org, image_url
+            allowed_modes, message_main, message_per_org, image_url, blocked_names
      FROM instance_configs WHERE instance_id = $1`,
     [id]
   );
@@ -63,7 +63,7 @@ configRouter.put("/:instanceId", async (req, res) => {
   const {
     allowed_categories, delay_seconds, rotation_minutes,
     allowed_modes, message_main, message_per_org, image_url,
-    tokens_raw, selected_org_ids,
+    tokens_raw, selected_org_ids, blocked_names,
   } = req.body as {
     allowed_categories: string | string[];
     delay_seconds: number;
@@ -74,6 +74,7 @@ configRouter.put("/:instanceId", async (req, res) => {
     image_url: string | null;
     tokens_raw: string;
     selected_org_ids: number[];
+    blocked_names: string;
   };
 
   // allowed_categories pode chegar como array (UI) ou string CSV (terminal/api)
@@ -104,11 +105,12 @@ configRouter.put("/:instanceId", async (req, res) => {
      SET category = $2, allowed_categories = $3,
          delay_seconds = $4, rotation_minutes = $5,
          allowed_modes = $6, message_main = $7, message_per_org = $8,
-         image_url = $9, updated_at = NOW()
+         image_url = $9, blocked_names = $10, updated_at = NOW()
      WHERE instance_id = $1`,
     [id, primaryCategory, allowedCategoriesStr,
      delay_seconds, rotation_minutes, allowed_modes,
-     message_main, message_per_org, image_url ?? null]
+     message_main, message_per_org, image_url ?? null,
+     blocked_names ?? ""]
   );
 
   // Tokens: aceitamos textarea (1 por linha). Vazio = mantém os que estão.
