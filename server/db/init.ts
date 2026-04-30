@@ -6,9 +6,6 @@ import { pool, query } from "./pool.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const DEFAULT_ORGS_MOBILE = ["Surf", "Tokio", "Paris", "Panda", "REAL", "CIPHER"];
-const DEFAULT_ORGS_MISTO = ["Surf", "Tokio", "Paris", "Panda", "REAL", "CIPHER"];
-const DEFAULT_ORGS_EMU = ["Surf", "Tokio", "Paris", "Panda", "REAL", "CIPHER"];
 
 export async function initDatabase(): Promise<void> {
   const sql = readFileSync(path.join(__dirname, "schema.sql"), "utf8");
@@ -118,35 +115,6 @@ export async function initDatabase(): Promise<void> {
     [instanceId]
   );
 
-  for (const cat of ["Mobile", "Misto", "Emulador"] as const) {
-    const list =
-      cat === "Mobile" ? DEFAULT_ORGS_MOBILE :
-      cat === "Misto" ? DEFAULT_ORGS_MISTO : DEFAULT_ORGS_EMU;
-    for (const name of list) {
-      await query(
-        `INSERT INTO orgs (name, category)
-         SELECT $1, $2
-         WHERE NOT EXISTS (
-           SELECT 1 FROM orgs WHERE name = $1 AND category = $2
-         )`,
-        [name, cat]
-      );
-    }
-  }
-
-  const orgIds = await query<{ id: number }>(
-    `SELECT id FROM orgs WHERE category = (
-      SELECT category FROM instance_configs WHERE instance_id = $1
-    )`,
-    [instanceId]
-  );
-  for (const o of orgIds) {
-    await query(
-      `INSERT INTO instance_orgs (instance_id, org_id) VALUES ($1, $2)
-       ON CONFLICT DO NOTHING`,
-      [instanceId, o.id]
-    );
-  }
 }
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);
