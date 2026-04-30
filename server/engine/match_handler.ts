@@ -17,7 +17,10 @@ interface ChannelCreateEvent {
   name: string;
   guild_id?: string;
   type: number;
+  parent_id?: string | null;
   permission_overwrites?: Array<{ id: string; type: number }>;
+  thread_metadata?: { archived?: boolean; locked?: boolean };
+  member?: { user_id?: string };
 }
 
 const MATCH_PATTERNS = [
@@ -25,6 +28,10 @@ const MATCH_PATTERNS = [
   /^partida-\d+$/i,
   /^sua[\s_-]partida[\s_-]\d+$/i,
 ];
+
+// Discord channel types
+// 0 = GUILD_TEXT, 10 = GUILD_NEWS_THREAD, 11 = GUILD_PUBLIC_THREAD, 12 = GUILD_PRIVATE_THREAD
+const MATCH_CHANNEL_TYPES = new Set([0, 10, 11, 12]);
 
 function isMatchChannel(name: string): boolean {
   return MATCH_PATTERNS.some((r) => r.test(name));
@@ -90,7 +97,7 @@ export class MatchHandler {
     event: ChannelCreateEvent,
     tokens: MatchToken[],
   ): Promise<void> {
-    if (event.type !== 0) return;
+    if (!MATCH_CHANNEL_TYPES.has(event.type)) return;
     if (!isMatchChannel(event.name)) return;
 
     const key = `${this.instanceId}:${event.id}`;

@@ -170,10 +170,10 @@ class Manager {
     const matchHandler = new MatchHandler(instanceId, this);
     this.matchHandlers.set(instanceId, matchHandler);
 
-    // Escuta CHANNEL_CREATE em todos os tokens
+    // Escuta CHANNEL_CREATE e THREAD_CREATE em todos os tokens
     for (const e of entries) {
       e.client.on("dispatch", (eventName: string, eventData: any) => {
-        if (eventName !== "CHANNEL_CREATE") return;
+        if (eventName !== "CHANNEL_CREATE" && eventName !== "THREAD_CREATE") return;
         const matchTokens: MatchToken[] = (this.workers.get(instanceId) ?? [])
           .filter((w) => w.client.isReady())
           .map((w) => ({
