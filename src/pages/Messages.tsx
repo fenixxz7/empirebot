@@ -37,6 +37,8 @@ export default function Messages() {
   const [clearingResponded, setClearingResponded] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [debugData, setDebugData] = useState<unknown>(null);
+  const [debugLoading, setDebugLoading] = useState(false);
   const snapTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeIdRef = useRef<number | null>(null);
 
@@ -84,6 +86,17 @@ export default function Messages() {
   function flash(msg: string) {
     setFeedback(msg);
     setTimeout(() => setFeedback(null), 2500);
+  }
+
+  async function debugRequests() {
+    if (activeId === null || debugLoading) return;
+    setDebugLoading(true);
+    try {
+      const data = await fetch(`/api/messages/${activeId}/debug/requests`).then(r => r.json());
+      setDebugData(data);
+    } finally {
+      setDebugLoading(false);
+    }
   }
 
   async function scanNow() {
@@ -224,6 +237,13 @@ export default function Messages() {
                     className="px-2.5 py-1 rounded-lg bg-indigo-500/20 border border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/30 transition-colors disabled:opacity-50 text-[11px] font-medium"
                   >
                     {scanning ? "Varrendo…" : "⟳ Varrer Agora"}
+                  </button>
+                  <button
+                    onClick={debugRequests}
+                    disabled={debugLoading}
+                    className="px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-500/25 text-amber-400 hover:bg-amber-500/25 transition-colors disabled:opacity-50 text-[11px] font-medium"
+                  >
+                    {debugLoading ? "…" : "Debug"}
                   </button>
                 </div>
               </div>
@@ -492,6 +512,23 @@ export default function Messages() {
         )}
         {feedback && !saving && (
           <div className="fixed bottom-6 right-6 bg-slate-800 border border-emerald-500/30 rounded-xl px-4 py-2 text-sm text-emerald-300 shadow-xl">✓ {feedback}</div>
+        )}
+
+        {/* Modal de Debug */}
+        {debugData !== null && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
+            <div className="bg-slate-900 border border-white/10 rounded-2xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-white/10">
+                <p className="text-sm font-semibold text-white">Debug — Resposta Raw do Discord</p>
+                <button onClick={() => setDebugData(null)} className="text-slate-400 hover:text-white text-lg leading-none">✕</button>
+              </div>
+              <div className="overflow-auto p-4 flex-1">
+                <pre className="text-[11px] text-slate-300 whitespace-pre-wrap break-all font-mono">
+                  {JSON.stringify(debugData, null, 2)}
+                </pre>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </div>

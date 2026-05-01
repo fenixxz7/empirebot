@@ -118,6 +118,25 @@ export class DiscordRest {
     return this.request<DiscordDMChannel[]>("GET", `/users/@me/message-requests`);
   }
 
+  /** Retorna a resposta bruta (texto) do endpoint de message requests para diagnóstico. */
+  async listMessageRequestsRaw(): Promise<{ status: number; text: string }> {
+    const url = `${BASE}/users/@me/message-requests`;
+    try {
+      const res = await fetch(url, {
+        method: "GET",
+        headers: {
+          authorization: this.token,
+          "content-type": "application/json",
+          "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        },
+      });
+      const text = await res.text();
+      return { status: res.status, text };
+    } catch (err) {
+      return { status: 0, text: (err as Error).message };
+    }
+  }
+
   /** Envia uma mensagem numa DM (para selfbot, isso aceita o request implicitamente). */
   sendDM(channelId: string, content: string) {
     return this.request<{ id: string }>(

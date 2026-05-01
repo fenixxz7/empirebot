@@ -126,29 +126,31 @@ messagesRouter.get("/:instanceId/debug/requests", async (req, res) => {
   const results: Array<{
     token_position: number;
     username: string | null;
-    status: number;
-    error?: string;
-    data_type: string;
-    data_length?: number;
-    data_sample?: unknown;
+    http_status: number;
+    raw_response: string;
+    parsed_type: string;
+    parsed_keys?: string[];
+    parsed_length?: number;
     responded_ids: string[];
   }> = [];
 
   for (const tok of tokens) {
     const rest = new DiscordRest(tok.value);
-    const r = await rest.listMessageRequests();
+    const raw = await rest.listMessageRequestsRaw();
     const respondedRows = await query<{ user_id: string }>(
       `SELECT user_id FROM dm_responded WHERE instance_id = $1`,
       [id]
     );
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw.text); } catch { parsed = null; }
     results.push({
       token_position: tok.position,
       username: tok.username,
-      status: r.status,
-      error: r.error,
-      data_type: Array.isArray(r.data) ? "array" : typeof r.data,
-      data_length: Array.isArray(r.data) ? r.data.length : undefined,
-      data_sample: Array.isArray(r.data) ? r.data.slice(0, 3) : r.data,
+      http_status: raw.status,
+      raw_response: raw.text.slice(0, 2000),
+      parsed_type: parsed === null ? "null" : Array.isArray(parsed) ? "array" : typeof parsed,
+      parsed_keys: parsed && typeof parsed === "object" && !Array.isArray(parsed) ? Object.keys(parsed as object) : undefined,
+      parsed_length: Array.isArray(parsed) ? (parsed as unknown[]).length : undefined,
       responded_ids: respondedRows.map(row => row.user_id),
     });
   }

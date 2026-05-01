@@ -128,13 +128,29 @@ export class DmResponder {
     for (const tok of tokens) {
       const rest = new DiscordRest(tok.value);
       const res = await rest.listMessageRequests();
-      if (res.status !== 200 || !res.data) {
-        await this.log("WARN", `Falha ao buscar message requests: HTTP ${res.status} | data=${res.data === null ? "null" : typeof res.data} | ${res.error?.slice(0, 120) ?? "sem detalhe"}`);
-        continue;
+
+      // Log detalhado para diagnóstico do formato de resposta
+      const dataType = res.data === null ? "null" : Array.isArray(res.data) ? "array" : typeof res.data;
+      const dataKeys = res.data && typeof res.data === "object" && !Array.isArray(res.data)
+        ? Object.keys(res.data as object).join(",")
+        : "";
+      await this.log(
+        res.status === 200 ? "INFO" : "WARN",
+        `Requests: HTTP ${res.status} | tipo=${dataType}${dataKeys ? ` | keys=[${dataKeys}]` : ""} | ${Array.isArray(res.data) ? `${res.data.length} items` : res.error?.slice(0, 80) ?? JSON.stringify(res.data)?.slice(0, 80) ?? ""}`
+      );
+
+      if (res.status !== 200 || !res.data) continue;
+
+      // O endpoint pode retornar array direto OU { message_requests: [...] }
+      let dataArr: import("../discord/rest.js").DiscordDMChannel[] = [];
+      if (Array.isArray(res.data)) {
+        dataArr = res.data as import("../discord/rest.js").DiscordDMChannel[];
+      } else {
+        const obj = res.data as Record<string, unknown>;
+        const nested = obj.message_requests ?? obj.channels ?? obj.data ?? obj.items;
+        if (Array.isArray(nested)) dataArr = nested as import("../discord/rest.js").DiscordDMChannel[];
       }
 
-      const dataArr = Array.isArray(res.data) ? res.data : [];
-      await this.log("INFO", `Varredura: ${dataArr.length} channel(s) retornado(s) pelo endpoint`);
       for (const ch of dataArr) {
         const recipient = ch.recipients?.[0];
         if (!recipient) continue;
