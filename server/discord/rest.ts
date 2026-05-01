@@ -153,10 +153,14 @@ export class DiscordRest {
   }
 
   /** Lista os DM message requests pendentes do usuário autenticado.
-   *  O endpoint /users/@me/message-requests só existe na API v9 do Discord (selfbot).
+   *  /users/@me/message-requests retorna 404 — usamos o endpoint de canais
+   *  com include_non_channeled=true e filtramos por is_message_request=true.
    */
   listMessageRequests() {
-    return this.requestV9<DiscordDMChannel[]>("GET", `/users/@me/message-requests?limit=100`);
+    return this.requestV9<DiscordDMChannel[]>(
+      "GET",
+      `/users/@me/channels?include_non_channeled=true`,
+    );
   }
 
   /** Retorna a resposta bruta (texto) de MÚLTIPLOS endpoints candidatos para diagnóstico. */

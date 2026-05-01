@@ -151,7 +151,12 @@ export class DmResponder {
         if (Array.isArray(nested)) dataArr = nested as import("../discord/rest.js").DiscordDMChannel[];
       }
 
+      const requestCount = dataArr.filter(c => c.is_message_request).length;
+      await this.log("INFO", `Varredura: ${dataArr.length} canal(is), ${requestCount} message request(s) pendente(s)`);
+
       for (const ch of dataArr) {
+        // Filtra apenas canais que são message requests pendentes
+        if (!ch.is_message_request) continue;
         const recipient = ch.recipients?.[0];
         if (!recipient) continue;
 
