@@ -228,6 +228,9 @@ class Manager {
       /^aguardando-\d+$/i,
     ];
     const seenMessageChannels = new Set<string>();
+    // Deduplicação de DMs: conta apenas o primeiro contato por canal por sessão.
+    // Compartilhado entre todos os tokens da instância para evitar contagem dupla.
+    const seenDmChannels = new Set<string>();
 
     for (const e of entries) {
       e.client.on("dispatch", (eventName: string, eventData: any) => {
@@ -241,9 +244,8 @@ class Manager {
           ).catch(() => {});
         }
 
-        // MESSAGE_CREATE: DM recebida de outro usuário → incrementa contador de DMs
-        // Detecta quando um player manda um message request para o bot.
-        // DMs não têm guild_id no payload do gateway.
+        // MESSAGE_CREATE: DM recebida de outro usuário → incrementa contador de DMs.
+        // Conta apenas 1x por canal por sessão (deduplicado entre tokens).
         if (
           eventName === "MESSAGE_CREATE" &&
           !eventData?.guild_id &&
@@ -251,7 +253,14 @@ class Manager {
         ) {
           const myId = e.client.getUserId();
           const authorId = String(eventData?.author?.id ?? eventData?.author ?? "");
-          if (myId && authorId && authorId !== myId) {
+          const chId = String(eventData.channel_id);
+          if (myId && authorId && authorId !== myId && !seenDmChannels.has(chId)) {
+            seenDmChannels.add(chId);
+            // Limita o set para não crescer infinito
+            if (seenDmChannels.size > 2000) {
+              const first = seenDmChannels.values().next().value;
+              if (first) seenDmChannels.delete(first);
+            }
             query(
               `UPDATE stats SET dms = dms + 1 WHERE instance_id = $1`,
               [instanceId],

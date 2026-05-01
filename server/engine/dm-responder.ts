@@ -129,10 +129,16 @@ export class DmResponder {
     for (const tok of tokens) {
       const rest = new DiscordRest(tok.value);
       const res = await rest.listMessageRequests();
-      if (!res.data) continue;
+      if (!res.data) {
+        if (res.status !== 200) {
+          await this.log("WARN", `Falha ao buscar message requests: HTTP ${res.status} — ${res.error?.slice(0, 120) ?? "sem detalhe"}`);
+        }
+        continue;
+      }
+
+      await this.log("INFO", `Message requests encontrados: ${res.data.length}`);
 
       for (const ch of res.data) {
-        if (!ch.is_message_request) continue;
         const recipient = ch.recipients?.[0];
         if (!recipient) continue;
 
