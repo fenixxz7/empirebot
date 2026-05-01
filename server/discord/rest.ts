@@ -1,4 +1,5 @@
 const BASE = "https://discord.com/api/v10";
+const BASE_V9 = "https://discord.com/api/v9";
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -13,12 +14,21 @@ export interface DiscordResponse<T = unknown> {
 export class DiscordRest {
   constructor(private readonly token: string) {}
 
-  async request<T = unknown>(
+  requestV9<T = unknown>(method: string, path: string, body?: unknown) {
+    return this.requestBase<T>(BASE_V9, method, path, body);
+  }
+
+  request<T = unknown>(method: string, path: string, body?: unknown) {
+    return this.requestBase<T>(BASE, method, path, body);
+  }
+
+  async requestBase<T = unknown>(
+    base: string,
     method: string,
     path: string,
     body?: unknown,
   ): Promise<DiscordResponse<T>> {
-    const url = `${BASE}${path}`;
+    const url = `${base}${path}`;
     let attempts = 0;
     while (true) {
       attempts += 1;
@@ -113,14 +123,16 @@ export class DiscordRest {
     return this.request<unknown>("POST", `/channels/${channelId}/typing`);
   }
 
-  /** Lista os DM message requests pendentes do usuário autenticado. */
+  /** Lista os DM message requests pendentes do usuário autenticado.
+   *  O endpoint /users/@me/message-requests só existe na API v9 do Discord (selfbot).
+   */
   listMessageRequests() {
-    return this.request<DiscordDMChannel[]>("GET", `/users/@me/message-requests`);
+    return this.requestV9<DiscordDMChannel[]>("GET", `/users/@me/message-requests`);
   }
 
   /** Retorna a resposta bruta (texto) do endpoint de message requests para diagnóstico. */
   async listMessageRequestsRaw(): Promise<{ status: number; text: string }> {
-    const url = `${BASE}/users/@me/message-requests`;
+    const url = `https://discord.com/api/v9/users/@me/message-requests`;
     try {
       const res = await fetch(url, {
         method: "GET",
