@@ -337,12 +337,19 @@ export class QueueRunner {
       candidate = ranked.choice;
       candidatePlayers = ranked.players;
 
-      // Avança o cursor de org — garante round-robin real entre orgs.
+      // Avança o cursor de org para a próxima somente se a org já vai estar
+      // cheia após esta entrada (activeForOrg + 1 >= maxForOrg).
+      // Caso ainda haja vagas, mantém o cursor na mesma org para que o próximo
+      // tick tente entrar mais filas nela antes de passar adiante.
+      const willBeFull = (activeForOrg + 1) >= maxForOrg;
       const prevOrgCursor = this.orgCursor;
-      this.orgCursor = (this.orgCursor + 1) % totalOrgs;
+      if (willBeFull) {
+        this.orgCursor = (this.orgCursor + 1) % totalOrgs;
+      }
+      // else: cursor permanece na mesma org — próximo tick tenta nova vaga aqui
 
       // full_cycle: quando a lista de orgs fecha um ciclo completo, troca de token
-      if (cfg.tokenStrategy === "full_cycle" && this.orgCursor < prevOrgCursor) {
+      if (cfg.tokenStrategy === "full_cycle" && willBeFull && this.orgCursor < prevOrgCursor) {
         this.tokenCursor = (this.tokenCursor + 1) % tokens.length;
         this.joinsOnCurrentToken = 0;
         await this.manager.log(
