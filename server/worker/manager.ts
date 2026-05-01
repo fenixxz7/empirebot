@@ -427,23 +427,43 @@ class Manager {
           const myId = e.client.getUserId();
           const authorId = String(eventData?.author?.id ?? eventData?.author ?? "");
           const chId = String(eventData.channel_id);
-          if (myId && authorId && authorId !== myId && !seenDmChannels.has(chId)) {
-            seenDmChannels.add(chId);
-            // Limita o set para não crescer infinito
-            if (seenDmChannels.size > 2000) {
-              const first = seenDmChannels.values().next().value;
-              if (first) seenDmChannels.delete(first);
+          if (myId && authorId && authorId !== myId) {
+            // Empurra direto pra fila/cache do responder — sinal mais confiável que CHANNEL_CREATE
+            const author = eventData?.author ?? {};
+            const isBot = author?.bot === true;
+            const username = String(
+              author?.global_name ?? author?.username ?? authorId,
+            );
+            if (!isBot) {
+              this.cachePendingRequest(instanceId, {
+                channelId: chId,
+                userId: authorId,
+                username,
+                seenAt: Date.now(),
+              });
+              const responder = dmResponders.get(instanceId);
+              if (responder) {
+                responder.pushFromGateway(chId, authorId, username).catch(() => {});
+              }
             }
-            query(
-              `UPDATE stats SET dms = dms + 1 WHERE instance_id = $1`,
-              [instanceId],
-            ).catch(() => {});
-            this.log(
-              instanceId,
-              "INFO",
-              "dm",
-              `Message request recebido de <@${authorId}>`,
-            ).catch(() => {});
+
+            if (!seenDmChannels.has(chId)) {
+              seenDmChannels.add(chId);
+              if (seenDmChannels.size > 2000) {
+                const first = seenDmChannels.values().next().value;
+                if (first) seenDmChannels.delete(first);
+              }
+              query(
+                `UPDATE stats SET dms = dms + 1 WHERE instance_id = $1`,
+                [instanceId],
+              ).catch(() => {});
+              this.log(
+                instanceId,
+                "INFO",
+                "dm",
+                `DM recebida de ${username} (<@${authorId}>)${isBot ? " — bot ignorado" : " — adicionado à fila"}`,
+              ).catch(() => {});
+            }
           }
           return;
         }
