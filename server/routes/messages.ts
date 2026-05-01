@@ -136,12 +136,28 @@ messagesRouter.get("/:instanceId/debug/requests", async (req, res) => {
     const endpoints = endpointResults.map((raw) => {
       let parsed: unknown;
       try { parsed = JSON.parse(raw.text); } catch { parsed = null; }
+
+      // Para arrays, mostra um resumo dos campos de cada item e destaca os que têm is_message_request
+      let summary: unknown = undefined;
+      if (Array.isArray(parsed)) {
+        const arr = parsed as Record<string, unknown>[];
+        summary = {
+          total: arr.length,
+          message_requests: arr.filter(c => c.is_message_request).length,
+          with_is_message_request_timestamp: arr.filter(c => c.is_message_request_timestamp).length,
+          flags_nonzero: arr.filter(c => (c.flags as number) !== 0).map(c => ({ id: c.id, flags: c.flags })),
+          sample_fields: arr[0] ? Object.keys(arr[0]) : [],
+          request_channels: arr.filter(c => c.is_message_request).slice(0, 3),
+        };
+      }
+
       return {
         url: raw.url,
         http_status: raw.status,
-        parsed_type: parsed === null ? "null" : Array.isArray(parsed) ? `array(${(parsed as unknown[]).length})` : typeof parsed,
+        parsed_type: parsed === null ? "null/truncated" : Array.isArray(parsed) ? `array(${(parsed as unknown[]).length})` : typeof parsed,
         parsed_keys: parsed && typeof parsed === "object" && !Array.isArray(parsed) ? Object.keys(parsed as object) : undefined,
-        raw_response: raw.text,
+        summary,
+        raw_response_truncated: raw.text.slice(0, 300),
       };
     });
 

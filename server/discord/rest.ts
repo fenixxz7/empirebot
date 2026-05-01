@@ -183,7 +183,7 @@ export class DiscordRest {
           },
         });
         const text = await res.text();
-        results.push({ status: res.status, text: text.slice(0, 500), url });
+        results.push({ status: res.status, text: text.slice(0, 8000), url });
       } catch (err) {
         results.push({ status: 0, text: (err as Error).message, url });
       }
