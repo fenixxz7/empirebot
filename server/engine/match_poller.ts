@@ -8,6 +8,7 @@ const MATCH_PATTERNS = [
   /^fila-\d+$/i,
   /^partida-\d+$/i,
   /^sua[\s_-]partida[\s_-]\d+$/i,
+  /^aguardando-\d+$/i,
 ];
 
 const TEXT_TYPES = new Set([0]);

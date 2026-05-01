@@ -221,6 +221,7 @@ export interface DiscordMessage {
   id: string;
   channel_id: string;
   author?: { id: string; username: string; bot?: boolean };
+  application_id?: string;
   content: string;
   embeds?: DiscordEmbed[];
   components?: DiscordActionRow[];

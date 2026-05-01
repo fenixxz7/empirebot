@@ -6,6 +6,7 @@ export interface MatchToken {
   position: number;
   token: string;
   userId: string;
+  sessionId: string;
 }
 
 export interface MatchHost {
@@ -28,7 +29,9 @@ const MATCH_PATTERNS = [
   /^fila-\d+$/i,
   /^partida-\d+$/i,
   /^sua[\s_-]partida[\s_-]\d+$/i,
+  /^aguardando-\d+$/i,
 ];
+
 
 // Discord channel types
 // 0 = GUILD_TEXT, 10 = GUILD_NEWS_THREAD, 11 = GUILD_PUBLIC_THREAD, 12 = GUILD_PRIVATE_THREAD
@@ -134,7 +137,7 @@ export class MatchHandler {
         this.instanceId,
         "ERROR",
         "match",
-        `Erro ao processar match ${event.name}: ${(err as Error).message}`,
+        `Erro ao processar canal ${event.name}: ${(err as Error).message}`,
       );
     } finally {
       this.processing.delete(key);
