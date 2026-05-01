@@ -1,0 +1,60 @@
+
+  {
+    "token_position": 1,
+    "username": "gabizinhasouzazs (Gabi)",
+    "endpoints": [
+      {
+        "url": "https://discord.com/api/v9/users/@me/message-requests",
+        "http_status": 404,
+        "parsed_type": "object",
+        "parsed_keys": [
+          "message",
+          "code"
+        ],
+        "raw_response_truncated": "{\"message\": \"404: Not Found\", \"code\": 0}"
+      },
+      {
+        "url": "https://discord.com/api/v9/users/@me/message-requests?limit=100",
+        "http_status": 404,
+        "parsed_type": "object",
+        "parsed_keys": [
+          "message",
+          "code"
+        ],
+        "raw_response_truncated": "{\"message\": \"404: Not Found\", \"code\": 0}"
+      },
+      {
+        "url": "https://discord.com/api/v10/users/@me/message-requests",
+        "http_status": 404,
+        "parsed_type": "object",
+        "parsed_keys": [
+          "message",
+          "code"
+        ],
+        "raw_response_truncated": "{\"message\": \"404: Not Found\", \"code\": 0}"
+      },
+      {
+        "url": "https://discord.com/api/v9/users/@me/channels?include_non_channeled=true",
+        "http_status": 200,
+        "parsed_type": "array(15)",
+        "summary": {
+          "total": 15,
+          "message_requests": 0,
+          "with_is_message_request_timestamp": 0,
+          "flags_nonzero": [],
+          "sample_fields": [
+            "id",
+            "type",
+            "last_message_id",
+            "flags",
+            "recipient_flags",
+            "recipients"
+          ],
+          "request_channels": []
+        },
+        "raw_response_truncated": "[{\"id\":\"1495586621033025676\",\"type\":1,\"last_message_id\":\"1495586638938636450\",\"flags\":0,\"recipient_flags\":0,\"recipients\":[{\"id\":\"1358684846318288896\",\"username\":\"COROLLA  APOSTAS 02\",\"global_name\":null,\"avatar\":\"c45edfa51567074b012f493e327a35d3\",\"avatar_decoration_data\":null,\"collectibles\":null,\"dis"
+      }
+    ],
+    "responded_ids": []
+  }
+]

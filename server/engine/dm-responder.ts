@@ -84,7 +84,36 @@ export class DmResponder {
     if (this.running) return;
     this.running = true;
     this.enabled = true;
+    // Drena cache de requests vistos via Gateway antes do responder iniciar
+    this.drainCachedFromManager().catch(() => {});
     this.scheduleNext(5_000);
+  }
+
+  private async drainCachedFromManager(): Promise<void> {
+    try {
+      const { manager } = await import("../worker/manager.js");
+      const cached = manager.drainPendingMessageRequests(this.instanceId);
+      if (cached.length === 0) return;
+      await this.log("INFO", `Drenando ${cached.length} request(s) cacheado(s) do Gateway.`);
+      for (const r of cached) {
+        await this.pushFromGateway(r.channelId, r.userId, r.username);
+      }
+    } catch (err) {
+      await this.log("WARN", `Falha ao drenar cache: ${(err as Error).message}`);
+    }
+  }
+
+  /** Força drenar o cache do manager (usado pelo botão Varrer Agora) */
+  async forceDrainCache(): Promise<number> {
+    const { manager } = await import("../worker/manager.js");
+    const cached = manager.drainPendingMessageRequests(this.instanceId);
+    let added = 0;
+    for (const r of cached) {
+      const before = this.queue.length;
+      await this.pushFromGateway(r.channelId, r.userId, r.username);
+      if (this.queue.length > before) added++;
+    }
+    return added;
   }
 
   stop() {
@@ -149,23 +178,19 @@ export class DmResponder {
     // para que a fila mostre na UI mesmo que o usuário ainda não configurou as msgs
     const allPending: PendingUser[] = [];
 
+    // Pega user_ids de todos os tokens conectados — pra ignorar DMs onde o bot já enviou algo
+    const { manager } = await import("../worker/manager.js");
+    const myUserIds = new Set(manager.getConnectedUserIds(this.instanceId));
+
     for (const tok of tokens) {
       const rest = new DiscordRest(tok.value);
       const res = await rest.listMessageRequests();
 
-      // Log detalhado para diagnóstico do formato de resposta
-      const dataType = res.data === null ? "null" : Array.isArray(res.data) ? "array" : typeof res.data;
-      const dataKeys = res.data && typeof res.data === "object" && !Array.isArray(res.data)
-        ? Object.keys(res.data as object).join(",")
-        : "";
-      await this.log(
-        res.status === 200 ? "INFO" : "WARN",
-        `Requests: HTTP ${res.status} | tipo=${dataType}${dataKeys ? ` | keys=[${dataKeys}]` : ""} | ${Array.isArray(res.data) ? `${res.data.length} items` : res.error?.slice(0, 80) ?? JSON.stringify(res.data)?.slice(0, 80) ?? ""}`
-      );
+      if (res.status !== 200 || !res.data) {
+        await this.log("WARN", `Falha ao listar canais: HTTP ${res.status} ${res.error?.slice(0, 80) ?? ""}`);
+        continue;
+      }
 
-      if (res.status !== 200 || !res.data) continue;
-
-      // O endpoint pode retornar array direto OU { message_requests: [...] }
       let dataArr: import("../discord/rest.js").DiscordDMChannel[] = [];
       if (Array.isArray(res.data)) {
         dataArr = res.data as import("../discord/rest.js").DiscordDMChannel[];
@@ -175,26 +200,63 @@ export class DmResponder {
         if (Array.isArray(nested)) dataArr = nested as import("../discord/rest.js").DiscordDMChannel[];
       }
 
-      const requestCount = dataArr.filter(c => c.is_message_request).length;
-      await this.log("INFO", `Varredura: ${dataArr.length} canal(is), ${requestCount} message request(s) pendente(s)`);
+      // Filtra DMs (type=1) com last_message_id e exclui os já respondidos
+      const dmCandidates = dataArr.filter(
+        (c) => (c as any).type === 1 && c.last_message_id && c.recipients?.[0],
+      );
 
-      for (const ch of dataArr) {
-        // Filtra apenas canais que são message requests pendentes
-        if (!ch.is_message_request) continue;
-        const recipient = ch.recipients?.[0];
-        if (!recipient) continue;
+      let detected = 0;
+      let skippedBots = 0;
+      let skippedCached = 0;
+      for (const ch of dmCandidates) {
+        const recipient = ch.recipients![0]!;
 
-        const alreadyDone = await query<{ c: string }>(
-          `SELECT COUNT(*)::text AS c FROM dm_responded WHERE instance_id = $1 AND user_id = $2`,
-          [this.instanceId, recipient.id]
-        );
-        if (Number(alreadyDone[0]?.c ?? 0) > 0) {
-          await this.log("INFO", `Request de ${recipient.global_name ?? recipient.username} ignorado — já respondido anteriormente (limpe o histórico para responder novamente).`);
+        // Ignora bots — não respondemos a contas automatizadas
+        if ((recipient as any).bot === true) {
+          skippedBots++;
           continue;
         }
 
-        const alreadyPending = allPending.some((p) => p.userId === recipient.id);
-        if (alreadyPending) continue;
+        // Já respondido alguma vez? pula (truth source autoritativa)
+        const alreadyDone = await query<{ c: string }>(
+          `SELECT COUNT(*)::text AS c FROM dm_responded WHERE instance_id = $1 AND user_id = $2`,
+          [this.instanceId, recipient.id],
+        );
+        if (Number(alreadyDone[0]?.c ?? 0) > 0) continue;
+
+        // Já está na fila? pula
+        if (allPending.some((p) => p.userId === recipient.id)) continue;
+        if (this.queue.some((q) => q.userId === recipient.id)) continue;
+        if (this.currentlyProcessing?.userId === recipient.id) continue;
+
+        // OTIMIZAÇÃO: se last_message_id não mudou desde a última varredura,
+        // o canal já foi avaliado e descartado — pula o fetch
+        const cachedLastMsgId = manager.getCachedLastMessageId(this.instanceId, ch.id);
+        if (cachedLastMsgId && cachedLastMsgId === ch.last_message_id) {
+          skippedCached++;
+          continue;
+        }
+
+        // HEURÍSTICA: busca as últimas mensagens do canal — se NENHUMA é do bot,
+        // é uma conversa onde ele nunca respondeu = request pendente
+        const msgsRes = await rest.channelMessages(ch.id, 10);
+        // Marca este last_message_id como "já avaliado" (mesmo se for falso/erro,
+        // pra não martelar canais sem permissão a cada scan)
+        if (ch.last_message_id) {
+          manager.setCachedLastMessageId(this.instanceId, ch.id, ch.last_message_id);
+        }
+
+        if (msgsRes.status !== 200 || !Array.isArray(msgsRes.data) || msgsRes.data.length === 0) {
+          continue;
+        }
+        const botEverReplied = msgsRes.data.some(
+          (m: any) => m?.author?.id && myUserIds.has(String(m.author.id)),
+        );
+        if (botEverReplied) continue;
+
+        const lastMsg = msgsRes.data[0] as any;
+        if (!lastMsg?.author?.id) continue;
+        if (myUserIds.has(String(lastMsg.author.id))) continue;
 
         allPending.push({
           channelId: ch.id,
@@ -202,7 +264,13 @@ export class DmResponder {
           username: recipient.global_name ?? recipient.username ?? recipient.id,
           addedAt: Date.now(),
         });
+        detected++;
       }
+
+      await this.log(
+        "INFO",
+        `Varredura: ${dmCandidates.length} DM(s), ${detected} pendente(s)${skippedBots > 0 ? `, ${skippedBots} bot(s)` : ""}${skippedCached > 0 ? `, ${skippedCached} cacheado(s)` : ""}.`,
+      );
     }
 
     // Adiciona só os novos — não substitui quem já está na fila aguardando

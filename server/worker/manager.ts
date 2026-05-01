@@ -45,6 +45,13 @@ interface RotationState {
 
 const ROTATION_TICK_MS = 5_000;
 
+interface PendingMessageRequest {
+  channelId: string;
+  userId: string;
+  username: string;
+  seenAt: number;
+}
+
 class Manager {
   private workers = new Map<number, WorkerEntry[]>();
   private runners = new Map<number, QueueRunner>();
@@ -53,6 +60,61 @@ class Manager {
   private discoveryRan = new Set<number>();
   private rotation = new Map<number, RotationState>();
   private rotationTimer: NodeJS.Timeout | null = null;
+  // Cache de message requests pendentes vistos via Gateway, persistente entre starts do responder
+  private pendingMsgRequests = new Map<number, Map<string, PendingMessageRequest>>();
+
+  private cachePendingRequest(
+    instanceId: number,
+    req: PendingMessageRequest,
+  ): void {
+    let map = this.pendingMsgRequests.get(instanceId);
+    if (!map) {
+      map = new Map();
+      this.pendingMsgRequests.set(instanceId, map);
+    }
+    map.set(req.channelId, req);
+  }
+
+  /** Retorna E remove os requests pendentes do cache (drena de fato) */
+  drainPendingMessageRequests(instanceId: number): PendingMessageRequest[] {
+    const map = this.pendingMsgRequests.get(instanceId);
+    if (!map || map.size === 0) return [];
+    const list = Array.from(map.values());
+    map.clear();
+    return list;
+  }
+
+  removeCachedRequest(instanceId: number, channelId: string): void {
+    this.pendingMsgRequests.get(instanceId)?.delete(channelId);
+  }
+
+  /** Cache de last_message_id por canal pra evitar re-fetch de mensagens em scans subsequentes */
+  private channelLastMsgCache = new Map<number, Map<string, string>>();
+
+  getCachedLastMessageId(instanceId: number, channelId: string): string | undefined {
+    return this.channelLastMsgCache.get(instanceId)?.get(channelId);
+  }
+
+  setCachedLastMessageId(instanceId: number, channelId: string, lastMsgId: string): void {
+    let m = this.channelLastMsgCache.get(instanceId);
+    if (!m) {
+      m = new Map();
+      this.channelLastMsgCache.set(instanceId, m);
+    }
+    m.set(channelId, lastMsgId);
+  }
+
+  /** Retorna todos os user_ids dos tokens conectados pra uma instância */
+  getConnectedUserIds(instanceId: number): string[] {
+    const entries = this.workers.get(instanceId) ?? [];
+    const out: string[] = [];
+    for (const e of entries) {
+      if (!e.client.isReady()) continue;
+      const uid = e.client.getUserId();
+      if (uid) out.push(uid);
+    }
+    return out;
+  }
 
   private async runAutoDiscovery(
     instanceId: number,
@@ -141,23 +203,57 @@ class Manager {
           );
         }
 
+        // Diagnóstico: log do que veio em private_channels do READY
+        const allPriv = data.private_channels ?? [];
+        const sampleFields = allPriv[0] ? Object.keys(allPriv[0]).join(",") : "(vazio)";
+        await this.log(
+          instanceId,
+          "INFO",
+          "dm",
+          `READY: private_channels.length=${allPriv.length} sample_fields=[${sampleFields}]`,
+        );
+
         // Verifica private_channels do READY para capturar requests já pendentes
-        const pendingFromReady = (data.private_channels ?? []).filter(
+        const pendingFromReady = allPriv.filter(
           (ch) => ch.is_message_request === true || !!ch.is_message_request_timestamp,
         );
         if (pendingFromReady.length > 0) {
-          await this.log(instanceId, "INFO", "dm", `READY: ${pendingFromReady.length} message request(s) pendente(s) encontrado(s).`);
-          setTimeout(() => {
-            const responder = dmResponders.get(instanceId);
-            if (!responder) return;
+          await this.log(
+            instanceId,
+            "INFO",
+            "dm",
+            `READY: ${pendingFromReady.length} message request(s) pendente(s) encontrado(s) e cacheado(s).`,
+          );
+          for (const ch of pendingFromReady) {
+            const recipient = (ch.recipients ?? [])[0];
+            if (!recipient) continue;
+            const userId = String(recipient.id ?? "");
+            if (!userId) continue;
+            const username = String(
+              recipient.global_name ?? recipient.username ?? userId,
+            );
+            this.cachePendingRequest(instanceId, {
+              channelId: String(ch.id),
+              userId,
+              username,
+              seenAt: Date.now(),
+            });
+          }
+          // Tenta empurrar imediatamente (caso responder já esteja ativo)
+          const responder = dmResponders.get(instanceId);
+          if (responder) {
             for (const ch of pendingFromReady) {
               const recipient = (ch.recipients ?? [])[0];
               if (!recipient) continue;
               const userId = String(recipient.id ?? "");
-              const username = String(recipient.global_name ?? recipient.username ?? userId);
-              responder.pushFromGateway(String(ch.id), userId, username).catch(() => {});
+              const username = String(
+                recipient.global_name ?? recipient.username ?? userId,
+              );
+              responder
+                .pushFromGateway(String(ch.id), userId, username)
+                .catch(() => {});
             }
-          }, 3000); // aguarda o responder estar pronto
+          }
         }
       });
 
@@ -253,6 +349,24 @@ class Manager {
 
     for (const e of entries) {
       e.client.on("dispatch", (eventName: string, eventData: any) => {
+        // Log diagnóstico: eventos com REQUEST/RELATIONSHIP/INBOX no nome (busca por dispatch desconhecido de message request)
+        if (
+          eventName.includes("REQUEST") ||
+          eventName.includes("RELATIONSHIP") ||
+          eventName.includes("INBOX") ||
+          eventName === "PASSIVE_UPDATE_V1" ||
+          eventName === "PASSIVE_UPDATE_V2" ||
+          eventName === "READY_SUPPLEMENTAL"
+        ) {
+          const keys = eventData && typeof eventData === "object" ? Object.keys(eventData).join(",") : "?";
+          this.log(
+            instanceId,
+            "INFO",
+            "dm",
+            `GW special event: ${eventName} | keys=[${keys}] | token#${e.position}`,
+          ).catch(() => {});
+        }
+
         // Log diagnóstico: todos os eventos relevantes de canal/thread
         if (CHANNEL_EVENTS.has(eventName) || eventName.startsWith("THREAD")) {
           this.log(
@@ -263,15 +377,39 @@ class Manager {
           ).catch(() => {});
         }
 
-        // CHANNEL_CREATE com is_message_request=true: novo DM request → notifica DmResponder
+        // Log de TODOS os CHANNEL_CREATE em DMs (type=1) para diagnóstico de message requests
+        if (eventName === "CHANNEL_CREATE" && eventData?.type === 1) {
+          const r = (eventData.recipients ?? [])[0] as any;
+          const fields = Object.keys(eventData).join(",");
+          this.log(
+            instanceId,
+            "INFO",
+            "dm",
+            `CHANNEL_CREATE DM: user=${r?.username ?? "?"} flags=${eventData.flags} recipient_flags=${eventData.recipient_flags} is_message_request=${eventData.is_message_request} ts=${eventData.is_message_request_timestamp ?? "-"} | fields=[${fields}]`,
+          ).catch(() => {});
+        }
+
+        // CHANNEL_CREATE com is_message_request=true: novo DM request → cacheia + notifica responder
         if (eventName === "CHANNEL_CREATE" && eventData?.is_message_request === true) {
           const channelId = String(eventData.id ?? "");
           const recipient = (eventData.recipients ?? [])[0] as any;
           const userId = String(recipient?.id ?? "");
           const username = String(
-            recipient?.global_name ?? recipient?.username ?? userId
+            recipient?.global_name ?? recipient?.username ?? userId,
           );
           if (channelId && userId) {
+            this.cachePendingRequest(instanceId, {
+              channelId,
+              userId,
+              username,
+              seenAt: Date.now(),
+            });
+            this.log(
+              instanceId,
+              "INFO",
+              "dm",
+              `Novo message request: ${username} (canal ${channelId}) cacheado.`,
+            ).catch(() => {});
             const responder = dmResponders.get(instanceId);
             if (responder) {
               responder.pushFromGateway(channelId, userId, username).catch(() => {});

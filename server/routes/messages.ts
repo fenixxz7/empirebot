@@ -146,8 +146,27 @@ messagesRouter.get("/:instanceId/debug/requests", async (req, res) => {
           message_requests: arr.filter(c => c.is_message_request).length,
           with_is_message_request_timestamp: arr.filter(c => c.is_message_request_timestamp).length,
           flags_nonzero: arr.filter(c => (c.flags as number) !== 0).map(c => ({ id: c.id, flags: c.flags })),
+          recipient_flags_nonzero: arr.filter(c => (c.recipient_flags as number) !== 0).map(c => ({
+            id: c.id,
+            recipient_flags: c.recipient_flags,
+            recipient: ((c.recipients as any[])?.[0]?.username) ?? "?",
+          })),
           sample_fields: arr[0] ? Object.keys(arr[0]) : [],
           request_channels: arr.filter(c => c.is_message_request).slice(0, 3),
+          // Lista TODOS os DMs com username para identificar manualmente o "fenixxz"
+          all_dms: arr.filter(c => c.type === 1).map(c => {
+            const r = (c.recipients as any[])?.[0];
+            return {
+              id: c.id,
+              type: c.type,
+              flags: c.flags,
+              recipient_flags: c.recipient_flags,
+              last_message_id: c.last_message_id,
+              is_message_request: c.is_message_request,
+              is_message_request_timestamp: c.is_message_request_timestamp,
+              user: r ? { id: r.id, username: r.username, global_name: r.global_name } : null,
+            };
+          }),
         };
       }
 
@@ -179,7 +198,8 @@ messagesRouter.post("/:instanceId/scan-now", async (req, res) => {
     res.status(404).json({ error: "Responder não encontrado para esta instância" });
     return;
   }
+  const drained = await responder.forceDrainCache();
   await responder.tick();
   const snapshot = await responder.getSnapshot();
-  res.json({ ok: true, snapshot });
+  res.json({ ok: true, drained, snapshot });
 });
