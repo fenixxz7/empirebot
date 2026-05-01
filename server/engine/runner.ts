@@ -62,14 +62,14 @@ const MAX_FRESH_FETCH_PER_TICK = 6;
 // Filas normais resolvem em poucos minutos; >12min quase sempre indica
 // que a fila foi cancelada/resetada pelo bot da org sem virar partida.
 const ACTIVE_QUEUE_TTL_MS = 12 * 60 * 1000;
-// Long break: a cada 25-35 ações, pausa de ~15s (simula desatenção humana breve).
-const LONG_BREAK_AFTER_MIN = 25;
-const LONG_BREAK_AFTER_MAX = 35;
-const LONG_BREAK_MS_MIN = 13_000;
-const LONG_BREAK_MS_MAX = 17_000;
+// Long break: a cada 10-18 ações, pausa de ~30-60s (simula desatenção humana).
+const LONG_BREAK_AFTER_MIN = 10;
+const LONG_BREAK_AFTER_MAX = 18;
+const LONG_BREAK_MS_MIN = 30_000;
+const LONG_BREAK_MS_MAX = 60_000;
 // Backoff extra após rate limit (429), por cima do cooldown de fila.
-const RATE_LIMIT_BACKOFF_MIN_MS = 25_000;
-const RATE_LIMIT_BACKOFF_MAX_MS = 55_000;
+const RATE_LIMIT_BACKOFF_MIN_MS = 45_000;
+const RATE_LIMIT_BACKOFF_MAX_MS = 90_000;
 
 interface PlayerInfo {
   count: number;
@@ -370,8 +370,8 @@ export class QueueRunner {
     const tokenIdx = cfg.tokenStrategy === "single" ? 0 : this.tokenCursor % tokens.length;
     const token = tokens[tokenIdx]!;
 
-    // Pequena pausa humanizada antes de clicar (350-1500ms)
-    await sleep(350 + Math.floor(Math.random() * 1150));
+    // Pausa humanizada antes de clicar (1.5s–4.5s)
+    await sleep(1500 + Math.floor(Math.random() * 3000));
 
     const joined = await this.joinQueue(candidate, token, activeRows.length, candidatePlayers);
 
@@ -391,10 +391,10 @@ export class QueueRunner {
     }
 
     // Define o próximo momento permitido para entrar em fila.
-    // Jitter mais largo (0.6–1.7) para parecer menos robótico.
+    // Jitter largo (1.0–2.8x) para parecer menos robótico.
     const baseDelayMs = Math.max(1000, cfg.delay_seconds * 1000);
-    const jitter = 0.6 + Math.random() * 1.1;
-    let cooldown = Math.max(800, Math.floor(baseDelayMs * jitter));
+    const jitter = 1.0 + Math.random() * 1.8;
+    let cooldown = Math.max(4000, Math.floor(baseDelayMs * jitter));
     // Adiciona delay extra acumulado (rate limit / long break) e zera
     if (this.extraDelayMs > 0) {
       cooldown += this.extraDelayMs;
@@ -494,7 +494,7 @@ export class QueueRunner {
 
     for (const c of stale) {
       if (!c.message_id) continue;
-      await sleep(120 + Math.floor(Math.random() * 200));
+      await sleep(500 + Math.floor(Math.random() * 800));
       const r = await rest.fetchMessage(c.channel_id, c.message_id);
       if (r.status === 200 && r.data) {
         const cnt = countPlayers(r.data);
