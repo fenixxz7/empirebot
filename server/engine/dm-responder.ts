@@ -121,9 +121,8 @@ export class DmResponder {
     );
     if (tokens.length === 0) return;
 
-    const messages = await this.loadMessages();
-    if (messages.length === 0) return;
-
+    // Busca requests SEMPRE — independente de ter mensagens configuradas
+    // para que a fila mostre na UI mesmo que o usuário ainda não configurou as msgs
     const allPending: PendingUser[] = [];
 
     for (const tok of tokens) {
@@ -136,7 +135,9 @@ export class DmResponder {
         continue;
       }
 
-      await this.log("INFO", `Message requests encontrados: ${res.data.length}`);
+      if (res.data.length > 0) {
+        await this.log("INFO", `Message requests encontrados: ${res.data.length}`);
+      }
 
       for (const ch of res.data) {
         const recipient = ch.recipients?.[0];
@@ -146,7 +147,10 @@ export class DmResponder {
           `SELECT COUNT(*)::text AS c FROM dm_responded WHERE instance_id = $1 AND user_id = $2`,
           [this.instanceId, recipient.id]
         );
-        if (Number(alreadyDone[0]?.c ?? 0) > 0) continue;
+        if (Number(alreadyDone[0]?.c ?? 0) > 0) {
+          await this.log("INFO", `Request de ${recipient.global_name ?? recipient.username} ignorado — já respondido anteriormente (limpe o histórico para responder novamente).`);
+          continue;
+        }
 
         const alreadyPending = allPending.some((p) => p.userId === recipient.id);
         if (alreadyPending) continue;
@@ -167,6 +171,15 @@ export class DmResponder {
       if (!alreadyQueued && !isProcessingNow) {
         this.queue.push(pending);
       }
+    }
+
+    // Só processa (envia mensagens) se houver mensagens configuradas
+    const messages = await this.loadMessages();
+    if (messages.length === 0) {
+      if (this.queue.length > 0) {
+        await this.log("WARN", `${this.queue.length} request(s) na fila mas nenhuma mensagem configurada — configure mensagens na aba abaixo para responder.`);
+      }
+      return;
     }
 
     if (!this.currentlyProcessing && this.queue.length > 0) {
