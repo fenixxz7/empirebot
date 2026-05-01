@@ -57,8 +57,9 @@ export class DmResponder {
   }
 
   /**
-   * Chamado pelo manager quando o Gateway envia CHANNEL_CREATE com is_message_request=true.
-   * Adiciona o request direto à fila sem precisar de polling REST.
+   * Chamado pelo manager quando uma DM chega via Gateway.
+   * Só adiciona à fila se for um message request real (usuário com quem o bot
+   * NUNCA trocou mensagem antes). DMs de conversas existentes são ignoradas.
    */
   async pushFromGateway(channelId: string, userId: string, username: string): Promise<void> {
     if (!this.enabled) return;
@@ -68,7 +69,7 @@ export class DmResponder {
       [this.instanceId, userId]
     );
     if (Number(alreadyDone[0]?.c ?? 0) > 0) {
-      await this.log("INFO", `Gateway: request de ${username} ignorado — já respondido anteriormente.`);
+      await this.log("INFO", `Request de ${username} ignorado — já respondido anteriormente.`);
       return;
     }
 
@@ -76,8 +77,36 @@ export class DmResponder {
       || this.currentlyProcessing?.userId === userId;
     if (alreadyQueued) return;
 
+    // VALIDAÇÃO: só aceita se for conversa nova (bot nunca enviou mensagem nesse canal)
+    const { manager } = await import("../worker/manager.js");
+    const myUserIds = new Set(manager.getConnectedUserIds(this.instanceId));
+    const tokens = await query<{ value: string }>(
+      `SELECT value FROM tokens WHERE instance_id = $1 AND status = 'connected' ORDER BY position ASC LIMIT 1`,
+      [this.instanceId],
+    );
+    if (tokens.length === 0 || myUserIds.size === 0) {
+      await this.log("WARN", `Não foi possível validar histórico do canal ${channelId} (sem tokens conectados).`);
+      return;
+    }
+    const rest = new DiscordRest(tokens[0]!.value);
+    const msgs = await rest.channelMessages(channelId, 50);
+    if (msgs.status !== 200 || !Array.isArray(msgs.data)) {
+      await this.log("WARN", `Falha ao validar canal ${channelId}: HTTP ${msgs.status}. ${username} não adicionado à fila.`);
+      return;
+    }
+    const botEverReplied = msgs.data.some(
+      (m: any) => m?.author?.id && myUserIds.has(String(m.author.id)),
+    );
+    if (botEverReplied) {
+      await this.log(
+        "INFO",
+        `${username} ignorado — conversa existente (bot já trocou mensagem antes).`,
+      );
+      return;
+    }
+
     this.queue.push({ channelId, userId, username, addedAt: Date.now() });
-    await this.log("INFO", `Gateway: request de ${username} (<@${userId}>) adicionado à fila via evento.`);
+    await this.log("INFO", `Message request de ${username} (<@${userId}>) adicionado à fila.`);
   }
 
   start() {
