@@ -390,6 +390,18 @@ export class MatchHandler {
         "match",
         `Falha ao enviar mensagem na partida em #${event.name}: HTTP ${result.status}`,
       );
+      // Registra erro de envio por org (para o painel de erros)
+      const orgLabel = orgCtx?.org_name ?? guildId ?? event.name;
+      await query(
+        `INSERT INTO match_send_errors (instance_id, org_label, error_count, last_status, last_seen)
+         VALUES ($1, $2, 1, $3, NOW())
+         ON CONFLICT (instance_id, org_label)
+         DO UPDATE SET
+           error_count = match_send_errors.error_count + 1,
+           last_status = EXCLUDED.last_status,
+           last_seen   = NOW()`,
+        [this.instanceId, orgLabel, result.status],
+      ).catch(() => {});
     }
   }
 }

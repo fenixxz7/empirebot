@@ -9,6 +9,7 @@ import { messagesRouter } from "./messages.js";
 import { authRouter } from "./auth.js";
 import { tokensRouter } from "./tokens.js";
 import { blacklistRouter } from "./blacklist.js";
+import { sendErrorsRouter } from "./send-errors.js";
 import { pool } from "../db/pool.js";
 
 function requireAuth(req: Request, res: Response, next: NextFunction) {
@@ -40,4 +41,5 @@ export function mountApi(app: Express): void {
   app.use("/api/messages", requireAuth, messagesRouter);
   app.use("/api/tokens", requireAuth, tokensRouter);
   app.use("/api/instances/:id/blacklist", requireAuth, blacklistRouter);
+  app.use("/api/instances/:id/send-errors", requireAuth, sendErrorsRouter);
 }

@@ -124,3 +124,13 @@ CREATE TABLE IF NOT EXISTS matches (
   detected_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (instance_id, channel_id)
 );
+
+CREATE TABLE IF NOT EXISTS match_send_errors (
+  id            BIGSERIAL PRIMARY KEY,
+  instance_id   INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+  org_label     TEXT NOT NULL,
+  error_count   INTEGER NOT NULL DEFAULT 1,
+  last_status   INTEGER,
+  last_seen     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (instance_id, org_label)
+);
