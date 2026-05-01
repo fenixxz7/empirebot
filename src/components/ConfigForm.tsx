@@ -645,8 +645,27 @@ export function ConfigForm({
               <TrashIcon className="w-4 h-4" />
               Apagar org
             </button>
+            {orgs.length > 0 && (
+              selectedOrgIds.size === orgs.length ? (
+                <button
+                  type="button"
+                  onClick={() => setSelectedOrgIds(new Set())}
+                  className="btn-secondary"
+                >
+                  Desmarcar todas
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setSelectedOrgIds(new Set(orgs.map((o) => o.id)))}
+                  className="btn-secondary"
+                >
+                  Selecionar todas
+                </button>
+              )
+            )}
             <span className="text-xs text-slate-500 ml-1">
-              Os canais são descobertos automaticamente ao salvar.
+              {selectedOrgIds.size > 0 ? `${selectedOrgIds.size}/${orgs.length} selecionada(s)` : "Os canais são descobertos automaticamente ao salvar."}
             </span>
           </div>
         )}
