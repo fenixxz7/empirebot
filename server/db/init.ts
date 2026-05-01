@@ -152,6 +152,21 @@ export async function initDatabase(): Promise<void> {
     `ALTER TABLE stats ADD COLUMN IF NOT EXISTS bloqueadas INTEGER NOT NULL DEFAULT 0`,
   );
 
+  // Orgs inválidas por token — ban, sem acesso, timeout de guild
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS token_org_blacklist (
+      token_id   INTEGER NOT NULL REFERENCES tokens(id) ON DELETE CASCADE,
+      org_id     INTEGER NOT NULL REFERENCES orgs(id)   ON DELETE CASCADE,
+      reason     TEXT,
+      blocked_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (token_id, org_id)
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS token_org_blacklist_token
+      ON token_org_blacklist (token_id)
+  `);
+
   // ── DM Responder ─────────────────────────────────────────────────────────
   // Mensagens a enviar nos message requests recebidos
   await pool.query(`

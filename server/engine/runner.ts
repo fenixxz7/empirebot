@@ -86,15 +86,13 @@ export class QueueRunner {
   private nextBreakAt = randInt(LONG_BREAK_AFTER_MIN, LONG_BREAK_AFTER_MAX);
   private extraDelayMs = 0;
   private lastSweepAt = 0;
-  // Timestamp a partir do qual é permitido tentar entrar em uma nova fila.
-  // Separado do tick para que o tick rode rápido e não atrase outras tarefas.
   private nextJoinAt = 0;
-  // Cursor de modo por org — controla qual modo (1x1, 2x2…) usar na próxima
-  // passagem nessa org. Avança a cada entrada bem-sucedida na org.
   private orgModeCursor = new Map<number, number>();
-  // Rotação de tokens: qual token está ativo e quantas entradas já fez neste token.
   private tokenCursor = 0;
   private joinsOnCurrentToken = 0;
+  // token_id → Set<org_id>: orgs inválidas por token (ban / acesso negado)
+  private tokenOrgBlacklist = new Map<number, Set<number>>();
+  private blacklistLoaded = false;
 
   constructor(
     private readonly instanceId: number,
@@ -106,6 +104,8 @@ export class QueueRunner {
     this.orgCursor = 0;
     this.tokenCursor = 0;
     this.joinsOnCurrentToken = 0;
+    this.tokenOrgBlacklist.clear();
+    this.blacklistLoaded = false;
     this.timer = setTimeout(() => this.tick(), STARTUP_GRACE_MS);
   }
 
@@ -214,9 +214,10 @@ export class QueueRunner {
   }
 
   private async iterate(cfg: CycleConfig): Promise<void> {
-    // Cooldown entre entradas de fila — o tick roda rápido mas a entrada
-    // só acontece quando o intervalo configurado pelo usuário já passou.
     if (Date.now() < this.nextJoinAt) return;
+
+    // Carrega blacklist de orgs por token na primeira execução
+    if (!this.blacklistLoaded) await this.loadTokenBlacklist();
 
     const tokens = this.manager.getActiveTokens(this.instanceId);
     if (tokens.length === 0) {
@@ -316,9 +317,20 @@ export class QueueRunner {
         : this.tokenCursor % tokens.length;
       const selectedToken = tokens[activeTokenIdx]!;
 
+      // Filtra canais de orgs bloqueadas para este token específico
+      const blacklistedForToken = this.tokenOrgBlacklist.get(selectedToken.tokenId) ?? new Set<number>();
+      const candidatesForToken = (modeEligible.length > 0 ? modeEligible : eligible).filter(
+        (c) => !blacklistedForToken.has(c.org_id),
+      );
+      if (candidatesForToken.length === 0) {
+        this.orgCursor = (this.orgCursor + 1) % totalOrgs;
+        attempts++;
+        continue;
+      }
+
       const ranked = await this.rankCandidatesByPlayers(
-        modeEligible.length > 0 ? modeEligible : eligible,
-        selectedToken.token,
+        candidatesForToken,
+        selectedToken,
         cfg.blockedNames,
       );
       candidate = ranked.choice;
@@ -390,12 +402,55 @@ export class QueueRunner {
     this.nextJoinAt = Date.now() + cooldown;
   }
 
+  private async loadTokenBlacklist(): Promise<void> {
+    const rows = await query<{ token_id: number; org_id: number }>(
+      `SELECT b.token_id, b.org_id
+       FROM token_org_blacklist b
+       JOIN tokens t ON t.id = b.token_id
+       WHERE t.instance_id = $1`,
+      [this.instanceId],
+    );
+    this.tokenOrgBlacklist.clear();
+    for (const row of rows) {
+      if (!this.tokenOrgBlacklist.has(row.token_id)) {
+        this.tokenOrgBlacklist.set(row.token_id, new Set());
+      }
+      this.tokenOrgBlacklist.get(row.token_id)!.add(row.org_id);
+    }
+    this.blacklistLoaded = true;
+  }
+
+  private async blacklistOrgForToken(
+    tokenId: number,
+    tokenPos: number,
+    orgId: number,
+    orgName: string,
+    reason: string,
+  ): Promise<void> {
+    if (!this.tokenOrgBlacklist.has(tokenId)) {
+      this.tokenOrgBlacklist.set(tokenId, new Set());
+    }
+    if (this.tokenOrgBlacklist.get(tokenId)!.has(orgId)) return; // já bloqueado
+    this.tokenOrgBlacklist.get(tokenId)!.add(orgId);
+    await query(
+      `INSERT INTO token_org_blacklist (token_id, org_id, reason)
+       VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+      [tokenId, orgId, reason],
+    );
+    await this.manager.log(
+      this.instanceId,
+      "WARN",
+      "engine",
+      `Org "${orgName}" bloqueada para token #${tokenPos} — ${reason}. Será ignorada neste token.`,
+    );
+  }
+
   private async rankCandidatesByPlayers(
     candidates: ChannelRow[],
-    token: string,
+    activeToken: ActiveToken,
     blockedNames: string[] = [],
   ): Promise<{ choice: ChannelRow | null; players: number }> {
-    const rest = new DiscordRest(token);
+    const rest = new DiscordRest(activeToken.token);
     const now = Date.now();
     const keyOf = (c: ChannelRow) => `${c.channel_id}:${c.message_id}`;
 
@@ -431,18 +486,32 @@ export class QueueRunner {
             [this.instanceId],
           );
         }
+      } else if (r.status === 403) {
+        // 403 ao ler mensagem = token banido da guild ou sem acesso ao canal
+        await this.blacklistOrgForToken(
+          activeToken.tokenId,
+          activeToken.position,
+          c.org_id,
+          c.org_name,
+          `HTTP 403 ao ler canal #${c.channel_name ?? c.channel_id} — acesso negado`,
+        );
+        // Marca todos os candidatos desta org como inacessíveis neste tick
+        for (const oc of candidates.filter((x) => x.org_id === c.org_id)) {
+          this.playerCache.set(keyOf(oc), { count: -2, ts: Date.now() });
+        }
+        break;
       } else if (r.status === 404) {
         this.playerCache.set(keyOf(c), { count: 0, ts: Date.now() });
       }
     }
 
-    // Filtra canais com count = -1 (bloqueados por nome)
+    // Filtra canais com count negativo: -1 = nome bloqueado; -2 = org banida para este token
     const scored = candidates
       .map((c) => {
         const cached = this.playerCache.get(keyOf(c));
         return { ch: c, players: cached?.count ?? 0 };
       })
-      .filter((s) => s.players !== -1);
+      .filter((s) => s.players >= 0);
     scored.sort((a, b) => b.players - a.players);
 
     return {
@@ -539,6 +608,26 @@ export class QueueRunner {
         "WARN",
         "engine",
         `Rate-limited em ${ch.org_name} · ${modeLabel} · #${ch.channel_name ?? ch.channel_id} — esperando ${Math.round(backoff / 1000)}s antes de continuar.`,
+      );
+      return false;
+    } else if (r.status === 403) {
+      // 403 = banido da guild ou sem acesso — bloqueia esta org para este token
+      const rawError = r.error?.slice(0, 200) ?? "";
+      await this.blacklistOrgForToken(
+        token.tokenId,
+        token.position,
+        ch.org_id,
+        ch.org_name,
+        `HTTP 403 — acesso negado/banido (${rawError})`,
+      );
+      return false;
+    } else if (r.status === 401) {
+      // 401 = token inválido/expirado — loga mas não bloqueia org específica
+      await this.manager.log(
+        this.instanceId,
+        "ERROR",
+        "engine",
+        `Token #${token.position} inválido/expirado (HTTP 401) — desconecte e reconecte o token.`,
       );
       return false;
     } else {
