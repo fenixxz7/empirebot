@@ -56,6 +56,30 @@ export class DmResponder {
     ).catch(() => {});
   }
 
+  /**
+   * Chamado pelo manager quando o Gateway envia CHANNEL_CREATE com is_message_request=true.
+   * Adiciona o request direto à fila sem precisar de polling REST.
+   */
+  async pushFromGateway(channelId: string, userId: string, username: string): Promise<void> {
+    if (!this.enabled) return;
+
+    const alreadyDone = await query<{ c: string }>(
+      `SELECT COUNT(*)::text AS c FROM dm_responded WHERE instance_id = $1 AND user_id = $2`,
+      [this.instanceId, userId]
+    );
+    if (Number(alreadyDone[0]?.c ?? 0) > 0) {
+      await this.log("INFO", `Gateway: request de ${username} ignorado — já respondido anteriormente.`);
+      return;
+    }
+
+    const alreadyQueued = this.queue.some((q) => q.userId === userId)
+      || this.currentlyProcessing?.userId === userId;
+    if (alreadyQueued) return;
+
+    this.queue.push({ channelId, userId, username, addedAt: Date.now() });
+    await this.log("INFO", `Gateway: request de ${username} (<@${userId}>) adicionado à fila via evento.`);
+  }
+
   start() {
     if (this.running) return;
     this.running = true;

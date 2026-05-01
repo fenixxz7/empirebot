@@ -140,6 +140,25 @@ class Manager {
             console.error("[autoDiscovery]", err),
           );
         }
+
+        // Verifica private_channels do READY para capturar requests já pendentes
+        const pendingFromReady = (data.private_channels ?? []).filter(
+          (ch) => ch.is_message_request === true || !!ch.is_message_request_timestamp,
+        );
+        if (pendingFromReady.length > 0) {
+          await this.log(instanceId, "INFO", "dm", `READY: ${pendingFromReady.length} message request(s) pendente(s) encontrado(s).`);
+          setTimeout(() => {
+            const responder = dmResponders.get(instanceId);
+            if (!responder) return;
+            for (const ch of pendingFromReady) {
+              const recipient = (ch.recipients ?? [])[0];
+              if (!recipient) continue;
+              const userId = String(recipient.id ?? "");
+              const username = String(recipient.global_name ?? recipient.username ?? userId);
+              responder.pushFromGateway(String(ch.id), userId, username).catch(() => {});
+            }
+          }, 3000); // aguarda o responder estar pronto
+        }
       });
 
       client.on("resumed", async () => {
@@ -242,6 +261,22 @@ class Manager {
             "match",
             `GW event: ${eventName} | ch=${eventData?.name ?? eventData?.id ?? "?"} type=${eventData?.type ?? "?"} guild=${eventData?.guild_id ?? "?"} | token#${e.position}`,
           ).catch(() => {});
+        }
+
+        // CHANNEL_CREATE com is_message_request=true: novo DM request → notifica DmResponder
+        if (eventName === "CHANNEL_CREATE" && eventData?.is_message_request === true) {
+          const channelId = String(eventData.id ?? "");
+          const recipient = (eventData.recipients ?? [])[0] as any;
+          const userId = String(recipient?.id ?? "");
+          const username = String(
+            recipient?.global_name ?? recipient?.username ?? userId
+          );
+          if (channelId && userId) {
+            const responder = dmResponders.get(instanceId);
+            if (responder) {
+              responder.pushFromGateway(channelId, userId, username).catch(() => {});
+            }
+          }
         }
 
         // MESSAGE_CREATE: DM recebida de outro usuário → incrementa contador de DMs.

@@ -9,6 +9,13 @@ export interface ReadyData {
   discriminator: string;
   global_name: string | null;
   display_handle: string;
+  private_channels?: Array<{
+    id: string;
+    type: number;
+    is_message_request?: boolean;
+    is_message_request_timestamp?: string;
+    recipients?: Array<{ id: string; username: string; global_name?: string | null }>;
+  }>;
 }
 
 type GwEvents =
@@ -154,6 +161,7 @@ export class GatewayClient extends EventEmitter {
             discriminator,
             global_name: user.global_name ?? null,
             display_handle: handle,
+            private_channels: msg.d.private_channels ?? [],
           };
           this.userId = ready.user_id;
           this.ready = true;
