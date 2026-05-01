@@ -2,7 +2,7 @@ import { query } from "../db/pool.js";
 import { DiscordRest } from "../discord/rest.js";
 import type { MatchHandler, MatchToken } from "./match_handler.js";
 
-const TICK_MS = 8_000;
+const TICK_MS = 12_000;
 
 const MATCH_PATTERNS = [
   /^fila-\d+$/i,

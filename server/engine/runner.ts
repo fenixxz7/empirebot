@@ -55,21 +55,19 @@ const STARTUP_GRACE_MS = 5000;
 const TICK_INTERVAL_MS = 2500;
 const NO_TOKEN_LOG_INTERVAL_MS = 30_000;
 const NO_WORK_LOG_INTERVAL_MS = 60_000;
-const PLAYER_CACHE_MS = 25_000;
-const PLAYER_CACHE_403_MS = 5 * 60_000; // 5 min — não retentar REST 403 tão cedo
-const MAX_FRESH_FETCH_PER_TICK = 6;
+const PLAYER_CACHE_MS = 45_000; // estendido — menos REST de leitura
+const PLAYER_CACHE_403_MS = 10 * 60_000; // 10 min — não retentar REST 403 tão cedo
+const MAX_FRESH_FETCH_PER_TICK = 4; // reduzido de 6 → 4
 // Idade máxima de um active_queue antes de virar "fantasma" e ser removido.
-// Filas normais resolvem em poucos minutos; >12min quase sempre indica
-// que a fila foi cancelada/resetada pelo bot da org sem virar partida.
 const ACTIVE_QUEUE_TTL_MS = 12 * 60 * 1000;
-// Long break: a cada 10-18 ações, pausa de ~30-60s (simula desatenção humana).
-const LONG_BREAK_AFTER_MIN = 10;
-const LONG_BREAK_AFTER_MAX = 18;
-const LONG_BREAK_MS_MIN = 30_000;
-const LONG_BREAK_MS_MAX = 60_000;
+// Long break: a cada 6-12 ações, pausa de ~75-150s (simula desatenção humana).
+const LONG_BREAK_AFTER_MIN = 6;
+const LONG_BREAK_AFTER_MAX = 12;
+const LONG_BREAK_MS_MIN = 75_000;
+const LONG_BREAK_MS_MAX = 150_000;
 // Backoff extra após rate limit (429), por cima do cooldown de fila.
-const RATE_LIMIT_BACKOFF_MIN_MS = 45_000;
-const RATE_LIMIT_BACKOFF_MAX_MS = 90_000;
+const RATE_LIMIT_BACKOFF_MIN_MS = 120_000;
+const RATE_LIMIT_BACKOFF_MAX_MS = 240_000;
 
 interface PlayerInfo {
   count: number;
@@ -203,7 +201,7 @@ export class QueueRunner {
       [this.instanceId],
     );
     return {
-      delay_seconds: cfgRows[0]?.delay_seconds ?? 12,
+      delay_seconds: cfgRows[0]?.delay_seconds ?? 18,
       allowed_modes: parseList(cfgRows[0]?.allowed_modes ?? "").map(normalizeMode).filter((m): m is string => m !== null),
       allowed_categories: parseList(cfgRows[0]?.allowed_categories ?? ""),
       selected_org_ids: orgRows.map((r) => r.org_id),
@@ -377,8 +375,8 @@ export class QueueRunner {
     const tokenIdx = cfg.tokenStrategy === "single" ? 0 : this.tokenCursor % tokens.length;
     const token = tokens[tokenIdx]!;
 
-    // Pausa humanizada antes de clicar (1.5s–4.5s)
-    await sleep(1500 + Math.floor(Math.random() * 3000));
+    // Pausa humanizada antes de clicar (3s–8s)
+    await sleep(3000 + Math.floor(Math.random() * 5000));
 
     const joined = await this.joinQueue(candidate, token, activeRows.length, candidatePlayers);
 
@@ -398,10 +396,10 @@ export class QueueRunner {
     }
 
     // Define o próximo momento permitido para entrar em fila.
-    // Jitter largo (1.0–2.8x) para parecer menos robótico.
+    // Jitter largo (1.2–3.5x) para parecer menos robótico.
     const baseDelayMs = Math.max(1000, cfg.delay_seconds * 1000);
-    const jitter = 1.0 + Math.random() * 1.8;
-    let cooldown = Math.max(4000, Math.floor(baseDelayMs * jitter));
+    const jitter = 1.2 + Math.random() * 2.3;
+    let cooldown = Math.max(8000, Math.floor(baseDelayMs * jitter));
     // Adiciona delay extra acumulado (rate limit / long break) e zera
     if (this.extraDelayMs > 0) {
       cooldown += this.extraDelayMs;
@@ -507,7 +505,7 @@ export class QueueRunner {
 
     for (const c of stale) {
       if (!c.message_id) continue;
-      await sleep(500 + Math.floor(Math.random() * 800));
+      await sleep(900 + Math.floor(Math.random() * 1300));
       const r = await rest.fetchMessage(c.channel_id, c.message_id);
       if (r.status === 200 && r.data) {
         const blocked = hasBlockedName(r.data, blockedNames);
