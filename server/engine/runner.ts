@@ -481,6 +481,12 @@ export class QueueRunner {
     activeToken: ActiveToken,
     blockedNames: string[] = [],
   ): Promise<{ choice: ChannelRow | null; players: number }> {
+    // Se não há nomes a evitar, pula completamente as chamadas REST de leitura
+    // de mensagem — evita spam de requisições e erros 403 nos logs.
+    if (blockedNames.length === 0) {
+      return { choice: candidates[0] ?? null, players: 0 };
+    }
+
     const rest = new DiscordRest(activeToken.token);
     const now = Date.now();
     const keyOf = (c: ChannelRow) => `${c.channel_id}:${c.message_id}`;
@@ -497,12 +503,9 @@ export class QueueRunner {
       await sleep(500 + Math.floor(Math.random() * 800));
       const r = await rest.fetchMessage(c.channel_id, c.message_id);
       if (r.status === 200 && r.data) {
-        const cnt = countPlayers(r.data);
-        // -1 = fila bloqueada por nome de oponente
-        const blocked =
-          blockedNames.length > 0 && hasBlockedName(r.data, blockedNames);
+        const blocked = hasBlockedName(r.data, blockedNames);
         this.playerCache.set(keyOf(c), {
-          count: blocked ? -1 : cnt,
+          count: blocked ? -1 : 1,
           ts: Date.now(),
         });
         if (blocked) {
@@ -518,22 +521,15 @@ export class QueueRunner {
           );
         }
       } else if (r.status === 403) {
-        // 403 ao LER mensagem via REST ≠ ban — o token pode ainda interagir
-        // com o canal via gateway (botões). Apenas ignora a contagem e recua
-        // o cache por 5 min para não spam REST, mas mantém o canal elegível.
-        await this.manager.log(
-          this.instanceId,
-          "WARN",
-          "engine",
-          `Sem acesso REST para contar jogadores em ${c.org_name} · #${c.channel_name ?? c.channel_id} (403) — tentará entrar mesmo assim.`,
-        );
+        // 403 ao LER mensagem = sem acesso REST, mas pode ainda clicar via gateway.
+        // Cache longo para não repetir a chamada por 5 min.
         this.playerCache.set(keyOf(c), { count: 0, ts: Date.now() - PLAYER_CACHE_MS + PLAYER_CACHE_403_MS });
       } else if (r.status === 404) {
         this.playerCache.set(keyOf(c), { count: 0, ts: Date.now() });
       }
     }
 
-    // Filtra canais com count negativo: -1 = nome bloqueado; -2 = org banida para este token
+    // Filtra canais com count negativo: -1 = nome bloqueado
     const scored = candidates
       .map((c) => {
         const cached = this.playerCache.get(keyOf(c));
