@@ -1,4 +1,4 @@
-import type { Express } from "express";
+import type { Express, Request, Response, NextFunction } from "express";
 import { instancesRouter } from "./instances.js";
 import { configRouter } from "./config.js";
 import { orgsRouter } from "./orgs.js";
@@ -6,18 +6,19 @@ import { logsRouter } from "./logs.js";
 import { discoveryRouter } from "./discovery.js";
 import { statsRouter } from "./stats.js";
 import { messagesRouter } from "./messages.js";
+import { authRouter } from "./auth.js";
 import { pool } from "../db/pool.js";
 
-export function mountApi(app: Express): void {
-  app.use("/api/instances", instancesRouter);
-  app.use("/api/config", configRouter);
-  app.use("/api/orgs", orgsRouter);
-  app.use("/api/logs", logsRouter);
-  app.use("/api/discovery", discoveryRouter);
-  app.use("/api/stats", statsRouter);
-  app.use("/api/messages", messagesRouter);
+function requireAuth(req: Request, res: Response, next: NextFunction) {
+  if ((req.session as any)?.authenticated) return next();
+  res.status(401).json({ error: "Não autenticado" });
+}
 
-  // Health check para monitoramento externo
+export function mountApi(app: Express): void {
+  // Auth routes — públicas, sem proteção
+  app.use("/api/auth", authRouter);
+
+  // Health check — público
   app.get("/health", async (_req, res) => {
     try {
       await pool.query("SELECT 1");
@@ -26,4 +27,13 @@ export function mountApi(app: Express): void {
       res.status(503).json({ ok: false, db: "error", ts: new Date().toISOString() });
     }
   });
+
+  // Todas as rotas abaixo exigem autenticação
+  app.use("/api/instances", requireAuth, instancesRouter);
+  app.use("/api/config", requireAuth, configRouter);
+  app.use("/api/orgs", requireAuth, orgsRouter);
+  app.use("/api/logs", requireAuth, logsRouter);
+  app.use("/api/discovery", requireAuth, discoveryRouter);
+  app.use("/api/stats", requireAuth, statsRouter);
+  app.use("/api/messages", requireAuth, messagesRouter);
 }

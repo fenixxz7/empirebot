@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import session from "express-session";
 import { createServer as createHttpServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,6 +35,19 @@ async function main() {
 
   const app = express();
   app.use(express.json({ limit: "1mb" }));
+
+  // Session para autenticação
+  const SESSION_SECRET = process.env.SESSION_SECRET ?? "empirebotdev_secret_change_me";
+  app.use(session({
+    secret: SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 dias
+      sameSite: "lax",
+    },
+  }));
 
   // Cache busting in dev so the user always sees fresh content
   if (!isProd) {
