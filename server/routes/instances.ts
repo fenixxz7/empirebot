@@ -41,10 +41,9 @@ instancesRouter.get("/", async (_req, res) => {
 
   const instances = rows.map((r) => {
     const startedAt = r.started_at ? new Date(r.started_at).getTime() : null;
-    const uptimeSec =
-      r.running && startedAt
-        ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
-        : 0;
+    const uptimeSec = startedAt
+      ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+      : 0;
     return {
       id: r.id,
       name: r.name,
@@ -72,9 +71,11 @@ instancesRouter.get("/", async (_req, res) => {
 instancesRouter.post("/:id/start", async (req, res) => {
   const id = Number(req.params.id);
   await query(`UPDATE instances SET running = TRUE WHERE id = $1`, [id]);
-  await query(`UPDATE stats SET started_at = NOW() WHERE instance_id = $1`, [
-    id,
-  ]);
+  // Só define started_at se ainda não estiver definido — não reseta o uptime ao reiniciar
+  await query(
+    `UPDATE stats SET started_at = COALESCE(started_at, NOW()) WHERE instance_id = $1`,
+    [id],
+  );
   await query(
     `INSERT INTO logs (instance_id, level, source, message)
      VALUES ($1, 'INFO', 'control', 'Instância iniciada')`,
@@ -90,9 +91,7 @@ instancesRouter.post("/:id/start", async (req, res) => {
 instancesRouter.post("/:id/stop", async (req, res) => {
   const id = Number(req.params.id);
   await query(`UPDATE instances SET running = FALSE WHERE id = $1`, [id]);
-  await query(`UPDATE stats SET started_at = NULL WHERE instance_id = $1`, [
-    id,
-  ]);
+  // Não zera started_at ao parar — uptime só reseta via reset-stats ou troca de token
   await manager.stop(id);
   await query(
     `INSERT INTO logs (instance_id, level, source, message)
@@ -105,7 +104,8 @@ instancesRouter.post("/:id/stop", async (req, res) => {
 instancesRouter.post("/:id/reset-stats", async (req, res) => {
   const id = Number(req.params.id);
   await query(
-    `UPDATE stats SET entradas = 0, na_fila = 0, partidas = 0, dms = 0, bloqueadas = 0
+    `UPDATE stats SET entradas = 0, na_fila = 0, partidas = 0, dms = 0,
+                      bloqueadas = 0, msgs_enviadas = 0, started_at = NOW()
      WHERE instance_id = $1`,
     [id],
   );

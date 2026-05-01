@@ -543,6 +543,8 @@ class Manager {
 
     rot.index = (rot.index + 1) % ready.length;
     const next = ready[rot.index]!;
+    // Reseta uptime ao trocar de token
+    await query(`UPDATE stats SET started_at = NOW() WHERE instance_id = $1`, [instanceId]);
     await this.log(
       instanceId,
       "INFO",
@@ -688,7 +690,7 @@ class Manager {
       const r = rows[0];
       if (!r) return;
       const startedAt = r.started_at ? new Date(r.started_at).getTime() : null;
-      const uptime = r.running && startedAt
+      const uptime = startedAt
         ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0;
       broadcast(instanceId, {
         type: "stats",

@@ -638,15 +638,15 @@ export class QueueRunner {
         `Rate-limited em ${ch.org_name} · ${modeLabel} · #${ch.channel_name ?? ch.channel_id} — esperando ${Math.round(backoff / 1000)}s antes de continuar.`,
       );
       return false;
-    } else if (r.status === 403) {
-      // 403 = banido da guild ou sem acesso — bloqueia esta org para este token
+    } else if (r.status === 403 || isMissingAccess(r.status, r.error)) {
+      // 403 ou 400/404 com "Missing Access"/"Missing Permissions" = banido/não membro
       const rawError = r.error?.slice(0, 200) ?? "";
       await this.blacklistOrgForToken(
         token.tokenId,
         token.position,
         ch.org_id,
         ch.org_name,
-        `HTTP 403 — acesso negado/banido (${rawError})`,
+        `HTTP ${r.status} — acesso negado/banido (${rawError})`,
       );
       return false;
     } else if (r.status === 401) {
@@ -844,4 +844,21 @@ function countPlayers(msg: DiscordMessage): number {
   if (!matches) return 0;
   const unique = new Set(matches);
   return unique.size;
+}
+
+/**
+ * Retorna true se o status/body indicam que o token não tem acesso à guild
+ * (banido, não é membro, sem permissão) mesmo que o código HTTP não seja 403.
+ * Discord pode retornar 400 ou 404 com esses códigos de erro internos.
+ */
+function isMissingAccess(status: number, error?: string): boolean {
+  if (!error) return false;
+  const body = error.toLowerCase();
+  // Códigos Discord internos de falta de acesso
+  const MISSING_CODES = ["50013", "50001", "10004", "10003", "40001"];
+  const MISSING_PHRASES = ["missing access", "missing permissions", "unknown guild", "unknown channel"];
+  return (
+    (status === 400 || status === 404) &&
+    (MISSING_CODES.some((c) => body.includes(c)) || MISSING_PHRASES.some((p) => body.includes(p)))
+  );
 }
