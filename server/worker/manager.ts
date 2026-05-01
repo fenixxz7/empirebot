@@ -465,7 +465,7 @@ class Manager {
         userId: w.client.getUserId() ?? "",
         sessionId: w.client.getSessionId() ?? "",
       }))
-      .filter((t) => t.userId !== "" && t.sessionId !== "");
+      .filter((t) => t.userId !== "");
 
     if (priorityTokenId == null) return all;
     // Coloca o token que disparou o evento na frente — ele é quem está na thread

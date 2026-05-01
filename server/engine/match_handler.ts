@@ -123,7 +123,14 @@ export class MatchHandler {
     event: ChannelCreateEvent,
     tokens: MatchToken[],
   ): Promise<void> {
-    if (!MATCH_CHANNEL_TYPES.has(event.type)) return;
+    if (!MATCH_CHANNEL_TYPES.has(event.type)) {
+      // log apenas canais com nome de match para não poluir
+      if (isMatchChannel(event.name)) {
+        await this.host.log(this.instanceId, "WARN", "match",
+          `#${event.name} ignorado — tipo de canal não suportado: ${event.type}`);
+      }
+      return;
+    }
     if (!isMatchChannel(event.name)) return;
 
     const key = `${this.instanceId}:${event.id}`;
@@ -182,7 +189,11 @@ export class MatchHandler {
 
     // Token que vai enviar — primeiro disponível
     const sender = tokens[0] ?? null;
-    if (!sender) return;
+    if (!sender) {
+      await this.host.log(this.instanceId, "WARN", "match",
+        `#${event.name} — nenhum token disponível para enviar mensagem`);
+      return;
+    }
 
     const myIds = new Set(tokens.map((t) => t.userId));
 
