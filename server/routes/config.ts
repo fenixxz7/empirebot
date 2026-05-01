@@ -31,12 +31,17 @@ configRouter.get("/:instanceId", async (req, res) => {
     [id]
   );
 
-  const tokens = await query<{
-    id: number; position: number; value: string; status: string; username: string | null;
+  // Pool global de tokens
+  const tokenPool = await query<{
+    id: number; label: string | null; value: string; status: string; username: string | null;
   }>(
-    `SELECT id, position, value, status, username
-     FROM tokens WHERE instance_id = $1
-     ORDER BY position ASC`,
+    `SELECT id, label, value, status, username FROM token_pool ORDER BY id ASC`
+  );
+
+  // IDs selecionados para esta instância
+  const selectedTokens = await query<{ token_pool_id: number; position: number }>(
+    `SELECT token_pool_id, position FROM instance_token_selection
+     WHERE instance_id = $1 ORDER BY position ASC`,
     [id]
   );
 
@@ -47,13 +52,25 @@ configRouter.get("/:instanceId", async (req, res) => {
 
   res.json({
     config: cfg[0] ?? null,
-    tokens: tokens.map((t) => ({
+    token_pool: tokenPool.map((t) => ({
       id: t.id,
-      position: t.position,
+      label: t.label,
       value_preview: preview(t.value),
       status: t.status,
       username: t.username,
     })),
+    selected_token_ids: selectedTokens.map((r) => r.token_pool_id),
+    // legado — mantido para compatibilidade com código antigo
+    tokens: selectedTokens.map((s, i) => {
+      const t = tokenPool.find((p) => p.id === s.token_pool_id);
+      return {
+        id: s.token_pool_id,
+        position: i + 1,
+        value_preview: t ? preview(t.value) : "???",
+        status: t?.status ?? "unknown",
+        username: t?.username ?? null,
+      };
+    }),
     selected_org_ids: selectedOrgs.map((r) => r.org_id),
   });
 });
@@ -67,6 +84,7 @@ configRouter.put("/:instanceId", async (req, res) => {
     allowed_modes, message_main, message_per_org, image_url,
     tokens_raw, selected_org_ids, blocked_names,
     max_valor, token_strategy, token_strategy_n,
+    selected_token_ids,
   } = req.body as {
     allowed_categories: string | string[];
     delay_seconds: number;
@@ -77,6 +95,7 @@ configRouter.put("/:instanceId", async (req, res) => {
     image_url: string | null;
     tokens_raw: string;
     selected_org_ids: number[];
+    selected_token_ids?: number[];
     blocked_names: string;
     max_valor: number;
     token_strategy: string;
@@ -125,23 +144,64 @@ configRouter.put("/:instanceId", async (req, res) => {
      Number(max_valor ?? 0), safeStrategy, Math.max(1, Number(token_strategy_n ?? 5))]
   );
 
-  // Tokens: aceitamos textarea (1 por linha). Vazio = mantém os que estão.
-  const lines = (tokens_raw ?? "")
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-
-  if (lines.length > 0) {
-    if (lines.length > 5) {
-      return res.status(400).json({ error: "Máximo de 5 tokens" });
+  // Tokens: novo sistema — seleção por pool ID
+  if (Array.isArray(selected_token_ids)) {
+    if (selected_token_ids.length > 5) {
+      return res.status(400).json({ error: "Máximo de 5 tokens por instância." });
     }
-    await query(`DELETE FROM tokens WHERE instance_id = $1`, [id]);
-    for (let i = 0; i < lines.length; i++) {
+    // Atualiza a tabela de seleção
+    await query(`DELETE FROM instance_token_selection WHERE instance_id = $1`, [id]);
+    for (let i = 0; i < selected_token_ids.length; i++) {
       await query(
-        `INSERT INTO tokens (instance_id, position, value, status)
-         VALUES ($1, $2, $3, 'unknown')`,
-        [id, i + 1, lines[i]]
+        `INSERT INTO instance_token_selection (instance_id, token_pool_id, position)
+         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [id, selected_token_ids[i], i + 1]
       );
+    }
+    // Sincroniza tabela tokens (usada pelo engine) a partir da seleção
+    await query(`DELETE FROM tokens WHERE instance_id = $1`, [id]);
+    if (selected_token_ids.length > 0) {
+      const poolRows = await query<{ id: number; value: string; status: string }>(
+        `SELECT id, value, status FROM token_pool WHERE id = ANY($1::int[]) ORDER BY id ASC`,
+        [selected_token_ids]
+      );
+      for (let i = 0; i < selected_token_ids.length; i++) {
+        const p = poolRows.find((r) => r.id === selected_token_ids[i]);
+        if (p) {
+          await query(
+            `INSERT INTO tokens (instance_id, position, value, status)
+             VALUES ($1, $2, $3, 'unknown')`,
+            [id, i + 1, p.value]
+          );
+        }
+      }
+    }
+  } else {
+    // Fallback legado: textarea (1 token por linha)
+    const lines = (tokens_raw ?? "")
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    if (lines.length > 0) {
+      if (lines.length > 5) {
+        return res.status(400).json({ error: "Máximo de 5 tokens" });
+      }
+      // Garante que cada token existe no pool
+      for (const val of lines) {
+        await query(
+          `INSERT INTO token_pool (value, status) VALUES ($1, 'unknown')
+           ON CONFLICT (value) DO NOTHING`,
+          [val]
+        );
+      }
+      await query(`DELETE FROM tokens WHERE instance_id = $1`, [id]);
+      for (let i = 0; i < lines.length; i++) {
+        await query(
+          `INSERT INTO tokens (instance_id, position, value, status)
+           VALUES ($1, $2, $3, 'unknown')`,
+          [id, i + 1, lines[i]]
+        );
+      }
     }
   }
 

@@ -123,14 +123,17 @@ class Manager {
           `UPDATE tokens SET status = 'connected', username = $2 WHERE id = $1`,
           [t.id, data.display_handle],
         );
+        await query(
+          `UPDATE token_pool SET status = 'connected', username = $2
+           WHERE value = (SELECT value FROM tokens WHERE id = $1)`,
+          [t.id, data.display_handle],
+        );
         await this.log(
           instanceId,
           "INFO",
           "gateway",
           `Token #${t.position} conectado como ${data.display_handle}`,
         );
-        // Dispara descoberta automática só uma vez por start, com o
-        // primeiro token que ficar pronto.
         if (!this.discoveryRan.has(instanceId)) {
           this.discoveryRan.add(instanceId);
           this.runAutoDiscovery(instanceId, t.value).catch((err) =>
@@ -140,9 +143,12 @@ class Manager {
       });
 
       client.on("resumed", async () => {
-        await query(`UPDATE tokens SET status = 'connected' WHERE id = $1`, [
-          t.id,
-        ]);
+        await query(`UPDATE tokens SET status = 'connected' WHERE id = $1`, [t.id]);
+        await query(
+          `UPDATE token_pool SET status = 'connected'
+           WHERE value = (SELECT value FROM tokens WHERE id = $1)`,
+          [t.id],
+        );
         await this.log(
           instanceId,
           "INFO",
@@ -157,6 +163,12 @@ class Manager {
            AND status <> 'invalid'`,
           [t.id],
         );
+        await query(
+          `UPDATE token_pool SET status = 'disconnected'
+           WHERE status <> 'invalid'
+             AND value = (SELECT value FROM tokens WHERE id = $1)`,
+          [t.id],
+        );
         await this.log(
           instanceId,
           "WARN",
@@ -166,9 +178,12 @@ class Manager {
       });
 
       client.on("fatal", async (code: number) => {
-        await query(`UPDATE tokens SET status = 'invalid' WHERE id = $1`, [
-          t.id,
-        ]);
+        await query(`UPDATE tokens SET status = 'invalid' WHERE id = $1`, [t.id]);
+        await query(
+          `UPDATE token_pool SET status = 'invalid'
+           WHERE value = (SELECT value FROM tokens WHERE id = $1)`,
+          [t.id],
+        );
         await this.log(
           instanceId,
           "ERROR",

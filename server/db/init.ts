@@ -206,6 +206,42 @@ export async function initDatabase(): Promise<void> {
     ON CONFLICT (instance_id) DO NOTHING
   `);
 
+  // ── Pool global de tokens ─────────────────────────────────────────────────
+  // Token pool: tokens registrados globalmente, selecionáveis por instância
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS token_pool (
+      id           SERIAL PRIMARY KEY,
+      value        TEXT UNIQUE NOT NULL,
+      label        TEXT,
+      status       TEXT NOT NULL DEFAULT 'unknown',
+      username     TEXT,
+      last_used_at TIMESTAMPTZ
+    )
+  `);
+  // Seleção de tokens por instância (substitui tokens_raw)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS instance_token_selection (
+      instance_id   INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+      token_pool_id INTEGER NOT NULL REFERENCES token_pool(id) ON DELETE CASCADE,
+      position      INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (instance_id, token_pool_id)
+    )
+  `);
+  // Migra tokens existentes para o pool global (compatibilidade com bancos antigos)
+  await pool.query(`
+    INSERT INTO token_pool (value, status, username)
+    SELECT DISTINCT value, status, username FROM tokens
+    ON CONFLICT (value) DO NOTHING
+  `);
+  // Popula instance_token_selection com a seleção atual de cada instância
+  await pool.query(`
+    INSERT INTO instance_token_selection (instance_id, token_pool_id, position)
+    SELECT t.instance_id, tp.id, t.position
+    FROM tokens t
+    JOIN token_pool tp ON tp.value = t.value
+    ON CONFLICT DO NOTHING
+  `);
+
   // Garante que ninguém ficou com fila "fantasma" entre boots
   await pool.query(`DELETE FROM active_queues`);
 

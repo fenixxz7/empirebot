@@ -7,6 +7,7 @@ import { discoveryRouter } from "./discovery.js";
 import { statsRouter } from "./stats.js";
 import { messagesRouter } from "./messages.js";
 import { authRouter } from "./auth.js";
+import { tokensRouter } from "./tokens.js";
 import { pool } from "../db/pool.js";
 
 function requireAuth(req: Request, res: Response, next: NextFunction) {
@@ -36,4 +37,5 @@ export function mountApi(app: Express): void {
   app.use("/api/discovery", requireAuth, discoveryRouter);
   app.use("/api/stats", requireAuth, statsRouter);
   app.use("/api/messages", requireAuth, messagesRouter);
+  app.use("/api/tokens", requireAuth, tokensRouter);
 }

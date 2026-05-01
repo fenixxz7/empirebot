@@ -12,6 +12,14 @@ const ALL_CATEGORIES: Category[] = [
   "Full-Soco",
 ];
 
+type TokenPoolEntry = {
+  id: number;
+  label: string | null;
+  value_preview: string;
+  status: string;
+  username: string | null;
+};
+
 type ConfigPayload = {
   config: {
     category: Category;
@@ -27,6 +35,8 @@ type ConfigPayload = {
     token_strategy: string;
     token_strategy_n: number;
   } | null;
+  token_pool: TokenPoolEntry[];
+  selected_token_ids: number[];
   tokens: { id: number; position: number; value_preview: string; status: string; username: string | null }[];
   selected_org_ids: number[];
 };
@@ -55,7 +65,6 @@ export function ConfigForm({
   const [saving, setSaving] = useState(false);
   const [orgs, setOrgs] = useState<Org[]>([]);
   const [data, setData] = useState<ConfigPayload | null>(null);
-  const [tokensRaw, setTokensRaw] = useState("");
   const [allowedCats, setAllowedCats] = useState<Set<Category>>(
     new Set<Category>(["Mobile"]),
   );
@@ -70,6 +79,13 @@ export function ConfigForm({
   const [tokenStrategy, setTokenStrategy] = useState("single");
   const [tokenStrategyN, setTokenStrategyN] = useState(5);
   const [selectedOrgIds, setSelectedOrgIds] = useState<Set<number>>(new Set());
+  const [selectedTokenIds, setSelectedTokenIds] = useState<Set<number>>(new Set());
+  const [tokenPool, setTokenPool] = useState<TokenPoolEntry[]>([]);
+  const [tokensMode, setTokensMode] = useState<"normal" | "delete" | "add">("normal");
+  const [tokenDeleteSet, setTokenDeleteSet] = useState<Set<number>>(new Set());
+  const [busyTokens, setBusyTokens] = useState(false);
+  const [newTokenValue, setNewTokenValue] = useState("");
+  const [newTokenLabel, setNewTokenLabel] = useState("");
   const [feedback, setFeedback] = useState<string | null>(null);
   const [openOrgId, setOpenOrgId] = useState<number | null>(null);
   const [orgsMode, setOrgsMode] = useState<"normal" | "delete" | "add">("normal");
@@ -104,7 +120,14 @@ export function ConfigForm({
       setTokenStrategyN(Number(cfg.config.token_strategy_n ?? 5));
     }
     setSelectedOrgIds(new Set(cfg.selected_org_ids));
+    setSelectedTokenIds(new Set(cfg.selected_token_ids ?? []));
+    setTokenPool(cfg.token_pool ?? []);
     setLoading(false);
+  }
+
+  async function reloadTokenPool() {
+    const rows = await api<TokenPoolEntry[]>(`/api/tokens`);
+    setTokenPool(rows);
   }
 
   useEffect(() => {
@@ -203,10 +226,10 @@ export function ConfigForm({
     }
   }
 
-  const tokensCount = data?.tokens.length ?? 0;
+  const tokensCount = selectedTokenIds.size;
   const tokensActive = useMemo(
-    () => (data?.tokens ?? []).filter((t) => t.status === "connected").length,
-    [data]
+    () => tokenPool.filter((t) => selectedTokenIds.has(t.id) && t.status === "connected").length,
+    [tokenPool, selectedTokenIds]
   );
 
   function toggleOrg(id: number) {
@@ -215,6 +238,81 @@ export function ConfigForm({
       if (n.has(id)) n.delete(id); else n.add(id);
       return n;
     });
+  }
+
+  function toggleToken(id: number) {
+    setSelectedTokenIds((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) {
+        n.delete(id);
+      } else {
+        if (n.size >= 5) {
+          setFeedback("Máximo de 5 tokens por instância.");
+          setTimeout(() => setFeedback(null), 3000);
+          return prev;
+        }
+        n.add(id);
+      }
+      return n;
+    });
+  }
+
+  function cancelTokensAction() {
+    setTokensMode("normal");
+    setTokenDeleteSet(new Set());
+    setNewTokenValue("");
+    setNewTokenLabel("");
+  }
+
+  function toggleTokenDelete(id: number) {
+    setTokenDeleteSet((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  }
+
+  async function confirmTokenDelete() {
+    if (tokenDeleteSet.size === 0) { cancelTokensAction(); return; }
+    setBusyTokens(true);
+    try {
+      for (const id of tokenDeleteSet) {
+        await api(`/api/tokens/${id}`, { method: "DELETE" });
+      }
+      setSelectedTokenIds((prev) => {
+        const n = new Set(prev);
+        for (const id of tokenDeleteSet) n.delete(id);
+        return n;
+      });
+      cancelTokensAction();
+      await reloadTokenPool();
+      setFeedback(`${tokenDeleteSet.size} token(s) removido(s) do pool.`);
+      setTimeout(() => setFeedback(null), 3000);
+    } catch (e) {
+      setFeedback(e instanceof Error ? e.message : "Erro ao apagar token");
+    } finally {
+      setBusyTokens(false);
+    }
+  }
+
+  async function confirmTokenAdd() {
+    const val = newTokenValue.trim();
+    if (!val) { setFeedback("Informe o valor do token."); return; }
+    setBusyTokens(true);
+    try {
+      await api(`/api/tokens`, {
+        method: "POST",
+        body: JSON.stringify({ value: val, label: newTokenLabel.trim() || null }),
+      });
+      cancelTokensAction();
+      await reloadTokenPool();
+      setFeedback("Token adicionado ao pool.");
+      setTimeout(() => setFeedback(null), 3000);
+    } catch (e) {
+      setFeedback(e instanceof Error ? e.message : "Erro ao adicionar token");
+    } finally {
+      setBusyTokens(false);
+    }
   }
 
   async function save() {
@@ -249,11 +347,10 @@ export function ConfigForm({
           max_valor: maxValor,
           token_strategy: tokenStrategy,
           token_strategy_n: tokenStrategyN,
-          tokens_raw: tokensRaw,
+          selected_token_ids: Array.from(selectedTokenIds),
           selected_org_ids: Array.from(selectedOrgIds),
         }),
       });
-      setTokensRaw("");
       await reload();
       await reloadOrgs();
       const orgsScanned = r.discovery?.length ?? 0;
@@ -326,40 +423,130 @@ export function ConfigForm({
         <h2 className="text-lg font-bold">Configuração</h2>
       </div>
 
-      <Section title="Tokens Discord (até 5, 1 por linha)">
-        <textarea
-          className="textarea"
-          placeholder={
-            tokensCount > 0
-              ? `Já existem ${tokensCount} token(s) salvos. Cole novos para substituir, ou deixe vazio para manter.`
-              : "token_1\ntoken_2\ntoken_3"
-          }
-          value={tokensRaw}
-          onChange={(e) => setTokensRaw(e.target.value)}
-        />
-        <p className="text-xs text-slate-500 mt-2">
-          Rotação automática em ciclo. Se vazio, mantém tokens já salvos no servidor.
-        </p>
-        {(data?.tokens?.length ?? 0) > 0 && (
-          <ul className="mt-3 space-y-1.5">
-            {data!.tokens.map((t) => (
-              <li
-                key={t.id}
-                className="flex items-center gap-3 text-xs bg-navy-950/60 border border-white/10 rounded-lg px-3 py-2"
-              >
-                <span className="text-slate-500 w-10">#{t.position}</span>
-                <span className="font-mono text-slate-300 flex-1 truncate">
-                  {t.value_preview}
-                </span>
-                {t.username && (
-                  <span className="text-slate-200 truncate max-w-[160px]">
-                    {t.username}
+      <Section title="Selecionar tokens (até 5)">
+        <div className="rounded-xl bg-navy-950/60 border border-white/10 p-3 space-y-1.5">
+          {tokenPool.length === 0 && (
+            <div className="text-sm text-slate-500">Nenhum token cadastrado no pool.</div>
+          )}
+          {tokenPool.map((t) => {
+            const isSelected = selectedTokenIds.has(t.id);
+            const isMarked = tokenDeleteSet.has(t.id);
+            const rowBg = tokensMode === "delete" && isMarked
+              ? "bg-rose-500/10 ring-1 ring-rose-400/40"
+              : "hover:bg-white/5";
+            return (
+              <div key={t.id} className={`rounded-lg ${rowBg}`}>
+                <div className="flex items-center gap-3 px-2 py-1.5">
+                  {tokensMode === "delete" ? (
+                    <input
+                      type="checkbox"
+                      checked={isMarked}
+                      onChange={() => toggleTokenDelete(t.id)}
+                      className="w-4 h-4 accent-rose-500"
+                    />
+                  ) : (
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleToken(t.id)}
+                      className="w-4 h-4 accent-accent"
+                    />
+                  )}
+                  {t.label && (
+                    <span className="text-sm text-slate-200 font-medium">{t.label}</span>
+                  )}
+                  <span className="font-mono text-xs text-slate-400 flex-1 truncate">
+                    {t.value_preview}
                   </span>
-                )}
-                <TokenStatus status={t.status} />
-              </li>
-            ))}
-          </ul>
+                  {t.username && (
+                    <span className="text-sm text-slate-200 truncate max-w-[160px]">{t.username}</span>
+                  )}
+                  <TokenStatus status={t.status} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {tokensMode === "normal" && (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button type="button" onClick={() => setTokensMode("add")} className="btn-secondary">
+              <PlusIcon className="w-4 h-4" />
+              Adicionar token
+            </button>
+            <button
+              type="button"
+              onClick={() => setTokensMode("delete")}
+              disabled={tokenPool.length === 0}
+              className="btn-secondary text-rose-300 ring-rose-400/30 hover:ring-rose-400/60 disabled:opacity-40"
+            >
+              <TrashIcon className="w-4 h-4" />
+              Remover do pool
+            </button>
+            <span className="text-xs text-slate-500 ml-1">
+              {selectedTokenIds.size}/5 selecionado(s)
+            </span>
+          </div>
+        )}
+
+        {tokensMode === "delete" && (
+          <div className="mt-3 rounded-xl border border-rose-400/30 bg-rose-500/5 p-3">
+            <div className="text-xs text-rose-200/90 mb-2">
+              Marque os tokens que deseja remover do pool global. Eles serão desvinculados de todas as instâncias.
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={confirmTokenDelete}
+                disabled={busyTokens || tokenDeleteSet.size === 0}
+                className="btn-danger disabled:opacity-50"
+              >
+                <TrashIcon className="w-4 h-4" />
+                {busyTokens ? "Removendo…" : `Confirmar (${tokenDeleteSet.size})`}
+              </button>
+              <button type="button" onClick={cancelTokensAction} disabled={busyTokens} className="btn-secondary disabled:opacity-50">
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
+
+        {tokensMode === "add" && (
+          <div className="mt-3 rounded-xl border border-accent/30 bg-accent/5 p-3 space-y-2">
+            <div className="text-xs text-slate-400">
+              Cole o token do Discord. O apelido é opcional (só para identificação visual).
+            </div>
+            <div className="grid sm:grid-cols-2 gap-2">
+              <input
+                className="input font-mono text-xs sm:col-span-1"
+                placeholder="Token (obrigatório)"
+                value={newTokenValue}
+                onChange={(e) => setNewTokenValue(e.target.value)}
+                autoFocus
+                type="password"
+              />
+              <input
+                className="input sm:col-span-1"
+                placeholder="Apelido (opcional, ex: conta1)"
+                value={newTokenLabel}
+                onChange={(e) => setNewTokenLabel(e.target.value)}
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={confirmTokenAdd}
+                disabled={busyTokens || !newTokenValue.trim()}
+                className="btn-primary disabled:opacity-50"
+              >
+                <PlusIcon className="w-4 h-4" />
+                {busyTokens ? "Adicionando…" : "Confirmar"}
+              </button>
+              <button type="button" onClick={cancelTokensAction} disabled={busyTokens} className="btn-secondary disabled:opacity-50">
+                Cancelar
+              </button>
+            </div>
+          </div>
         )}
       </Section>
 
