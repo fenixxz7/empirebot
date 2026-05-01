@@ -6,6 +6,7 @@ import { ControlPanel } from "@/components/ControlPanel";
 import { StatsGrid } from "@/components/StatsGrid";
 import { ConfigForm } from "@/components/ConfigForm";
 import { LogsConsole } from "@/components/LogsConsole";
+import { BlacklistPanel } from "@/components/BlacklistPanel";
 
 export function App() {
   const [instances, setInstances] = useState<InstanceState[]>([]);
@@ -146,6 +147,7 @@ export function App() {
             onSaved={reload}
           />
         )}
+        {instance && <BlacklistPanel instanceId={instance.id} />}
         {instance && <LogsConsole instanceId={instance.id} />}
 
         <p className="text-center text-xs text-slate-500 pt-2 pb-6">

@@ -56,6 +56,7 @@ const TICK_INTERVAL_MS = 2500;
 const NO_TOKEN_LOG_INTERVAL_MS = 30_000;
 const NO_WORK_LOG_INTERVAL_MS = 60_000;
 const PLAYER_CACHE_MS = 25_000;
+const PLAYER_CACHE_403_MS = 5 * 60_000; // 5 min — não retentar REST 403 tão cedo
 const MAX_FRESH_FETCH_PER_TICK = 6;
 // Idade máxima de um active_queue antes de virar "fantasma" e ser removido.
 // Filas normais resolvem em poucos minutos; >12min quase sempre indica
@@ -445,6 +446,36 @@ export class QueueRunner {
     );
   }
 
+  /** Remove uma entrada da blacklist (em memória + DB). */
+  async unblacklistOrgForToken(tokenId: number, orgId: number): Promise<void> {
+    this.tokenOrgBlacklist.get(tokenId)?.delete(orgId);
+    await query(
+      `DELETE FROM token_org_blacklist WHERE token_id = $1 AND org_id = $2`,
+      [tokenId, orgId],
+    );
+  }
+
+  /** Remove toda a blacklist de um token (ou de todos os tokens desta instância). */
+  async clearBlacklist(tokenId?: number): Promise<void> {
+    if (tokenId !== undefined) {
+      this.tokenOrgBlacklist.delete(tokenId);
+      await query(
+        `DELETE FROM token_org_blacklist WHERE token_id = $1`,
+        [tokenId],
+      );
+    } else {
+      // limpa todos os tokens desta instância
+      for (const tid of this.tokenOrgBlacklist.keys()) {
+        this.tokenOrgBlacklist.delete(tid);
+      }
+      await query(
+        `DELETE FROM token_org_blacklist
+         WHERE token_id IN (SELECT id FROM tokens WHERE instance_id = $1)`,
+        [this.instanceId],
+      );
+    }
+  }
+
   private async rankCandidatesByPlayers(
     candidates: ChannelRow[],
     activeToken: ActiveToken,
@@ -487,19 +518,16 @@ export class QueueRunner {
           );
         }
       } else if (r.status === 403) {
-        // 403 ao ler mensagem = token banido da guild ou sem acesso ao canal
-        await this.blacklistOrgForToken(
-          activeToken.tokenId,
-          activeToken.position,
-          c.org_id,
-          c.org_name,
-          `HTTP 403 ao ler canal #${c.channel_name ?? c.channel_id} — acesso negado`,
+        // 403 ao LER mensagem via REST ≠ ban — o token pode ainda interagir
+        // com o canal via gateway (botões). Apenas ignora a contagem e recua
+        // o cache por 5 min para não spam REST, mas mantém o canal elegível.
+        await this.manager.log(
+          this.instanceId,
+          "WARN",
+          "engine",
+          `Sem acesso REST para contar jogadores em ${c.org_name} · #${c.channel_name ?? c.channel_id} (403) — tentará entrar mesmo assim.`,
         );
-        // Marca todos os candidatos desta org como inacessíveis neste tick
-        for (const oc of candidates.filter((x) => x.org_id === c.org_id)) {
-          this.playerCache.set(keyOf(oc), { count: -2, ts: Date.now() });
-        }
-        break;
+        this.playerCache.set(keyOf(c), { count: 0, ts: Date.now() - PLAYER_CACHE_MS + PLAYER_CACHE_403_MS });
       } else if (r.status === 404) {
         this.playerCache.set(keyOf(c), { count: 0, ts: Date.now() });
       }

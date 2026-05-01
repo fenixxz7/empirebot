@@ -590,6 +590,68 @@ class Manager {
     }
   };
 
+  /** Retorna a blacklist de todos os tokens de uma instância (lê do DB). */
+  getBlacklist = async (instanceId: number): Promise<
+    Array<{
+      token_id: number;
+      token_position: number;
+      org_id: number;
+      org_name: string;
+      reason: string | null;
+      blocked_at: string;
+    }>
+  > => {
+    return query<{
+      token_id: number;
+      token_position: number;
+      org_id: number;
+      org_name: string;
+      reason: string | null;
+      blocked_at: string;
+    }>(
+      `SELECT b.token_id, t.position AS token_position,
+              b.org_id, o.name AS org_name,
+              b.reason, b.blocked_at
+       FROM token_org_blacklist b
+       JOIN tokens t ON t.id = b.token_id
+       JOIN orgs   o ON o.id = b.org_id
+       WHERE t.instance_id = $1
+       ORDER BY t.position, o.name`,
+      [instanceId],
+    );
+  };
+
+  /** Remove uma entrada específica da blacklist (em memória + DB). */
+  unblacklistOrg = async (instanceId: number, tokenId: number, orgId: number): Promise<void> => {
+    const runner = this.runners.get(instanceId);
+    if (runner) {
+      await runner.unblacklistOrgForToken(tokenId, orgId);
+    } else {
+      await query(
+        `DELETE FROM token_org_blacklist WHERE token_id = $1 AND org_id = $2`,
+        [tokenId, orgId],
+      );
+    }
+  };
+
+  /** Limpa toda a blacklist de um token ou de toda a instância. */
+  clearBlacklist = async (instanceId: number, tokenId?: number): Promise<void> => {
+    const runner = this.runners.get(instanceId);
+    if (runner) {
+      await runner.clearBlacklist(tokenId);
+    } else {
+      if (tokenId !== undefined) {
+        await query(`DELETE FROM token_org_blacklist WHERE token_id = $1`, [tokenId]);
+      } else {
+        await query(
+          `DELETE FROM token_org_blacklist
+           WHERE token_id IN (SELECT id FROM tokens WHERE instance_id = $1)`,
+          [instanceId],
+        );
+      }
+    }
+  };
+
   private async broadcastStats(instanceId: number): Promise<void> {
     try {
       const rows = await query<{
