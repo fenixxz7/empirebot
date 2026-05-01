@@ -420,7 +420,7 @@ export class QueueRunner {
     this.blacklistLoaded = true;
   }
 
-  private async blacklistOrgForToken(
+  async blacklistOrgForToken(
     tokenId: number,
     tokenPos: number,
     orgId: number,

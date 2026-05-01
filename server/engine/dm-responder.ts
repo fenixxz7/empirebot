@@ -49,6 +49,13 @@ export class DmResponder {
 
   constructor(private readonly instanceId: number) {}
 
+  private async log(level: "INFO" | "WARN" | "ERROR", message: string): Promise<void> {
+    await query(
+      `INSERT INTO logs (instance_id, level, source, message) VALUES ($1, $2, 'dm', $3)`,
+      [this.instanceId, level, message],
+    ).catch(() => {});
+  }
+
   start() {
     if (this.running) return;
     this.running = true;
@@ -192,7 +199,17 @@ export class DmResponder {
         }
         await rest.triggerTyping(pending.channelId);
         await sleep(600 + Math.random() * 400);
-        await rest.sendDM(pending.channelId, msg.body);
+        const dmResult = await rest.sendDM(pending.channelId, msg.body);
+        if (dmResult.status === 403) {
+          await this.log("WARN", `DM bloqueada para usuário ${pending.userId} — HTTP 403 (usuário bloqueou ou desativou DMs). Pulando.`);
+          break;
+        } else if (dmResult.status === 50007) {
+          await this.log("WARN", `DM não permitida para usuário ${pending.userId} (código 50007 — cannot send messages to this user). Pulando.`);
+          break;
+        } else if (dmResult.status >= 400) {
+          await this.log("ERROR", `Falha ao enviar DM para usuário ${pending.userId}: HTTP ${dmResult.status}`);
+          break;
+        }
       }
 
       await query(

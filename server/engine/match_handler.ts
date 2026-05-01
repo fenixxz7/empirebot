@@ -10,6 +10,7 @@ export interface MatchToken {
 
 export interface MatchHost {
   log(instanceId: number, level: string, source: string, message: string): Promise<void>;
+  blacklistOrgForToken(instanceId: number, tokenId: number, tokenPos: number, orgId: number, orgName: string, reason: string): Promise<void>;
 }
 
 interface ChannelCreateEvent {
@@ -346,14 +347,34 @@ export class MatchHandler {
         this.instanceId,
         "INFO",
         "match",
-        `Mensagem enviada em #${event.name}${adversaryId ? ` para <@${adversaryId}>` : ""} · token #${sender.position}${imgTag}`,
+        `Mensagem na partida enviada em #${event.name}${adversaryId ? ` para <@${adversaryId}>` : ""} · token #${sender.position}${imgTag}`,
       );
+    } else if (result.status === 403) {
+      // 403 = token com castigo/timeout na guild — não consegue enviar mensagem na partida
+      const orgLabel = orgCtx ? `${orgCtx.org_name}` : "guild desconhecida";
+      const reason = `HTTP 403 ao enviar mensagem na partida #${event.name} — token com castigo/timeout em ${orgLabel}`;
+      await this.host.log(
+        this.instanceId,
+        "WARN",
+        "match",
+        `Token #${sender.position} com castigo em ${orgLabel} — mensagem na partida bloqueada. Org será ignorada por este token.`,
+      );
+      if (orgCtx) {
+        await this.host.blacklistOrgForToken(
+          this.instanceId,
+          sender.tokenId,
+          sender.position,
+          orgCtx.org_id,
+          orgCtx.org_name,
+          reason,
+        );
+      }
     } else {
       await this.host.log(
         this.instanceId,
         "ERROR",
         "match",
-        `Falha ao enviar mensagem em #${event.name}: HTTP ${result.status}`,
+        `Falha ao enviar mensagem na partida em #${event.name}: HTTP ${result.status}`,
       );
     }
   }

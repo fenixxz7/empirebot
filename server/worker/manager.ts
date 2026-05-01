@@ -552,6 +552,29 @@ class Manager {
     this.broadcastStats(instanceId).catch(() => {});
   };
 
+  blacklistOrgForToken = async (
+    instanceId: number,
+    tokenId: number,
+    tokenPos: number,
+    orgId: number,
+    orgName: string,
+    reason: string,
+  ): Promise<void> => {
+    const runner = this.runners.get(instanceId);
+    if (runner) {
+      await runner.blacklistOrgForToken(tokenId, tokenPos, orgId, orgName, reason);
+    } else {
+      // Runner não encontrado — persiste direto no DB e loga
+      await query(
+        `INSERT INTO token_org_blacklist (token_id, org_id, reason)
+         VALUES ($1, $2, $3) ON CONFLICT (token_id, org_id) DO NOTHING`,
+        [tokenId, orgId, reason],
+      ).catch(() => {});
+      await this.log(instanceId, "WARN", "engine",
+        `Org "${orgName}" bloqueada para token #${tokenPos} (sem runner ativo) — ${reason}`);
+    }
+  };
+
   private async broadcastStats(instanceId: number): Promise<void> {
     try {
       const rows = await query<{
