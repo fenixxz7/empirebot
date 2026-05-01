@@ -12,3 +12,9 @@ id = "Ub334mmZh5ydR-y5H5DE1"
 uri = "file://README.md"
 type = "text"
 title = "EmpireBot — README completo para VPS"
+
+[[outputs]]
+id = "S-h5EkADsYlxOdxJ8yKdF"
+uri = "file://empirebot.tar.gz"
+type = "unspecified"
+title = "EmpireBot — Pacote para VPS (empirebot.tar.gz)"
