@@ -111,7 +111,7 @@ export class DmResponder {
     }, delayMs);
   }
 
-  private async tick() {
+  async tick() {
     const cfg = await this.loadConfig();
     if (!cfg || !cfg.enabled) return;
 
@@ -128,18 +128,14 @@ export class DmResponder {
     for (const tok of tokens) {
       const rest = new DiscordRest(tok.value);
       const res = await rest.listMessageRequests();
-      if (!res.data) {
-        if (res.status !== 200) {
-          await this.log("WARN", `Falha ao buscar message requests: HTTP ${res.status} — ${res.error?.slice(0, 120) ?? "sem detalhe"}`);
-        }
+      if (res.status !== 200 || !res.data) {
+        await this.log("WARN", `Falha ao buscar message requests: HTTP ${res.status} | data=${res.data === null ? "null" : typeof res.data} | ${res.error?.slice(0, 120) ?? "sem detalhe"}`);
         continue;
       }
 
-      if (res.data.length > 0) {
-        await this.log("INFO", `Message requests encontrados: ${res.data.length}`);
-      }
-
-      for (const ch of res.data) {
+      const dataArr = Array.isArray(res.data) ? res.data : [];
+      await this.log("INFO", `Varredura: ${dataArr.length} channel(s) retornado(s) pelo endpoint`);
+      for (const ch of dataArr) {
         const recipient = ch.recipients?.[0];
         if (!recipient) continue;
 

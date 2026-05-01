@@ -36,6 +36,7 @@ export default function Messages() {
   const [newBody, setNewBody] = useState("");
   const [clearingResponded, setClearingResponded] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const snapTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeIdRef = useRef<number | null>(null);
 
@@ -83,6 +84,20 @@ export default function Messages() {
   function flash(msg: string) {
     setFeedback(msg);
     setTimeout(() => setFeedback(null), 2500);
+  }
+
+  async function scanNow() {
+    if (activeId === null || scanning) return;
+    setScanning(true);
+    try {
+      await fetch(`/api/messages/${activeId}/scan-now`, { method: "POST" });
+      await pollSnapshot(activeId);
+      flash("Varredura concluída");
+    } catch {
+      flash("Erro na varredura");
+    } finally {
+      setScanning(false);
+    }
   }
 
   async function saveCfg(patch: Partial<DmConfig>) {
@@ -198,11 +213,18 @@ export default function Messages() {
           <>
             {/* Queue panel */}
             <div className="card p-5 space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between flex-wrap gap-2">
                 <p className="text-[11px] uppercase tracking-widest text-slate-500">Fila de Respostas</p>
-                <div className="flex gap-3 text-xs">
+                <div className="flex items-center gap-3 text-xs">
                   <span className="text-slate-400">Hoje: <b className="text-white">{snapshot.respondedToday}</b></span>
                   <span className="text-slate-400">Total: <b className="text-white">{snapshot.respondedTotal}</b></span>
+                  <button
+                    onClick={scanNow}
+                    disabled={scanning}
+                    className="px-2.5 py-1 rounded-lg bg-indigo-500/20 border border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/30 transition-colors disabled:opacity-50 text-[11px] font-medium"
+                  >
+                    {scanning ? "Varrendo…" : "⟳ Varrer Agora"}
+                  </button>
                 </div>
               </div>
 
