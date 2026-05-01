@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS stats (
   na_fila       INTEGER NOT NULL DEFAULT 0,
   partidas      INTEGER NOT NULL DEFAULT 0,
   dms           INTEGER NOT NULL DEFAULT 0,
+  bloqueadas    INTEGER NOT NULL DEFAULT 0,
+  msgs_enviadas INTEGER NOT NULL DEFAULT 0,
   started_at    TIMESTAMPTZ
 );
 

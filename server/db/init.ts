@@ -151,6 +151,10 @@ export async function initDatabase(): Promise<void> {
   await pool.query(
     `ALTER TABLE stats ADD COLUMN IF NOT EXISTS bloqueadas INTEGER NOT NULL DEFAULT 0`,
   );
+  // Contador de mensagens enviadas com sucesso nas partidas
+  await pool.query(
+    `ALTER TABLE stats ADD COLUMN IF NOT EXISTS msgs_enviadas INTEGER NOT NULL DEFAULT 0`,
+  );
 
   // Orgs inválidas por token — ban, sem acesso, timeout de guild
   await pool.query(`

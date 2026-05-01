@@ -80,6 +80,7 @@ export interface InstanceState {
     partidas: number;
     dms: number;
     bloqueadas: number;
+    msgs_enviadas: number;
   };
   tokens_active: number;
   tokens_total: number;

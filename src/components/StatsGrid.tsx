@@ -8,10 +8,10 @@ export function StatsGrid({
   instance: InstanceState | null;
   onResetStats: () => void;
 }) {
-  const s = instance?.stats ?? { entradas: 0, na_fila: 0, partidas: 0, dms: 0, bloqueadas: 0 };
+  const s = instance?.stats ?? { entradas: 0, na_fila: 0, partidas: 0, dms: 0, bloqueadas: 0, msgs_enviadas: 0 };
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
         <StatCard
           icon={<UsersIcon className="w-5 h-5 text-emerald-300" />}
           label="Entradas"
@@ -46,6 +46,13 @@ export function StatsGrid({
           sub="filas evitadas"
           value={s.bloqueadas}
           tone="red"
+        />
+        <StatCard
+          icon={<SendIcon className="w-5 h-5 text-green-400" />}
+          label="Msgs Enviadas"
+          sub="confirmadas nas partidas"
+          value={s.msgs_enviadas}
+          tone="green"
         />
       </div>
 
@@ -88,7 +95,7 @@ function StatCard({
 }: {
   icon: React.ReactNode;
   label: string; sub: string; value: number;
-  tone: "emerald" | "blue" | "fuchsia" | "cyan" | "red";
+  tone: "emerald" | "blue" | "fuchsia" | "cyan" | "red" | "green";
 }) {
   const numColor = {
     emerald: "text-emerald-300",
@@ -96,6 +103,7 @@ function StatCard({
     fuchsia: "text-fuchsia-300",
     cyan: "text-cyan-300",
     red: "text-red-400",
+    green: "text-green-400",
   }[tone];
   return (
     <div className="stat-card">
@@ -128,4 +136,7 @@ function RotateIcon({ className = "" }) {
 }
 function ShieldIcon({ className = "" }) {
   return (<svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden><path d="M12 2L4 6v6c0 5.5 3.8 10.7 8 12 4.2-1.3 8-6.5 8-12V6l-8-4zm0 10h-1V8h2v4h-1zm0 4h-2v-2h2v2z"/></svg>);
+}
+function SendIcon({ className = "" }) {
+  return (<svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>);
 }
