@@ -54,6 +54,7 @@ export function App() {
                       partidas: p.partidas ?? item.stats.partidas,
                       dms: p.dms ?? item.stats.dms,
                       bloqueadas: p.bloqueadas ?? item.stats.bloqueadas,
+                      msgs_enviadas: p.msgs_enviadas ?? item.stats.msgs_enviadas,
                     },
                   }
                 : item,
