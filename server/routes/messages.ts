@@ -123,34 +123,32 @@ messagesRouter.get("/:instanceId/debug/requests", async (req, res) => {
     `SELECT id, value, username, position FROM tokens WHERE instance_id = $1 AND status = 'connected' ORDER BY position ASC`,
     [id]
   );
-  const results: Array<{
-    token_position: number;
-    username: string | null;
-    http_status: number;
-    raw_response: string;
-    parsed_type: string;
-    parsed_keys?: string[];
-    parsed_length?: number;
-    responded_ids: string[];
-  }> = [];
+  const results = [];
 
   for (const tok of tokens) {
     const rest = new DiscordRest(tok.value);
-    const raw = await rest.listMessageRequestsRaw();
+    const endpointResults = await rest.listMessageRequestsRaw();
     const respondedRows = await query<{ user_id: string }>(
       `SELECT user_id FROM dm_responded WHERE instance_id = $1`,
       [id]
     );
-    let parsed: unknown;
-    try { parsed = JSON.parse(raw.text); } catch { parsed = null; }
+
+    const endpoints = endpointResults.map((raw) => {
+      let parsed: unknown;
+      try { parsed = JSON.parse(raw.text); } catch { parsed = null; }
+      return {
+        url: raw.url,
+        http_status: raw.status,
+        parsed_type: parsed === null ? "null" : Array.isArray(parsed) ? `array(${(parsed as unknown[]).length})` : typeof parsed,
+        parsed_keys: parsed && typeof parsed === "object" && !Array.isArray(parsed) ? Object.keys(parsed as object) : undefined,
+        raw_response: raw.text,
+      };
+    });
+
     results.push({
       token_position: tok.position,
       username: tok.username,
-      http_status: raw.status,
-      raw_response: raw.text.slice(0, 2000),
-      parsed_type: parsed === null ? "null" : Array.isArray(parsed) ? "array" : typeof parsed,
-      parsed_keys: parsed && typeof parsed === "object" && !Array.isArray(parsed) ? Object.keys(parsed as object) : undefined,
-      parsed_length: Array.isArray(parsed) ? (parsed as unknown[]).length : undefined,
+      endpoints,
       responded_ids: respondedRows.map(row => row.user_id),
     });
   }

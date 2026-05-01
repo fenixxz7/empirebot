@@ -1,6 +1,36 @@
 const BASE = "https://discord.com/api/v10";
 const BASE_V9 = "https://discord.com/api/v9";
 
+// Headers que o cliente web do Discord envia — necessários para endpoints como /users/@me/message-requests
+const SUPER_PROPERTIES = Buffer.from(
+  JSON.stringify({
+    os: "Windows",
+    browser: "Chrome",
+    device: "",
+    system_locale: "pt-BR",
+    browser_user_agent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    browser_version: "124.0.0.0",
+    os_version: "10",
+    referrer: "https://discord.com/",
+    referring_domain: "discord.com",
+    referrer_current: "",
+    referring_domain_current: "",
+    release_channel: "stable",
+    client_build_number: 312547,
+    client_event_source: null,
+  })
+).toString("base64");
+
+const DISCORD_HEADERS = {
+  "user-agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "x-super-properties": SUPER_PROPERTIES,
+  "x-discord-locale": "pt-BR",
+  "x-discord-timezone": "America/Sao_Paulo",
+  "accept-language": "pt-BR,pt;q=0.9",
+};
+
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -39,8 +69,7 @@ export class DiscordRest {
           headers: {
             authorization: this.token,
             "content-type": "application/json",
-            "user-agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            ...DISCORD_HEADERS,
           },
           body: body !== undefined ? JSON.stringify(body) : undefined,
         });
@@ -127,26 +156,35 @@ export class DiscordRest {
    *  O endpoint /users/@me/message-requests só existe na API v9 do Discord (selfbot).
    */
   listMessageRequests() {
-    return this.requestV9<DiscordDMChannel[]>("GET", `/users/@me/message-requests`);
+    return this.requestV9<DiscordDMChannel[]>("GET", `/users/@me/message-requests?limit=100`);
   }
 
-  /** Retorna a resposta bruta (texto) do endpoint de message requests para diagnóstico. */
-  async listMessageRequestsRaw(): Promise<{ status: number; text: string }> {
-    const url = `https://discord.com/api/v9/users/@me/message-requests`;
-    try {
-      const res = await fetch(url, {
-        method: "GET",
-        headers: {
-          authorization: this.token,
-          "content-type": "application/json",
-          "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        },
-      });
-      const text = await res.text();
-      return { status: res.status, text };
-    } catch (err) {
-      return { status: 0, text: (err as Error).message };
+  /** Retorna a resposta bruta (texto) de MÚLTIPLOS endpoints candidatos para diagnóstico. */
+  async listMessageRequestsRaw(): Promise<Array<{ status: number; text: string; url: string }>> {
+    const endpoints = [
+      `https://discord.com/api/v9/users/@me/message-requests`,
+      `https://discord.com/api/v9/users/@me/message-requests?limit=100`,
+      `https://discord.com/api/v10/users/@me/message-requests`,
+      `https://discord.com/api/v9/users/@me/channels?include_non_channeled=true`,
+    ];
+    const results: Array<{ status: number; text: string; url: string }> = [];
+    for (const url of endpoints) {
+      try {
+        const res = await fetch(url, {
+          method: "GET",
+          headers: {
+            authorization: this.token,
+            "content-type": "application/json",
+            ...DISCORD_HEADERS,
+          },
+        });
+        const text = await res.text();
+        results.push({ status: res.status, text: text.slice(0, 500), url });
+      } catch (err) {
+        results.push({ status: 0, text: (err as Error).message, url });
+      }
     }
+    return results;
   }
 
   /** Envia uma mensagem numa DM (para selfbot, isso aceita o request implicitamente). */
