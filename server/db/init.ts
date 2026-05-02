@@ -155,6 +155,27 @@ export async function initDatabase(): Promise<void> {
   await pool.query(
     `ALTER TABLE stats ADD COLUMN IF NOT EXISTS msgs_enviadas INTEGER NOT NULL DEFAULT 0`,
   );
+  // match_send_errors: código de erro do Discord + última mensagem (diagnóstico)
+  await pool.query(
+    `ALTER TABLE match_send_errors ADD COLUMN IF NOT EXISTS last_error_code INTEGER`,
+  );
+  await pool.query(
+    `ALTER TABLE match_send_errors ADD COLUMN IF NOT EXISTS last_message TEXT`,
+  );
+  // Sincroniza contador msgs_enviadas com a verdade do banco (matches.msg_sent)
+  // — inclui instâncias sem matches (resetadas para 0) via LEFT JOIN.
+  await pool.query(`
+    UPDATE stats s
+       SET msgs_enviadas = COALESCE(m.n, 0)
+      FROM (
+        SELECT i.id AS instance_id, COUNT(mm.id)::int AS n
+          FROM instances i
+          LEFT JOIN matches mm
+            ON mm.instance_id = i.id AND mm.msg_sent = TRUE
+         GROUP BY i.id
+      ) m
+     WHERE m.instance_id = s.instance_id
+  `);
 
   // Orgs inválidas por token — ban, sem acesso, timeout de guild
   await pool.query(`

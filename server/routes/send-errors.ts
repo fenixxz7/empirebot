@@ -11,9 +11,11 @@ sendErrorsRouter.get("/", async (req, res) => {
       org_label: string;
       error_count: number;
       last_status: number | null;
+      last_error_code: number | null;
+      last_message: string | null;
       last_seen: string;
     }>(
-      `SELECT org_label, error_count, last_status, last_seen
+      `SELECT org_label, error_count, last_status, last_error_code, last_message, last_seen
        FROM match_send_errors
        WHERE instance_id = $1
        ORDER BY error_count DESC, last_seen DESC`,

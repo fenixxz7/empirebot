@@ -5,8 +5,27 @@ type SendErrorEntry = {
   org_label: string;
   error_count: number;
   last_status: number | null;
+  last_error_code: number | null;
+  last_message: string | null;
   last_seen: string;
 };
+
+function describeCode(code: number | null, message: string | null): string {
+  if (code === 200000) return "AutoMod bloqueou a mensagem";
+  if (code === 50013) {
+    const lower = (message ?? "").toLowerCase();
+    if (lower.includes("timed out") || lower.includes("communication")) {
+      return "Token em timeout/silenciado";
+    }
+    return "Sem permissão SEND_MESSAGES";
+  }
+  if (code === 50001) return "Sem acesso ao canal";
+  if (code === 50007) return "DM bloqueada pelo usuário";
+  if (code === 40005) return "Mensagem grande demais";
+  if (code === 10003) return "Canal não existe";
+  if (code) return `Discord code ${code}`;
+  return message ?? "—";
+}
 
 export function SendErrorsPanel({ instanceId }: { instanceId: number }) {
   const [rows, setRows] = useState<SendErrorEntry[]>([]);
@@ -89,8 +108,9 @@ export function SendErrorsPanel({ instanceId }: { instanceId: number }) {
                 <thead>
                   <tr className="border-b border-white/10 text-xs text-slate-400 uppercase tracking-wide">
                     <th className="text-left px-4 py-2 font-medium">Org</th>
-                    <th className="text-center px-4 py-2 font-medium w-20">Erros</th>
-                    <th className="text-center px-4 py-2 font-medium w-20">HTTP</th>
+                    <th className="text-center px-4 py-2 font-medium w-16">Erros</th>
+                    <th className="text-center px-4 py-2 font-medium w-16">HTTP</th>
+                    <th className="text-left px-4 py-2 font-medium">Causa</th>
                     <th className="text-right px-4 py-2 font-medium w-24">Último</th>
                     <th className="w-10 px-2" />
                   </tr>
@@ -112,6 +132,16 @@ export function SendErrorsPanel({ instanceId }: { instanceId: number }) {
                         ) : (
                           <span className="text-xs text-slate-600">—</span>
                         )}
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-slate-300" title={r.last_message ?? undefined}>
+                        <div className="flex items-center gap-1.5">
+                          {r.last_error_code !== null && (
+                            <span className="font-mono text-[10px] text-slate-500">#{r.last_error_code}</span>
+                          )}
+                          <span className="truncate max-w-[260px]">
+                            {describeCode(r.last_error_code, r.last_message)}
+                          </span>
+                        </div>
                       </td>
                       <td className="px-4 py-2.5 text-right text-xs text-slate-500">
                         {new Date(r.last_seen).toLocaleTimeString("pt-BR", {
@@ -151,7 +181,9 @@ export function SendErrorsPanel({ instanceId }: { instanceId: number }) {
 
           <p className="text-xs text-slate-500">
             Conta apenas erros de envio de mensagem na partida (não erros de fila).
-            HTTP 403 vai para a blacklist por token; os demais aparecem aqui.
+            Só vai pra blacklist por token quando for permissão real
+            (codes 50013/50001 sem timeout). AutoMod e timeout aparecem aqui e
+            o bot continua tentando.
           </p>
         </div>
       )}

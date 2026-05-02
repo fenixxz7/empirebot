@@ -95,6 +95,73 @@ function humanize(input: string): string {
   return s;
 }
 
+/**
+ * Tenta extrair o código e mensagem de erro do corpo JSON do Discord.
+ * Discord retorna `{ "code": <int>, "message": "..." }` na maioria dos erros 4xx.
+ * Para AutoMod e outras causas embutidas, pode incluir `errors`/`block_reason`.
+ */
+function parseDiscordError(rawError?: string): {
+  code: number | null;
+  message: string;
+  raw: string;
+  isAutoMod: boolean;
+  isTimeout: boolean;
+  isMissingPerm: boolean;
+} {
+  const raw = (rawError ?? "").trim();
+  let code: number | null = null;
+  let message = "";
+  let isAutoMod = false;
+
+  if (raw.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(raw) as {
+        code?: number;
+        message?: string;
+        block_reason?: string;
+        errors?: unknown;
+      };
+      if (typeof parsed.code === "number") code = parsed.code;
+      if (typeof parsed.message === "string") message = parsed.message;
+      // AutoMod pode aparecer como code 200000 ou block_reason no body
+      if (parsed.block_reason || code === 200000) isAutoMod = true;
+    } catch {
+      message = raw;
+    }
+  } else {
+    message = raw;
+  }
+
+  const lower = (message + " " + raw).toLowerCase();
+  if (!isAutoMod && (lower.includes("automod") || lower.includes("blocked by"))) {
+    isAutoMod = true;
+  }
+  // Discord 50013 = Missing Permissions; 50001 = Missing Access; 40005 = req too large
+  // Indicadores explícitos de timeout/mute (qualquer um já marca como transitório)
+  const isTimeout =
+    lower.includes("timed out") ||
+    lower.includes("timeout") ||
+    lower.includes("silenced") ||
+    lower.includes("communication disabled") ||
+    lower.includes("communication is disabled") ||
+    lower.includes("communication has been disabled");
+  // Permissão "real" = código 50013/50001 SEM indício de timeout.
+  // Nota: blacklist por isMissingPerm é gated por threshold de erros (>= 3)
+  // no chamador, evitando que um único 50013 transitório derrube a org.
+  const isMissingPerm =
+    (code === 50013 || code === 50001) && !isTimeout;
+
+  return { code, message, raw, isAutoMod, isTimeout, isMissingPerm };
+}
+
+function describeDiscordError(parsed: ReturnType<typeof parseDiscordError>): string {
+  if (parsed.isAutoMod) return `AutoMod bloqueou (code ${parsed.code ?? "?"})`;
+  if (parsed.isTimeout) return `usuário em timeout/silenciado (code ${parsed.code ?? "?"})`;
+  if (parsed.isMissingPerm) return `sem permissão SEND_MESSAGES (code ${parsed.code})`;
+  if (parsed.code) return `code ${parsed.code} — ${parsed.message}`;
+  return parsed.message || "sem detalhe";
+}
+
 function pickMessageForOrg(
   perOrgRaw: string,
   orgName: string,
@@ -351,6 +418,34 @@ export class MatchHandler {
       result = await rest.sendMessage(event.id, content, null);
     }
 
+    // Fallback AutoMod: 403 com code 200000 (ou block_reason) → tenta versão mínima
+    // só com a menção do adversário, sem o texto problemático.
+    if (result.status === 403 || result.status === 400) {
+      const parsedFirst = parseDiscordError(result.error);
+      if (parsedFirst.isAutoMod && adversaryId) {
+        const fallbackContent = `<@${adversaryId}>`;
+        await this.host.log(
+          this.instanceId,
+          "WARN",
+          "match",
+          `AutoMod bloqueou em #${event.name} — tentando fallback só com menção do adversário`,
+        );
+        const r2 = await rest.sendMessage(event.id, fallbackContent, null);
+        // Se r2 falhar, ele substitui o resultado para o tratamento de erro
+        // capturar a causa REAL (ex: permissão real), em vez de continuar
+        // achando que é AutoMod.
+        result = r2;
+        if (r2.status < 200 || r2.status >= 300) {
+          await this.host.log(
+            this.instanceId,
+            "WARN",
+            "match",
+            `Fallback AutoMod também falhou em #${event.name}: HTTP ${r2.status} — ${describeDiscordError(parseDiscordError(r2.error))}`,
+          );
+        }
+      }
+    }
+
     if (result.status >= 200 && result.status < 300) {
       await query(
         `UPDATE matches SET msg_sent = TRUE WHERE instance_id = $1 AND channel_id = $2`,
@@ -367,45 +462,79 @@ export class MatchHandler {
         "match",
         `Mensagem na partida enviada em #${event.name}${adversaryId ? ` para <@${adversaryId}>` : ""} · token #${sender.position}${imgTag}`,
       );
-    } else if (result.status === 403) {
-      // 403 = token com castigo/timeout na guild — não consegue enviar mensagem na partida
-      const orgLabel = orgCtx ? `${orgCtx.org_name}` : "guild desconhecida";
-      const reason = `HTTP 403 ao enviar mensagem na partida #${event.name} — token com castigo/timeout em ${orgLabel}`;
+      return;
+    }
+
+    // ── Tratamento de falha ─────────────────────────────────────────────────
+    const parsed = parseDiscordError(result.error);
+    const orgLabel = orgCtx?.org_name ?? guildId ?? event.name;
+    const reasonText = describeDiscordError(parsed);
+
+    // Registra TODO erro em match_send_errors (com code Discord + mensagem)
+    // e captura o error_count atualizado para gate de blacklist.
+    const upsertRows = await query<{ error_count: number }>(
+      `INSERT INTO match_send_errors
+         (instance_id, org_label, error_count, last_status, last_error_code, last_message, last_seen)
+       VALUES ($1, $2, 1, $3, $4, $5, NOW())
+       ON CONFLICT (instance_id, org_label)
+       DO UPDATE SET
+         error_count     = match_send_errors.error_count + 1,
+         last_status     = EXCLUDED.last_status,
+         last_error_code = EXCLUDED.last_error_code,
+         last_message    = EXCLUDED.last_message,
+         last_seen       = NOW()
+       RETURNING error_count`,
+      [
+        this.instanceId,
+        orgLabel,
+        result.status,
+        parsed.code,
+        parsed.message.slice(0, 500) || null,
+      ],
+    ).catch(() => [] as Array<{ error_count: number }>);
+    const failureCount = upsertRows[0]?.error_count ?? 1;
+
+    // Só blacklista a org no token quando for permissão "real" (não timeout/AutoMod)
+    // E após pelo menos 3 falhas consecutivas — evita blacklist por 1 erro transitório.
+    const BLACKLIST_THRESHOLD = 3;
+    const isPermSignature =
+      parsed.isMissingPerm ||
+      (result.status === 403 &&
+        !parsed.isAutoMod &&
+        !parsed.isTimeout &&
+        parsed.code !== null &&
+        parsed.code !== 200000);
+    const shouldBlacklist =
+      orgCtx && isPermSignature && failureCount >= BLACKLIST_THRESHOLD;
+
+    if (shouldBlacklist && orgCtx) {
+      const blReason = `HTTP ${result.status} ao enviar mensagem na partida #${event.name} — ${reasonText}`;
       await this.host.log(
         this.instanceId,
         "WARN",
         "match",
-        `Token #${sender.position} com castigo em ${orgLabel} — mensagem na partida bloqueada. Org será ignorada por este token.`,
+        `Token #${sender.position} sem acesso em ${orgLabel} — ${reasonText}. Org será ignorada por este token.`,
       );
-      if (orgCtx) {
-        await this.host.blacklistOrgForToken(
-          this.instanceId,
-          sender.tokenId,
-          sender.position,
-          orgCtx.org_id,
-          orgCtx.org_name,
-          reason,
-        );
-      }
+      await this.host.blacklistOrgForToken(
+        this.instanceId,
+        sender.tokenId,
+        sender.position,
+        orgCtx.org_id,
+        orgCtx.org_name,
+        blReason,
+      );
     } else {
+      const level = parsed.isAutoMod || parsed.isTimeout ? "WARN" : "ERROR";
+      const gateNote =
+        isPermSignature && orgCtx && failureCount < BLACKLIST_THRESHOLD
+          ? ` (${failureCount}/${BLACKLIST_THRESHOLD} antes de blacklist)`
+          : "";
       await this.host.log(
         this.instanceId,
-        "ERROR",
+        level,
         "match",
-        `Falha ao enviar mensagem na partida em #${event.name}: HTTP ${result.status}`,
+        `Falha ao enviar em #${event.name} (${orgLabel}): HTTP ${result.status} — ${reasonText}${gateNote}`,
       );
-      // Registra erro de envio por org (para o painel de erros)
-      const orgLabel = orgCtx?.org_name ?? guildId ?? event.name;
-      await query(
-        `INSERT INTO match_send_errors (instance_id, org_label, error_count, last_status, last_seen)
-         VALUES ($1, $2, 1, $3, NOW())
-         ON CONFLICT (instance_id, org_label)
-         DO UPDATE SET
-           error_count = match_send_errors.error_count + 1,
-           last_status = EXCLUDED.last_status,
-           last_seen   = NOW()`,
-        [this.instanceId, orgLabel, result.status],
-      ).catch(() => {});
     }
   }
 }
