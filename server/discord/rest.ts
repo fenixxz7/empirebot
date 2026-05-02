@@ -122,6 +122,15 @@ export class DiscordRest {
     return this.request<DiscordChannel[]>("GET", `/guilds/${guildId}/channels`);
   }
 
+  /** GET /channels/:id — usado para confirmar se um canal é DM ou guild
+   *  quando o gateway entrega MESSAGE_CREATE ambíguo (sem guild_id/member). */
+  getChannel(channelId: string) {
+    return this.request<DiscordChannel & { guild_id?: string; type?: number }>(
+      "GET",
+      `/channels/${channelId}`,
+    );
+  }
+
   listGuildActiveThreads(guildId: string) {
     return this.request<{
       threads: DiscordChannel[];

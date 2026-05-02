@@ -346,6 +346,19 @@ class Manager {
     // Deduplicação de DMs: conta apenas o primeiro contato por canal por sessão.
     // Compartilhado entre todos os tokens da instância para evitar contagem dupla.
     const seenDmChannels = new Set<string>();
+    // Canais conhecidos como pertencentes a uma guild (capturados via
+    // CHANNEL_CREATE/THREAD_CREATE com guild_id). Usado para evitar
+    // que threads privadas, em que o gateway às vezes omite guild_id no
+    // MESSAGE_CREATE, sejam confundidas com DM.
+    const seenGuildChannels = new Set<string>();
+    const rememberGuildChannel = (chId: string) => {
+      if (!chId || seenGuildChannels.has(chId)) return;
+      seenGuildChannels.add(chId);
+      if (seenGuildChannels.size > 10000) {
+        const first = seenGuildChannels.values().next().value;
+        if (first) seenGuildChannels.delete(first);
+      }
+    };
 
     for (const e of entries) {
       e.client.on("dispatch", (eventName: string, eventData: any) => {
@@ -377,52 +390,110 @@ class Manager {
           }
         }
 
+        // Se o MESSAGE_CREATE traz guild_id ou um objeto `member` (Discord
+        // só envia `member` em mensagens de guild — DMs nunca têm), marca
+        // o canal como guild para que tentativas futuras nunca tratem
+        // como DM mesmo se o gateway omitir o campo eventualmente.
+        if (
+          eventName === "MESSAGE_CREATE" &&
+          eventData?.channel_id &&
+          (eventData?.guild_id || eventData?.member)
+        ) {
+          rememberGuildChannel(String(eventData.channel_id));
+        }
+
         // MESSAGE_CREATE: DM recebida de outro usuário → incrementa contador de DMs.
         // Conta apenas 1x por canal por sessão (deduplicado entre tokens).
+        // Detecta DM por SINAL POSITIVO: ausência de guild_id + ausência de
+        // `member` (sempre presente em mensagens de guild) + canal não está
+        // no cache de canais conhecidos como guild. Antes a checagem era só
+        // !guild_id, o que fazia threads privadas (ex: "fila-346054") serem
+        // confundidas com DM quando o gateway omitia esse campo.
         if (
           eventName === "MESSAGE_CREATE" &&
           !eventData?.guild_id &&
-          eventData?.channel_id
+          !eventData?.member &&
+          eventData?.channel_id &&
+          !seenGuildChannels.has(String(eventData.channel_id))
         ) {
           const myId = e.client.getUserId();
           const authorId = String(eventData?.author?.id ?? eventData?.author ?? "");
           const chId = String(eventData.channel_id);
           if (myId && authorId && authorId !== myId) {
-            // Empurra direto pra fila/cache do responder — sinal mais confiável que CHANNEL_CREATE
             const author = eventData?.author ?? {};
             const isBot = author?.bot === true;
             const username = String(
               author?.global_name ?? author?.username ?? authorId,
             );
-            if (!isBot) {
-              this.cachePendingRequest(instanceId, {
-                channelId: chId,
-                userId: authorId,
-                username,
-                seenAt: Date.now(),
-              });
-              const responder = dmResponders.get(instanceId);
-              if (responder) {
-                responder.pushFromGateway(chId, authorId, username).catch(() => {});
-              }
-            }
+            const tokenForRest = e.client.getToken?.() ?? null;
 
-            if (!seenDmChannels.has(chId)) {
-              seenDmChannels.add(chId);
-              if (seenDmChannels.size > 2000) {
-                const first = seenDmChannels.values().next().value;
-                if (first) seenDmChannels.delete(first);
+            // Aplica o tratamento de DM, mas só após confirmar que o canal
+            // realmente é DM via REST quando ele é totalmente novo. Isso
+            // elimina o race em que um MESSAGE_CREATE chega antes do
+            // CHANNEL_CREATE/THREAD_CREATE e ainda está sem guild_id/member.
+            const applyAsDm = () => {
+              if (!isBot) {
+                this.cachePendingRequest(instanceId, {
+                  channelId: chId,
+                  userId: authorId,
+                  username,
+                  seenAt: Date.now(),
+                });
+                const responder = dmResponders.get(instanceId);
+                if (responder) {
+                  responder
+                    .pushFromGateway(chId, authorId, username)
+                    .catch(() => {});
+                }
               }
-              query(
-                `UPDATE stats SET dms = dms + 1 WHERE instance_id = $1`,
-                [instanceId],
-              ).catch(() => {});
-              this.log(
-                instanceId,
-                "INFO",
-                "dm",
-                `DM recebida de ${username} (<@${authorId}>)${isBot ? " — bot ignorado" : " — adicionado à fila"}`,
-              ).catch(() => {});
+              if (!seenDmChannels.has(chId)) {
+                seenDmChannels.add(chId);
+                if (seenDmChannels.size > 2000) {
+                  const first = seenDmChannels.values().next().value;
+                  if (first) seenDmChannels.delete(first);
+                }
+                query(
+                  `UPDATE stats SET dms = dms + 1 WHERE instance_id = $1`,
+                  [instanceId],
+                ).catch(() => {});
+                this.log(
+                  instanceId,
+                  "INFO",
+                  "dm",
+                  `DM recebida de ${username} (<@${authorId}>)${isBot ? " — bot ignorado" : " — adicionado à fila"}`,
+                ).catch(() => {});
+              }
+            };
+
+            // Se já confirmamos antes que esse canal é DM, segue sem REST.
+            // Se for o primeiro evento ambíguo, busca o tipo do canal antes
+            // de classificar — evita falso positivo em threads de guild.
+            if (seenDmChannels.has(chId) || !tokenForRest) {
+              applyAsDm();
+            } else {
+              const rest = new DiscordRest(tokenForRest);
+              rest
+                .getChannel(chId)
+                .then((res) => {
+                  const ch = res.data as
+                    | { guild_id?: string; type?: number }
+                    | undefined;
+                  // Tipos DM: 1 (DM) e 3 (GROUP_DM). Qualquer outro = guild.
+                  const isRealDm =
+                    !!ch &&
+                    !ch.guild_id &&
+                    (ch.type === 1 || ch.type === 3);
+                  if (isRealDm) {
+                    applyAsDm();
+                  } else {
+                    rememberGuildChannel(chId);
+                  }
+                })
+                .catch(() => {
+                  // REST falhou (rate limit, rede, etc) — cai no comportamento
+                  // antigo (trata como DM) para não perder DMs reais.
+                  applyAsDm();
+                });
             }
           }
           return;
@@ -516,6 +587,19 @@ class Manager {
         }
 
         if (!CHANNEL_EVENTS.has(eventName)) return;
+
+        // Cacheia canais/threads conhecidos como guild para reforçar o
+        // anti-falso-positivo de DM (ver bloco MESSAGE_CREATE acima).
+        if (eventData?.guild_id) {
+          if (eventData?.id) rememberGuildChannel(String(eventData.id));
+          // THREAD_LIST_SYNC vem com array de threads
+          const threads: any[] = Array.isArray(eventData?.threads)
+            ? eventData.threads
+            : [];
+          for (const t of threads) {
+            if (t?.id) rememberGuildChannel(String(t.id));
+          }
+        }
 
         // CHANNEL_CREATE / THREAD_CREATE: caminho principal
         const matchTokens = this.buildMatchTokens(instanceId, e.tokenId);

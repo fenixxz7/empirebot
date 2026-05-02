@@ -52,6 +52,10 @@ export class GatewayClient extends EventEmitter {
     return this.userId;
   }
 
+  getToken(): string {
+    return this.token;
+  }
+
   isReady(): boolean {
     return this.ready && !!this.sessionId;
   }
