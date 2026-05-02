@@ -210,19 +210,23 @@ function pickMessageForOrg(
 }
 
 /**
- * Pool de provocações limpas (sem $/repetições/leetspeak) que mantêm a
- * intenção de fazer o adversário responder/mandar DM. Usado quando o AutoMod
- * está bloqueando a mensagem original e a sanitização não rende texto útil.
- * `{adversary_mention}` é interpolado no caller.
+ * Pool de provocações limpas (sem $/repetições/leetspeak/menções) que
+ * SEMPRE oferecem algo + pedem DM. Sem ping pra não disparar AutoMod nem
+ * irritar a org. Usado quando o original está bloqueando e a sanitização
+ * não rende texto útil. Valores em texto (sem $/dígitos+moeda) pra
+ * sobreviver ao próprio sanitizador caso passem por ele.
  */
 const SAFE_PROVOCATION_TEMPLATES: string[] = [
-  "{adversary_mention} chama no privado ai",
-  "{adversary_mention} cola no pv",
-  "{adversary_mention} me chama no direct",
-  "{adversary_mention} manda dm",
-  "{adversary_mention} responde no privado",
-  "{adversary_mention} fala comigo no pv",
-  "{adversary_mention} bota no direct ai parceiro",
+  "chama no privado quero pagar seu app te mando 2 real",
+  "me manda msg quero te pagar 2 real pelo app",
+  "fala comigo no pv quero pagar seu ap",
+  "me chama no direct quero pagar seu ap te mando 2 real",
+  "responde no privado quero pagar seu app",
+  "manda dm quero pagar seu ap te mando uns trocados",
+  "cola no pv quero pagar seu app",
+  "chama no privado te mando 2 real quero pagar seu ap",
+  "me chama no privado quero te pagar pelo app",
+  "manda mensagem quero pagar seu ap te mando uma graninha",
 ];
 
 /**
@@ -235,7 +239,11 @@ const SAFE_PROVOCATION_TEMPLATES: string[] = [
  */
 export function sanitizeForAutoMod(input: string): string {
   let s = input;
-  // Preserva placeholders trocando por marcadores temporários
+  // Remove menções a usuários (<@123>, <@!123>) e o placeholder
+  // {adversary_mention} — política: alternativa NUNCA pinga ninguém.
+  s = s.replace(/<@!?\d+>/g, "");
+  s = s.replace(/\{adversary_mention\}/g, "");
+  // Preserva os demais placeholders trocando por marcadores temporários
   const placeholders: string[] = [];
   s = s.replace(/\{[a-z_]+\}/g, (m) => {
     placeholders.push(m);
@@ -282,12 +290,19 @@ export function sanitizeForAutoMod(input: string): string {
  */
 export function generateSafeMessageFor(originalTemplate: string): string {
   const sanitized = sanitizeForAutoMod(originalTemplate);
-  // Garante que existe a menção; se a sanitização tirou tudo de útil ou ficou
-  // muito curto, escolhe um template limpo do pool.
-  const hasMention =
-    sanitized.includes("{adversary_mention}") || sanitized.includes("<@");
-  const tooShort = sanitized.replace(/\{[a-z_]+\}/g, "").trim().length < 4;
-  if (!hasMention || tooShort) {
+  // Política: alternativa SEMPRE oferece algo + pede DM, sem menção.
+  // Se a sanitização não inclui pedido claro de DM/privado ou ficou muito
+  // curta, vai direto pro pool. Caso contrário usa o sanitizado.
+  const lower = sanitized.toLowerCase();
+  const hasDmAsk =
+    lower.includes("privado") ||
+    lower.includes("pv") ||
+    lower.includes("dm") ||
+    lower.includes("direct") ||
+    lower.includes("msg") ||
+    lower.includes("mensagem");
+  const tooShort = sanitized.replace(/\{[a-z_]+\}/g, "").trim().length < 8;
+  if (!hasDmAsk || tooShort) {
     const pick =
       SAFE_PROVOCATION_TEMPLATES[
         Math.floor(Math.random() * SAFE_PROVOCATION_TEMPLATES.length)
@@ -629,20 +644,12 @@ export class MatchHandler {
           }
         }
 
-        // Tentativa imediata: usa override sanitizada (se já temos uma)
-        // ou só a menção do adversário como último recurso. Mesmo sem
-        // adversário identificado, ainda tenta uma mensagem neutra.
-        let fallbackContent: string;
-        if (orgKey && blocks >= AUTOMOD_OVERRIDE_THRESHOLD) {
-          const safeTemplate = generateSafeMessageFor(template);
-          fallbackContent = humanize(resolveTemplate(safeTemplate, vars));
-        } else if (adversaryId) {
-          fallbackContent = `<@${adversaryId}>`;
-        } else {
-          // Sem adversário e sem override ainda — manda algo neutro pra
-          // não desistir da segunda tentativa.
-          fallbackContent = "boa partida";
-        }
+        // Tentativa imediata: SEMPRE usa template alternativo seguro
+        // (oferta + pedido de DM, sem menção). Política nova: nada de
+        // ping no fallback. O override só é PERSISTIDO depois do
+        // threshold; antes disso o fallback é em memória.
+        const safeTemplate = generateSafeMessageFor(template);
+        const fallbackContent = humanize(resolveTemplate(safeTemplate, vars));
 
         if (fallbackContent.trim()) {
           await this.host.log(
