@@ -127,6 +127,19 @@ CREATE TABLE IF NOT EXISTS matches (
   UNIQUE (instance_id, channel_id)
 );
 
+-- Overrides de mensagem por org. Quando o AutoMod bloqueia repetidamente em
+-- uma mesma org, o sistema gera uma variante sanitizada e grava aqui.
+-- O usuário pode editar/limpar manualmente também.
+CREATE TABLE IF NOT EXISTS org_message_overrides (
+  instance_id     INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+  org_key         TEXT NOT NULL,
+  message         TEXT NOT NULL,
+  source          TEXT NOT NULL DEFAULT 'auto',
+  automod_blocks  INTEGER NOT NULL DEFAULT 0,
+  generated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (instance_id, org_key)
+);
+
 CREATE TABLE IF NOT EXISTS match_send_errors (
   id              BIGSERIAL PRIMARY KEY,
   instance_id     INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,

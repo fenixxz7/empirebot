@@ -162,6 +162,18 @@ export async function initDatabase(): Promise<void> {
   await pool.query(
     `ALTER TABLE match_send_errors ADD COLUMN IF NOT EXISTS last_message TEXT`,
   );
+  // Overrides de mensagem por org (auto-sanitizadas após N bloqueios de AutoMod)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS org_message_overrides (
+      instance_id     INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+      org_key         TEXT NOT NULL,
+      message         TEXT NOT NULL,
+      source          TEXT NOT NULL DEFAULT 'auto',
+      automod_blocks  INTEGER NOT NULL DEFAULT 0,
+      generated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (instance_id, org_key)
+    )
+  `);
   // Sincroniza contador msgs_enviadas com a verdade do banco (matches.msg_sent)
   // — inclui instâncias sem matches (resetadas para 0) via LEFT JOIN.
   await pool.query(`

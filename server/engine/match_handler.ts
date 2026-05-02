@@ -178,6 +178,94 @@ function pickMessageForOrg(
   return globalMsg;
 }
 
+/**
+ * Pool de provocações limpas (sem $/repetições/leetspeak) que mantêm a
+ * intenção de fazer o adversário responder/mandar DM. Usado quando o AutoMod
+ * está bloqueando a mensagem original e a sanitização não rende texto útil.
+ * `{adversary_mention}` é interpolado no caller.
+ */
+const SAFE_PROVOCATION_TEMPLATES: string[] = [
+  "{adversary_mention} chama no privado ai",
+  "{adversary_mention} cola no pv",
+  "{adversary_mention} me chama no direct",
+  "{adversary_mention} manda dm",
+  "{adversary_mention} responde no privado",
+  "{adversary_mention} fala comigo no pv",
+  "{adversary_mention} bota no direct ai parceiro",
+];
+
+/**
+ * Sanitiza uma mensagem removendo gatilhos comuns de AutoMod:
+ *  - símbolos de moeda e valores (R$, $, 2,00$, 5,50)
+ *  - sequências repetidas de letras (vvvv → v, kkkkk → kkk)
+ *  - sequências suspeitas de pontuação ("p,.vvv", ",,.,.")
+ *  - emojis e símbolos não-ASCII raros
+ * Mantém placeholders ({adversary_mention}, etc) intactos para o caller.
+ */
+export function sanitizeForAutoMod(input: string): string {
+  let s = input;
+  // Preserva placeholders trocando por marcadores temporários
+  const placeholders: string[] = [];
+  s = s.replace(/\{[a-z_]+\}/g, (m) => {
+    placeholders.push(m);
+    return `\u0001PH${placeholders.length - 1}\u0001`;
+  });
+  // Remove valores em dinheiro estilo "2,00$" "R$ 5" "$3" "5,50 reais"
+  s = s.replace(/\b\d+[.,]?\d*\s*(?:reais|reai|conto|pila)\b/gi, "");
+  s = s.replace(/(?:R\$|\$)\s*\d+[.,]?\d*/gi, "");
+  s = s.replace(/\b\d+[.,]\d+\s*\$/g, "");
+  // Tira símbolo $ solto
+  s = s.replace(/\$+/g, "");
+  // Normaliza leetspeak conservador: substitui dígitos por letras quando
+  // estão DENTRO de palavras (evita estragar números soltos como horários).
+  // Ex: "pr1vad0" → "privado", "dm4" → "dma" (raro mas seguro).
+  const leetMap: Record<string, string> = {
+    "0": "o",
+    "1": "i",
+    "3": "e",
+    "4": "a",
+    "5": "s",
+    "7": "t",
+    "@": "a",
+  };
+  s = s.replace(/[A-Za-zÀ-ÿ][0-9@]+[A-Za-zÀ-ÿ]?/g, (word) =>
+    word.replace(/[0-9@]/g, (d) => leetMap[d] ?? d),
+  );
+  // Colapsa qualquer letra repetida 3+ vezes para no máx 2 (kkkkkk → kk, vvvv → vv)
+  s = s.replace(/([a-zA-Z])\1{2,}/g, "$1$1");
+  // Remove sequências esquisitas de pontuação tipo "p,.vvv" ou ",.,.,."
+  s = s.replace(/[,.;:!?]{2,}/g, ".");
+  // Remove qualquer caractere não-printável ou emoji exótico (mantém acentos PT)
+  s = s.replace(/[^\x20-\x7E\u00C0-\u00FF\n\u0001]/g, "");
+  // Normaliza espaços
+  s = s.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  // Restaura placeholders
+  s = s.replace(/\u0001PH(\d+)\u0001/g, (_, i) => placeholders[Number(i)] ?? "");
+  return s;
+}
+
+/**
+ * Gera uma provocação alternativa sanitizada para uma org cuja mensagem
+ * original está sendo bloqueada por AutoMod. Mantém a intenção de fazer o
+ * adversário mandar mensagem (DM/privado).
+ */
+export function generateSafeMessageFor(originalTemplate: string): string {
+  const sanitized = sanitizeForAutoMod(originalTemplate);
+  // Garante que existe a menção; se a sanitização tirou tudo de útil ou ficou
+  // muito curto, escolhe um template limpo do pool.
+  const hasMention =
+    sanitized.includes("{adversary_mention}") || sanitized.includes("<@");
+  const tooShort = sanitized.replace(/\{[a-z_]+\}/g, "").trim().length < 4;
+  if (!hasMention || tooShort) {
+    const pick =
+      SAFE_PROVOCATION_TEMPLATES[
+        Math.floor(Math.random() * SAFE_PROVOCATION_TEMPLATES.length)
+      ]!;
+    return pick;
+  }
+  return sanitized;
+}
+
 export class MatchHandler {
   private processing = new Set<string>();
 
@@ -376,12 +464,34 @@ export class MatchHandler {
       return;
     }
 
-    const template = pickMessageForOrg(
-      config.message_per_org,
-      orgCtx?.org_name ?? "",
-      guildId,
-      config.message_main,
-    );
+    // Override automático/manual por org tem precedência sobre per-org parsed
+    // do config string e sobre o global. Chave = nome da org (lowercase) ou guild_id.
+    let templateSource: "override" | "per_org" | "global" = "global";
+    let template = config.message_main;
+    const orgKey =
+      (orgCtx?.org_name ?? "").toLowerCase() ||
+      (guildId ?? "").toLowerCase();
+    if (orgKey) {
+      const ovr = await query<{ message: string; source: string }>(
+        `SELECT message, source FROM org_message_overrides
+          WHERE instance_id = $1 AND org_key = $2`,
+        [this.instanceId, orgKey],
+      );
+      if (ovr[0]?.message?.trim()) {
+        template = ovr[0].message;
+        templateSource = "override";
+      }
+    }
+    if (templateSource !== "override") {
+      const picked = pickMessageForOrg(
+        config.message_per_org,
+        orgCtx?.org_name ?? "",
+        guildId,
+        config.message_main,
+      );
+      template = picked;
+      templateSource = picked === config.message_main ? "global" : "per_org";
+    }
 
     const vars: Record<string, string> = {
       adversary_mention: adversaryId ? `<@${adversaryId}>` : "(desconhecido)",
@@ -418,11 +528,11 @@ export class MatchHandler {
       result = await rest.sendMessage(event.id, content, null);
     }
 
-    // Fallback AutoMod: 403 com code 200000 (ou block_reason) → tenta versão mínima
-    // só com a menção do adversário, sem o texto problemático.
+    // Fallback AutoMod: 403 com code 200000 (ou block_reason) → tenta versão
+    // mínima/sanitizada e auto-gera override pra próxima vez nessa org.
     if (result.status === 403 || result.status === 400) {
       const parsedFirst = parseDiscordError(result.error);
-      if (parsedFirst.isAutoMod && adversaryId) {
+      if (parsedFirst.isAutoMod) {
         const orgLabelEarly = orgCtx?.org_name ?? guildId ?? event.name;
         // Persiste a tentativa AutoMod ANTES de tentar o fallback, para que
         // mesmo se o fallback dê sucesso, o 403 inicial fique registrado.
@@ -445,25 +555,82 @@ export class MatchHandler {
             (parsedFirst.message || "AutoMod").slice(0, 500),
           ],
         ).catch(() => {});
-        const fallbackContent = `<@${adversaryId}>`;
-        await this.host.log(
-          this.instanceId,
-          "WARN",
-          "match",
-          `AutoMod bloqueou em #${event.name} — tentando fallback só com menção do adversário`,
-        );
-        const r2 = await rest.sendMessage(event.id, fallbackContent, null);
-        // Se r2 falhar, ele substitui o resultado para o tratamento de erro
-        // capturar a causa REAL (ex: permissão real), em vez de continuar
-        // achando que é AutoMod.
-        result = r2;
-        if (r2.status < 200 || r2.status >= 300) {
+
+        // Incrementa contador AutoMod por org e dispara auto-geração quando
+        // atinge o threshold. Override gerado mantém menção do adversário.
+        const AUTOMOD_OVERRIDE_THRESHOLD = 3;
+        let blocks = 0;
+        if (orgKey) {
+          const blkRows = await query<{ automod_blocks: number; source: string }>(
+            `INSERT INTO org_message_overrides
+               (instance_id, org_key, message, source, automod_blocks, generated_at)
+             VALUES ($1, $2, '', 'pending', 1, NOW())
+             ON CONFLICT (instance_id, org_key)
+             DO UPDATE SET
+               automod_blocks = org_message_overrides.automod_blocks + 1
+             RETURNING automod_blocks, source`,
+            [this.instanceId, orgKey],
+          ).catch(() => [] as Array<{ automod_blocks: number; source: string }>);
+          blocks = blkRows[0]?.automod_blocks ?? 0;
+          const existingSource = blkRows[0]?.source ?? "pending";
+          // Gera/atualiza override sanitizado se ainda não existe e
+          // bateu o threshold. Não sobrescreve override manual do usuário.
+          if (
+            blocks >= AUTOMOD_OVERRIDE_THRESHOLD &&
+            (existingSource === "pending" || existingSource === "auto")
+          ) {
+            const safeTemplate = generateSafeMessageFor(template);
+            await query(
+              `UPDATE org_message_overrides
+                  SET message = $3, source = 'auto', generated_at = NOW()
+                WHERE instance_id = $1 AND org_key = $2
+                  AND source IN ('pending', 'auto')`,
+              [this.instanceId, orgKey, safeTemplate],
+            ).catch(() => {});
+            await this.host.log(
+              this.instanceId,
+              "WARN",
+              "match",
+              `AutoMod bloqueou ${blocks}× em ${orgLabelEarly} — mensagem alternativa gerada automaticamente: "${safeTemplate.slice(0, 80)}"`,
+            );
+          }
+        }
+
+        // Tentativa imediata: usa override sanitizada (se já temos uma)
+        // ou só a menção do adversário como último recurso. Mesmo sem
+        // adversário identificado, ainda tenta uma mensagem neutra.
+        let fallbackContent: string;
+        if (orgKey && blocks >= AUTOMOD_OVERRIDE_THRESHOLD) {
+          const safeTemplate = generateSafeMessageFor(template);
+          fallbackContent = humanize(resolveTemplate(safeTemplate, vars));
+        } else if (adversaryId) {
+          fallbackContent = `<@${adversaryId}>`;
+        } else {
+          // Sem adversário e sem override ainda — manda algo neutro pra
+          // não desistir da segunda tentativa.
+          fallbackContent = "boa partida";
+        }
+
+        if (fallbackContent.trim()) {
           await this.host.log(
             this.instanceId,
             "WARN",
             "match",
-            `Fallback AutoMod também falhou em #${event.name}: HTTP ${r2.status} — ${describeDiscordError(parseDiscordError(r2.error))}`,
+            `AutoMod bloqueou em #${event.name} — tentando fallback: "${fallbackContent.slice(0, 60)}"`,
           );
+          const r2 = await rest.sendMessage(event.id, fallbackContent, null);
+          // Se r2 falhar, ele substitui o resultado para o tratamento de erro
+          // capturar a causa REAL (ex: permissão real), em vez de continuar
+          // achando que é AutoMod.
+          result = r2;
+          if (r2.status < 200 || r2.status >= 300) {
+            await this.host.log(
+              this.instanceId,
+              "WARN",
+              "match",
+              `Fallback AutoMod também falhou em #${event.name}: HTTP ${r2.status} — ${describeDiscordError(parseDiscordError(r2.error))}`,
+            );
+          }
         }
       }
     }
