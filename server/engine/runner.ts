@@ -57,7 +57,7 @@ const NO_WORK_LOG_INTERVAL_MS = 60_000;
 const PLAYER_CACHE_MS = 45_000;
 const PLAYER_CACHE_403_MS = 10 * 60_000;
 const MAX_FRESH_FETCH_PER_TICK = 4;
-const ACTIVE_QUEUE_TTL_MS = 12 * 60 * 1000;
+const ACTIVE_QUEUE_TTL_MS = 4 * 60 * 1000;
 
 // === RATE WINDOW (10 filas / minuto, depois pausa) ===
 const RATE_WINDOW_MS = 60_000;             // janela de 60s
@@ -174,7 +174,7 @@ export class QueueRunner {
         this.instanceId,
         "INFO",
         "engine",
-        `Sweep: removidas ${removed.length} fila(s) fantasma (>12min sem virar partida).`,
+        `Sweep: removidas ${removed.length} fila(s) fantasma (>4min sem virar partida).`,
       );
       // Força round-robin a recomeçar do topo e limpa cursores de modo
       this.orgCursor = 0;
@@ -292,8 +292,9 @@ export class QueueRunner {
       channel_id: string;
       message_id: string;
       org_id: number;
+      joined_with_players: boolean;
     }>(
-      `SELECT channel_id, message_id, org_id
+      `SELECT channel_id, message_id, org_id, joined_with_players
        FROM active_queues WHERE instance_id = $1`,
       [this.instanceId],
     );
@@ -301,8 +302,12 @@ export class QueueRunner {
       activeRows.map((r) => `${r.channel_id}:${r.message_id}`),
     );
     const activePerOrg = new Map<number, number>();
+    const emptiesPerOrg = new Map<number, number>();
     for (const r of activeRows) {
       activePerOrg.set(r.org_id, (activePerOrg.get(r.org_id) ?? 0) + 1);
+      if (!r.joined_with_players) {
+        emptiesPerOrg.set(r.org_id, (emptiesPerOrg.get(r.org_id) ?? 0) + 1);
+      }
     }
     await this.refreshNaFila(activeRows.length);
 
@@ -425,7 +430,12 @@ export class QueueRunner {
       }
 
       // Passo 2: nenhum modo tinha player → percorre os modos procurando vazia.
-      if (!pick && noPlayersSlotPreferred) {
+      // MAS: se a org já tem >=50% do max_queues ocupado por filas vazias paradas,
+      // bloqueia novas vazias (só permite com player). Evita encher de fila vazia
+      // que nunca vira partida e desperdiça os slots da org.
+      const emptiesForOrg = emptiesPerOrg.get(currentOrgId) ?? 0;
+      const emptyBlocked = emptiesForOrg * 2 >= maxForOrg;
+      if (!pick && noPlayersSlotPreferred && !emptyBlocked) {
         for (let i = 0; i < orderedModes.length; i++) {
           const m = orderedModes[i]!;
           const hit = ranked.candidates.find(
@@ -433,6 +443,14 @@ export class QueueRunner {
           );
           if (hit) { pick = hit; pickedModeIdx = i; break; }
         }
+      }
+
+      // Se a org está bloqueada pra vazia e não tem nenhum candidato com player,
+      // pula pra próxima org (não usa overflow nessa org).
+      if (!pick && emptyBlocked) {
+        this.orgCursor = (this.orgCursor + 1) % totalOrgs;
+        attempts++;
+        continue;
       }
 
       // Passo 3: overflow — total < 10 e nenhum match preferencial → melhor disponível.
@@ -763,8 +781,8 @@ export class QueueRunner {
     if (success) {
       await query(
         `INSERT INTO active_queues
-           (instance_id, org_id, channel_id, message_id, mode, category, token_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+           (instance_id, org_id, channel_id, message_id, mode, category, token_id, joined_with_players)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          ON CONFLICT (instance_id, channel_id, message_id) DO NOTHING`,
         [
           this.instanceId,
@@ -774,6 +792,7 @@ export class QueueRunner {
           ch.mode,
           ch.category,
           token.tokenId,
+          playersInQueue > 0,
         ],
       );
       await query(

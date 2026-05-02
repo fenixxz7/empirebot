@@ -70,6 +70,9 @@ export async function initDatabase(): Promise<void> {
     `ALTER TABLE active_queues ADD COLUMN IF NOT EXISTS category TEXT`,
   );
   await pool.query(
+    `ALTER TABLE active_queues ADD COLUMN IF NOT EXISTS joined_with_players BOOLEAN NOT NULL DEFAULT FALSE`,
+  );
+  await pool.query(
     `ALTER TABLE active_queues DROP CONSTRAINT IF EXISTS active_queues_instance_id_channel_id_key`,
   );
   await pool.query(`
