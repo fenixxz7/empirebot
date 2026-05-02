@@ -494,16 +494,12 @@ export class MatchHandler {
     ).catch(() => [] as Array<{ error_count: number }>);
     const failureCount = upsertRows[0]?.error_count ?? 1;
 
-    // Só blacklista a org no token quando for permissão "real" (não timeout/AutoMod)
+    // Só blacklista a org no token quando for permissão "real":
+    // EXATAMENTE code 50013 ou 50001 SEM indício de timeout.
     // E após pelo menos 3 falhas consecutivas — evita blacklist por 1 erro transitório.
+    // Qualquer outro 403 (AutoMod, timeout, code desconhecido, sem code) NÃO blacklista.
     const BLACKLIST_THRESHOLD = 3;
-    const isPermSignature =
-      parsed.isMissingPerm ||
-      (result.status === 403 &&
-        !parsed.isAutoMod &&
-        !parsed.isTimeout &&
-        parsed.code !== null &&
-        parsed.code !== 200000);
+    const isPermSignature = parsed.isMissingPerm;
     const shouldBlacklist =
       orgCtx && isPermSignature && failureCount >= BLACKLIST_THRESHOLD;
 
