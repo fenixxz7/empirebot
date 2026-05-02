@@ -86,3 +86,40 @@ messageOverridesRouter.delete("/", async (req, res) => {
     res.status(500).json({ error: (e as Error).message });
   }
 });
+
+// POST /api/instances/:id/message-overrides/bulk-delete
+// Body: { org_keys: string[] } — remove em lote numa única transação
+messageOverridesRouter.post("/bulk-delete", async (req, res) => {
+  const instanceId = Number((req.params as { id: string }).id);
+  if (!Number.isInteger(instanceId) || instanceId <= 0) {
+    res.status(400).json({ error: "instance id inválido" });
+    return;
+  }
+  const body = (req.body ?? {}) as { org_keys?: unknown };
+  if (!Array.isArray(body.org_keys)) {
+    res.status(400).json({ error: "org_keys deve ser array de strings" });
+    return;
+  }
+  const keys = body.org_keys
+    .filter((k): k is string => typeof k === "string" && k.trim().length > 0)
+    .map((k) => k.trim().toLowerCase());
+  if (keys.length === 0) {
+    res.json({ ok: true, deleted: 0 });
+    return;
+  }
+  if (keys.length > 500) {
+    res.status(400).json({ error: "máximo 500 org_keys por requisição" });
+    return;
+  }
+  try {
+    const result = await query<{ org_key: string }>(
+      `DELETE FROM org_message_overrides
+        WHERE instance_id = $1 AND org_key = ANY($2::text[])
+        RETURNING org_key`,
+      [instanceId, keys],
+    );
+    res.json({ ok: true, deleted: result.length });
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message });
+  }
+});

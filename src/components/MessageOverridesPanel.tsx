@@ -16,6 +16,7 @@ export function MessageOverridesPanel({ instanceId }: { instanceId: number }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -24,6 +25,18 @@ export function MessageOverridesPanel({ instanceId }: { instanceId: number }) {
         `/api/instances/${instanceId}/message-overrides`,
       );
       setRows(data);
+      // Reconcilia: tira do `selected` qualquer key que não exista mais
+      // na lista atual (evita ghost keys após reload externo).
+      const liveKeys = new Set(data.map((r) => r.org_key));
+      setSelected((prev) => {
+        let changed = false;
+        const next = new Set<string>();
+        for (const k of prev) {
+          if (liveKeys.has(k)) next.add(k);
+          else changed = true;
+        }
+        return changed ? next : prev;
+      });
     } finally {
       setLoading(false);
     }
@@ -33,6 +46,15 @@ export function MessageOverridesPanel({ instanceId }: { instanceId: number }) {
     reload().catch(console.error);
   }, [reload]);
 
+  function toggleSelect(orgKey: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(orgKey)) next.delete(orgKey);
+      else next.add(orgKey);
+      return next;
+    });
+  }
+
   async function clearOne(orgKey: string) {
     setBusy(true);
     try {
@@ -40,6 +62,37 @@ export function MessageOverridesPanel({ instanceId }: { instanceId: number }) {
         `/api/instances/${instanceId}/message-overrides?org_key=${encodeURIComponent(orgKey)}`,
         { method: "DELETE" },
       );
+      setSelected((prev) => {
+        const next = new Set(prev);
+        next.delete(orgKey);
+        return next;
+      });
+      await reload();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clearSelected() {
+    if (selected.size === 0) return;
+    const keys = Array.from(selected);
+    const confirmMsg =
+      keys.length === 1
+        ? `Remover a mensagem alternativa de "${keys[0]}"?`
+        : `Remover ${keys.length} mensagens alternativas selecionadas?`;
+    if (!window.confirm(confirmMsg)) return;
+    setBusy(true);
+    try {
+      // Bulk delete numa única chamada — atômico no servidor, sem
+      // estado parcial se algo falhar no meio.
+      await api(
+        `/api/instances/${instanceId}/message-overrides/bulk-delete`,
+        {
+          method: "POST",
+          body: JSON.stringify({ org_keys: keys }),
+        },
+      );
+      setSelected(new Set());
       await reload();
     } finally {
       setBusy(false);
@@ -66,6 +119,17 @@ export function MessageOverridesPanel({ instanceId }: { instanceId: number }) {
   const visible = rows.filter((r) => r.source !== "pending" && r.message.trim());
   const total = visible.length;
   const autoCount = visible.filter((r) => r.source === "auto").length;
+  const visibleKeys = visible.map((r) => r.org_key);
+  const selectedCount = visibleKeys.filter((k) => selected.has(k)).length;
+  const allSelected = total > 0 && selectedCount === total;
+
+  function toggleSelectAll() {
+    if (allSelected) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(visibleKeys));
+    }
+  }
 
   return (
     <div className="rounded-2xl bg-navy-900 border border-white/10 overflow-hidden">
@@ -102,13 +166,53 @@ export function MessageOverridesPanel({ instanceId }: { instanceId: number }) {
           )}
 
           {!loading && total > 0 && (
-            <div className="space-y-2">
-              {visible.map((r) => (
+            <>
+              <div className="flex items-center gap-3 px-1 pb-1">
+                <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={toggleSelectAll}
+                    className="w-4 h-4 rounded border-white/20 bg-navy-950 accent-rose-500"
+                  />
+                  {allSelected ? "Desmarcar todas" : "Selecionar todas"}
+                </label>
+                {selectedCount > 0 && (
+                  <span className="text-xs text-slate-500">
+                    {selectedCount} selecionada{selectedCount !== 1 ? "s" : ""}
+                  </span>
+                )}
+                <div className="flex-1" />
+                <button
+                  type="button"
+                  disabled={busy || selectedCount === 0}
+                  onClick={clearSelected}
+                  className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-rose-500/15 text-rose-300 ring-1 ring-rose-400/30 hover:bg-rose-500/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="Remover as mensagens alternativas marcadas"
+                >
+                  Remover selecionadas
+                  {selectedCount > 0 ? ` (${selectedCount})` : ""}
+                </button>
+              </div>
+              <div className="space-y-2">
+                {visible.map((r) => (
                 <div
                   key={r.org_key}
-                  className="rounded-xl border border-white/10 bg-navy-950/60 p-3 space-y-2"
+                  className={`rounded-xl border bg-navy-950/60 p-3 space-y-2 transition-colors ${
+                    selected.has(r.org_key)
+                      ? "border-rose-400/40 bg-rose-500/[0.04]"
+                      : "border-white/10"
+                  }`}
                 >
                   <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={selected.has(r.org_key)}
+                      onChange={() => toggleSelect(r.org_key)}
+                      disabled={busy || editing === r.org_key}
+                      className="w-4 h-4 rounded border-white/20 bg-navy-950 accent-rose-500 shrink-0"
+                      aria-label={`Selecionar ${r.org_key}`}
+                    />
                     <span className="font-semibold text-slate-200 capitalize truncate flex-1">
                       {r.org_key}
                     </span>
@@ -205,16 +309,17 @@ export function MessageOverridesPanel({ instanceId }: { instanceId: number }) {
                     </div>
                   )}
                 </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            </>
           )}
 
           <p className="text-xs text-slate-500 leading-relaxed">
             Override por org tem precedência sobre a mensagem global. Auto-geradas
-            são acionadas após 3 bloqueios de AutoMod na mesma org — o sistema
-            limpa símbolos de moeda, repetições e ruído mas mantém a menção do
-            adversário e o pedido de DM/privado. Você pode editar ou remover
-            qualquer uma a qualquer momento.
+            são acionadas quando o AutoMod (ou restrição de envio) bloqueia a
+            mesma org — o sistema limpa símbolos de moeda, repetições, ruído e
+            menções, e gera uma versão com oferta + pedido de DM. Marque várias
+            e clique em "Remover selecionadas" pra apagar em lote.
           </p>
         </div>
       )}
