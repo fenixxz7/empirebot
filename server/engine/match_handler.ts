@@ -423,6 +423,28 @@ export class MatchHandler {
     if (result.status === 403 || result.status === 400) {
       const parsedFirst = parseDiscordError(result.error);
       if (parsedFirst.isAutoMod && adversaryId) {
+        const orgLabelEarly = orgCtx?.org_name ?? guildId ?? event.name;
+        // Persiste a tentativa AutoMod ANTES de tentar o fallback, para que
+        // mesmo se o fallback dê sucesso, o 403 inicial fique registrado.
+        await query(
+          `INSERT INTO match_send_errors
+             (instance_id, org_label, error_count, last_status, last_error_code, last_message, last_seen)
+           VALUES ($1, $2, 1, $3, $4, $5, NOW())
+           ON CONFLICT (instance_id, org_label)
+           DO UPDATE SET
+             error_count     = match_send_errors.error_count + 1,
+             last_status     = EXCLUDED.last_status,
+             last_error_code = EXCLUDED.last_error_code,
+             last_message    = EXCLUDED.last_message,
+             last_seen       = NOW()`,
+          [
+            this.instanceId,
+            orgLabelEarly,
+            result.status,
+            parsedFirst.code,
+            (parsedFirst.message || "AutoMod").slice(0, 500),
+          ],
+        ).catch(() => {});
         const fallbackContent = `<@${adversaryId}>`;
         await this.host.log(
           this.instanceId,

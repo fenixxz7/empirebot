@@ -103,7 +103,7 @@ export class DiscordRest {
         return {
           status: res.status,
           data: null,
-          error: text.slice(0, 300),
+          error: text.slice(0, 2000),
         };
       }
       let data: T | null = null;
