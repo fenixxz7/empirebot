@@ -107,6 +107,7 @@ function parseDiscordError(rawError?: string): {
   isAutoMod: boolean;
   isTimeout: boolean;
   isMissingPerm: boolean;
+  isSendRestricted: boolean;
 } {
   const raw = (rawError ?? "").trim();
   let code: number | null = null;
@@ -160,10 +161,31 @@ function parseDiscordError(rawError?: string): {
   const isMissingPerm =
     (code === 50013 || code === 50001) && !isTimeout;
 
-  return { code, message, raw, isAutoMod, isTimeout, isMissingPerm };
+  // Restrição de envio aplicada pelo servidor à conta (anti-spam, flag,
+  // Discord rate-limit por servidor). Códigos observados:
+  //  - 340013: "envio limitado para o usuário" (server-side throttle / flag)
+  //  - 200004: account flagged for spam-like behavior (variantes)
+  // Texto comum: "limited", "limitado", "restrict", "spam".
+  // Tratado como AutoMod-like para acionar pipeline de mensagem alternativa.
+  const SEND_RESTRICT_CODES = new Set<number>([340013, 200004]);
+  const isSendRestricted =
+    (code !== null && SEND_RESTRICT_CODES.has(code)) ||
+    lower.includes("envio") && lower.includes("limitad") ||
+    lower.includes("sending messages") && lower.includes("limited") ||
+    lower.includes("rate limited") ||
+    lower.includes("restrict");
+
+  // isSendRestricted dispara o mesmo pipeline de override que AutoMod
+  if (isSendRestricted) {
+    isAutoMod = true;
+  }
+
+  return { code, message, raw, isAutoMod, isTimeout, isMissingPerm, isSendRestricted };
 }
 
 function describeDiscordError(parsed: ReturnType<typeof parseDiscordError>): string {
+  if (parsed.isSendRestricted)
+    return `envio restrito pelo servidor (code ${parsed.code ?? "?"}) — anti-spam/flag`;
   if (parsed.isAutoMod) return `AutoMod bloqueou (code ${parsed.code ?? "?"})`;
   if (parsed.isTimeout) return `usuário em timeout/silenciado (code ${parsed.code ?? "?"})`;
   if (parsed.isMissingPerm) return `sem permissão SEND_MESSAGES (code ${parsed.code})`;
@@ -567,7 +589,9 @@ export class MatchHandler {
 
         // Incrementa contador AutoMod por org e dispara auto-geração quando
         // atinge o threshold. Override gerado mantém menção do adversário.
-        const AUTOMOD_OVERRIDE_THRESHOLD = 3;
+        // Threshold reduzido para 2: na primeira falha 'pending', na segunda
+        // já gera a alternativa sanitizada. Reage mais rápido a orgs hostis.
+        const AUTOMOD_OVERRIDE_THRESHOLD = 2;
         let blocks = 0;
         if (orgKey) {
           const blkRows = await query<{ automod_blocks: number; source: string }>(
