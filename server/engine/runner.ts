@@ -51,21 +51,25 @@ interface CycleConfig {
 
 const STARTUP_GRACE_MS = 5000;
 // Intervalo fixo do tick — rápido para não atrasar reconhecimento e sweep.
-// O cooldown entre entradas de fila é controlado separadamente por nextJoinAt.
 const TICK_INTERVAL_MS = 2500;
 const NO_TOKEN_LOG_INTERVAL_MS = 30_000;
 const NO_WORK_LOG_INTERVAL_MS = 60_000;
-const PLAYER_CACHE_MS = 45_000; // estendido — menos REST de leitura
-const PLAYER_CACHE_403_MS = 10 * 60_000; // 10 min — não retentar REST 403 tão cedo
-const MAX_FRESH_FETCH_PER_TICK = 4; // reduzido de 6 → 4
-// Idade máxima de um active_queue antes de virar "fantasma" e ser removido.
+const PLAYER_CACHE_MS = 45_000;
+const PLAYER_CACHE_403_MS = 10 * 60_000;
+const MAX_FRESH_FETCH_PER_TICK = 4;
 const ACTIVE_QUEUE_TTL_MS = 12 * 60 * 1000;
-// Long break: a cada 6-12 ações, pausa de ~75-150s (simula desatenção humana).
-const LONG_BREAK_AFTER_MIN = 6;
-const LONG_BREAK_AFTER_MAX = 12;
-const LONG_BREAK_MS_MIN = 75_000;
-const LONG_BREAK_MS_MAX = 150_000;
-// Backoff extra após rate limit (429), por cima do cooldown de fila.
+
+// === RATE WINDOW (10 filas / minuto, depois pausa) ===
+const RATE_WINDOW_MS = 60_000;             // janela de 60s
+const RATE_MAX_WITH_PLAYERS = 6;           // até 6 filas com players
+const RATE_MAX_WITHOUT_PLAYERS = 4;        // até 4 filas vazias
+const RATE_PAUSE_MS_MIN = 25_000;          // pausa após 10 entradas
+const RATE_PAUSE_MS_MAX = 35_000;
+// Cooldown curto entre entradas dentro da janela (jitter humano)
+const INTRA_WINDOW_COOLDOWN_MIN_MS = 4_000;
+const INTRA_WINDOW_COOLDOWN_MAX_MS = 7_000;
+
+// Backoff extra após rate limit (429)
 const RATE_LIMIT_BACKOFF_MIN_MS = 120_000;
 const RATE_LIMIT_BACKOFF_MAX_MS = 240_000;
 
@@ -81,14 +85,16 @@ export class QueueRunner {
   private lastNoTokenLog = 0;
   private lastNoWorkLog = 0;
   private playerCache = new Map<string, PlayerInfo>();
-  private actionsSinceBreak = 0;
-  private nextBreakAt = randInt(LONG_BREAK_AFTER_MIN, LONG_BREAK_AFTER_MAX);
   private extraDelayMs = 0;
   private lastSweepAt = 0;
   private nextJoinAt = 0;
   private orgModeCursor = new Map<number, number>();
   private tokenCursor = 0;
   private joinsOnCurrentToken = 0;
+  // === Janela de rate (10 entradas / 60s) ===
+  private windowStart = 0;
+  private joinedWithPlayers = 0;
+  private joinedWithoutPlayers = 0;
   // token_id → Set<org_id>: orgs inválidas por token (ban / acesso negado)
   private tokenOrgBlacklist = new Map<number, Set<number>>();
   private blacklistLoaded = false;
@@ -213,7 +219,40 @@ export class QueueRunner {
   }
 
   private async iterate(cfg: CycleConfig): Promise<void> {
-    if (Date.now() < this.nextJoinAt) return;
+    const now = Date.now();
+    if (now < this.nextJoinAt) return;
+
+    // === Janela de rate: reseta se passou 60s ===
+    if (now - this.windowStart > RATE_WINDOW_MS) {
+      this.windowStart = now;
+      this.joinedWithPlayers = 0;
+      this.joinedWithoutPlayers = 0;
+    }
+
+    // Quotas: total 10 por janela. Preferência: até 6 com players + até 4 sem.
+    // Se faltam candidatos com players, vazias podem encher além de 4 (até 10 total).
+    const totalJoined = this.joinedWithPlayers + this.joinedWithoutPlayers;
+    const RATE_MAX_TOTAL = RATE_MAX_WITH_PLAYERS + RATE_MAX_WITHOUT_PLAYERS;
+    const playersSlot = this.joinedWithPlayers < RATE_MAX_WITH_PLAYERS;
+    const noPlayersSlotPreferred = this.joinedWithoutPlayers < RATE_MAX_WITHOUT_PLAYERS;
+
+    if (totalJoined >= RATE_MAX_TOTAL) {
+      // Bateu 10 entradas — pausa de 25-35s
+      const pause = randInt(RATE_PAUSE_MS_MIN, RATE_PAUSE_MS_MAX);
+      this.nextJoinAt = now + pause;
+      this.windowStart = 0;
+      const wp = this.joinedWithPlayers;
+      const np = this.joinedWithoutPlayers;
+      this.joinedWithPlayers = 0;
+      this.joinedWithoutPlayers = 0;
+      await this.manager.log(
+        this.instanceId,
+        "INFO",
+        "engine",
+        `Lote de 10 entradas (${wp} com players + ${np} vazias) — pausando ${Math.round(pause / 1000)}s.`,
+      );
+      return;
+    }
 
     // Carrega blacklist de orgs por token na primeira execução
     if (!this.blacklistLoaded) await this.loadTokenBlacklist();
@@ -332,8 +371,28 @@ export class QueueRunner {
         selectedToken,
         cfg.blockedNames,
       );
-      candidate = ranked.choice;
-      candidatePlayers = ranked.players;
+      // Seleção: candidatos vêm ranqueados por nº de players desc.
+      // Preferência: 1) com players (se slot aberto), 2) vazia (se preferida ainda aberta),
+      // 3) qualquer (se total < 10 e nenhum match preferencial)
+      let pick = ranked.candidates.find(
+        (r) => r.players > 0 && playersSlot,
+      );
+      if (!pick) {
+        pick = ranked.candidates.find(
+          (r) => r.players === 0 && noPlayersSlotPreferred,
+        );
+      }
+      if (!pick) {
+        // Sem match preferencial — aceita o melhor disponível (vazia overflow)
+        pick = ranked.candidates[0];
+      }
+      if (!pick) {
+        this.orgCursor = (this.orgCursor + 1) % totalOrgs;
+        attempts++;
+        continue;
+      }
+      candidate = pick.ch;
+      candidatePlayers = pick.players;
 
       // Avança o cursor de org para a próxima somente se a org já vai estar
       // cheia após esta entrada (activeForOrg + 1 >= maxForOrg).
@@ -375,32 +434,62 @@ export class QueueRunner {
     const tokenIdx = cfg.tokenStrategy === "single" ? 0 : this.tokenCursor % tokens.length;
     const token = tokens[tokenIdx]!;
 
-    // Pausa humanizada antes de clicar (3s–8s)
-    await sleep(3000 + Math.floor(Math.random() * 5000));
+    // Pausa humanizada curta antes de clicar (1-2s)
+    await sleep(1000 + Math.floor(Math.random() * 1000));
 
     const joined = await this.joinQueue(candidate, token, activeRows.length, candidatePlayers);
 
-    // per_n_orgs: conta entradas no token atual; ao atingir N, rotaciona
-    if (joined && cfg.tokenStrategy === "per_n_orgs" && tokens.length > 1) {
-      this.joinsOnCurrentToken++;
-      if (this.joinsOnCurrentToken >= cfg.tokenStrategyN) {
-        this.joinsOnCurrentToken = 0;
-        this.tokenCursor = (this.tokenCursor + 1) % tokens.length;
+    if (joined) {
+      // Incrementa contador da janela conforme tipo de fila
+      if (candidatePlayers > 0) {
+        this.joinedWithPlayers++;
+      } else {
+        this.joinedWithoutPlayers++;
+      }
+
+      // per_n_orgs: conta entradas no token atual; ao atingir N, rotaciona
+      if (cfg.tokenStrategy === "per_n_orgs" && tokens.length > 1) {
+        this.joinsOnCurrentToken++;
+        if (this.joinsOnCurrentToken >= cfg.tokenStrategyN) {
+          this.joinsOnCurrentToken = 0;
+          this.tokenCursor = (this.tokenCursor + 1) % tokens.length;
+          await this.manager.log(
+            this.instanceId,
+            "INFO",
+            "engine",
+            `Rotacionando token após ${cfg.tokenStrategyN} entrada(s) — próximo: token #${tokens[this.tokenCursor % tokens.length]?.position ?? this.tokenCursor + 1}.`,
+          );
+        }
+      }
+
+      // Se acabamos de bater 10 entradas, dispara a pausa de 25-35s já
+      const totalNow = this.joinedWithPlayers + this.joinedWithoutPlayers;
+      const RATE_MAX_TOTAL = RATE_MAX_WITH_PLAYERS + RATE_MAX_WITHOUT_PLAYERS;
+      if (totalNow >= RATE_MAX_TOTAL) {
+        const pause = randInt(RATE_PAUSE_MS_MIN, RATE_PAUSE_MS_MAX);
+        const wp = this.joinedWithPlayers;
+        const np = this.joinedWithoutPlayers;
+        this.joinedWithPlayers = 0;
+        this.joinedWithoutPlayers = 0;
+        this.windowStart = 0;
+        let total = pause;
+        if (this.extraDelayMs > 0) {
+          total += this.extraDelayMs;
+          this.extraDelayMs = 0;
+        }
+        this.nextJoinAt = Date.now() + total;
         await this.manager.log(
           this.instanceId,
           "INFO",
           "engine",
-          `Rotacionando token após ${cfg.tokenStrategyN} entrada(s) — próximo: token #${tokens[this.tokenCursor % tokens.length]?.position ?? this.tokenCursor + 1}.`,
+          `Lote de 10 entradas (${wp} com players + ${np} vazias) — pausando ${Math.round(pause / 1000)}s.`,
         );
+        return;
       }
     }
 
-    // Define o próximo momento permitido para entrar em fila.
-    // Jitter largo (1.2–3.5x) para parecer menos robótico.
-    const baseDelayMs = Math.max(1000, cfg.delay_seconds * 1000);
-    const jitter = 1.2 + Math.random() * 2.3;
-    let cooldown = Math.max(8000, Math.floor(baseDelayMs * jitter));
-    // Adiciona delay extra acumulado (rate limit / long break) e zera
+    // Cooldown curto entre entradas dentro da janela (4-7s)
+    let cooldown = randInt(INTRA_WINDOW_COOLDOWN_MIN_MS, INTRA_WINDOW_COOLDOWN_MAX_MS);
     if (this.extraDelayMs > 0) {
       cooldown += this.extraDelayMs;
       this.extraDelayMs = 0;
@@ -485,13 +574,7 @@ export class QueueRunner {
     candidates: ChannelRow[],
     activeToken: ActiveToken,
     blockedNames: string[] = [],
-  ): Promise<{ choice: ChannelRow | null; players: number }> {
-    // Se não há nomes a evitar, pula completamente as chamadas REST de leitura
-    // de mensagem — evita spam de requisições e erros 403 nos logs.
-    if (blockedNames.length === 0) {
-      return { choice: candidates[0] ?? null, players: 0 };
-    }
-
+  ): Promise<{ candidates: Array<{ ch: ChannelRow; players: number }> }> {
     const rest = new DiscordRest(activeToken.token);
     const now = Date.now();
     const keyOf = (c: ChannelRow) => `${c.channel_id}:${c.message_id}`;
@@ -508,11 +591,9 @@ export class QueueRunner {
       await sleep(900 + Math.floor(Math.random() * 1300));
       const r = await rest.fetchMessage(c.channel_id, c.message_id);
       if (r.status === 200 && r.data) {
-        const blocked = hasBlockedName(r.data, blockedNames);
-        this.playerCache.set(keyOf(c), {
-          count: blocked ? -1 : 1,
-          ts: Date.now(),
-        });
+        const blocked = blockedNames.length > 0 && hasBlockedName(r.data, blockedNames);
+        const playerCount = blocked ? -1 : countPlayers(r.data);
+        this.playerCache.set(keyOf(c), { count: playerCount, ts: Date.now() });
         if (blocked) {
           await this.manager.log(
             this.instanceId,
@@ -526,15 +607,15 @@ export class QueueRunner {
           );
         }
       } else if (r.status === 403) {
-        // 403 ao LER mensagem = sem acesso REST, mas pode ainda clicar via gateway.
-        // Cache longo para não repetir a chamada por 5 min.
         this.playerCache.set(keyOf(c), { count: 0, ts: Date.now() - PLAYER_CACHE_MS + PLAYER_CACHE_403_MS });
       } else if (r.status === 404) {
+        // Mensagem sumiu — re-discovery para re-cadastrar essa org
+        this.scheduleOrgRediscovery(c.org_id, c.org_name, activeToken.token, "mensagem 404 ao ler");
         this.playerCache.set(keyOf(c), { count: 0, ts: Date.now() });
       }
     }
 
-    // Filtra canais com count negativo: -1 = nome bloqueado
+    // Filtra blocked (-1); o resto entra ranqueado por nº de players desc
     const scored = candidates
       .map((c) => {
         const cached = this.playerCache.get(keyOf(c));
@@ -543,10 +624,49 @@ export class QueueRunner {
       .filter((s) => s.players >= 0);
     scored.sort((a, b) => b.players - a.players);
 
-    return {
-      choice: scored[0]?.ch ?? null,
-      players: scored[0]?.players ?? 0,
-    };
+    return { candidates: scored };
+  }
+
+  /** Re-roda a discovery de uma única org (em background, deduplicado). */
+  private rediscoveryQueued = new Set<number>();
+  private scheduleOrgRediscovery(
+    orgId: number,
+    orgName: string,
+    token: string,
+    reason: string,
+  ): void {
+    if (this.rediscoveryQueued.has(orgId)) return;
+    this.rediscoveryQueued.add(orgId);
+    void (async () => {
+      try {
+        const rows = await query<{ guild_id: string | null }>(
+          `SELECT guild_id FROM orgs WHERE id = $1`,
+          [orgId],
+        );
+        const guildId = rows[0]?.guild_id;
+        if (!guildId) return;
+        const { discoverOrg } = await import("../discord/discovery.js");
+        const r = await discoverOrg(token, orgId, guildId);
+        await this.manager.log(
+          this.instanceId,
+          r.ok ? "INFO" : "WARN",
+          "discovery",
+          r.ok
+            ? `Re-discovery de ${orgName} (${reason}): ${r.queues_saved} fila(s) atualizadas.`
+            : `Re-discovery de ${orgName} falhou: ${r.error ?? "?"}`,
+        );
+      } catch (err) {
+        await this.manager.log(
+          this.instanceId,
+          "WARN",
+          "discovery",
+          `Re-discovery de ${orgName} exceção: ${(err as Error).message}`,
+        );
+      } finally {
+        // Libera após 30s pra permitir nova re-descoberta se voltar a falhar
+        setTimeout(() => this.rediscoveryQueued.delete(orgId), 30_000);
+      }
+    })();
   }
 
   private async joinQueue(
@@ -613,20 +733,6 @@ export class QueueRunner {
         `Entrou em ${ch.org_name} · ${ch.category ?? "?"} · ${modeLabel} · #${ch.channel_name ?? ch.channel_id} (${tag}) · "${btn.label}" · token #${token.position}`,
       );
 
-      // Long break: a cada N ações, dorme 1-3 min para parecer humano.
-      this.actionsSinceBreak += 1;
-      if (this.actionsSinceBreak >= this.nextBreakAt) {
-        const breakMs = randInt(LONG_BREAK_MS_MIN, LONG_BREAK_MS_MAX);
-        this.extraDelayMs += breakMs;
-        this.actionsSinceBreak = 0;
-        this.nextBreakAt = randInt(LONG_BREAK_AFTER_MIN, LONG_BREAK_AFTER_MAX);
-        await this.manager.log(
-          this.instanceId,
-          "INFO",
-          "engine",
-          `Pausa de ${Math.round(breakMs / 1000)}s após ${this.nextBreakAt} entradas.`,
-        );
-      }
       return true;
     } else if (r.status === 429) {
       // Backoff agressivo em 429 — Discord não gosta nem um pouco
@@ -649,6 +755,11 @@ export class QueueRunner {
         ch.org_name,
         `HTTP ${r.status} — acesso negado/banido (${rawError})`,
       );
+      return false;
+    } else if (r.status === 404 || (r.error ?? "").toLowerCase().includes("unknown message")) {
+      // Mensagem da fila sumiu/mudou — agenda re-discovery dessa org
+      this.scheduleOrgRediscovery(ch.org_id, ch.org_name, token.token, `clique HTTP ${r.status}`);
+      this.playerCache.delete(`${ch.channel_id}:${ch.message_id}`);
       return false;
     } else if (r.status === 401) {
       // 401 = token inválido/expirado — loga mas não bloqueia org específica
