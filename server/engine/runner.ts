@@ -400,33 +400,57 @@ export class QueueRunner {
         cfg.blockedNames,
       );
 
-      // Round-robin de modos: usado APENAS quando vamos pegar uma fila vazia,
-      // pra distribuir igualmente entre os modos selecionados (1x1, 2x2, etc).
+      // Round-robin de modos: aplica para AMBOS (com player e vazia).
+      // Cada entrada bem-sucedida avança o cursor → próximo tick prefere o
+      // próximo modo na sequência (1x1 → 2x2 → 3x3 → 4x4 → 1x1…).
+      // Dentro de cada modo, a preferência é: com player primeiro, depois vazia.
+      // Se o modo da vez não tem candidato útil, tenta o próximo modo.
       const modesPresent = [...new Set(candidatesForToken.map((c) => c.mode ?? ""))].sort();
       const modeCurIdx = this.orgModeCursor.get(currentOrgId) ?? 0;
-      const selectedMode = modesPresent[modeCurIdx % modesPresent.length] ?? "";
+      const orderedModes = modesPresent
+        .map((_, i) => modesPresent[(modeCurIdx + i) % modesPresent.length]!);
 
-      // 1) Se tem fila com player (qualquer modo) e slot aberto → pega a com mais players
-      let pick = ranked.candidates.find((r) => r.players > 0 && playersSlot);
+      let pick: typeof ranked.candidates[number] | undefined;
+      let pickedModeIdx = -1;
 
-      // 2) Senão, escolhe vazia respeitando round-robin de modo
-      if (!pick && noPlayersSlotPreferred) {
-        pick = ranked.candidates.find(
-          (r) => r.players === 0 && (r.ch.mode ?? "") === selectedMode,
-        );
-        // Se não tem vazia no modo da vez, aceita vazia de qualquer modo
-        if (!pick) {
-          pick = ranked.candidates.find((r) => r.players === 0);
-        }
-        // Avança cursor de modo só quando de fato pegou uma vazia
-        if (pick) {
-          this.orgModeCursor.set(currentOrgId, modeCurIdx + 1);
+      // Passo 1: percorre os modos em rotação procurando fila COM player.
+      if (playersSlot) {
+        for (let i = 0; i < orderedModes.length; i++) {
+          const m = orderedModes[i]!;
+          const hit = ranked.candidates.find(
+            (r) => r.players > 0 && (r.ch.mode ?? "") === m,
+          );
+          if (hit) { pick = hit; pickedModeIdx = i; break; }
         }
       }
 
-      // 3) Overflow: total < 10 e nenhum match preferencial → melhor disponível
+      // Passo 2: nenhum modo tinha player → percorre os modos procurando vazia.
+      if (!pick && noPlayersSlotPreferred) {
+        for (let i = 0; i < orderedModes.length; i++) {
+          const m = orderedModes[i]!;
+          const hit = ranked.candidates.find(
+            (r) => r.players === 0 && (r.ch.mode ?? "") === m,
+          );
+          if (hit) { pick = hit; pickedModeIdx = i; break; }
+        }
+      }
+
+      // Passo 3: overflow — total < 10 e nenhum match preferencial → melhor disponível.
       if (!pick) {
         pick = ranked.candidates[0];
+        if (pick) {
+          const m = pick.ch.mode ?? "";
+          pickedModeIdx = orderedModes.indexOf(m);
+        }
+      }
+
+      // Avança o cursor de modo: passa pra um além do modo escolhido,
+      // garantindo que o próximo tick comece em outro modo.
+      if (pick && modesPresent.length > 0 && pickedModeIdx >= 0) {
+        this.orgModeCursor.set(
+          currentOrgId,
+          (modeCurIdx + pickedModeIdx + 1) % modesPresent.length,
+        );
       }
       if (!pick) {
         this.orgCursor = (this.orgCursor + 1) % totalOrgs;
