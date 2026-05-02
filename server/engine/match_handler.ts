@@ -137,14 +137,23 @@ function parseDiscordError(rawError?: string): {
     isAutoMod = true;
   }
   // Discord 50013 = Missing Permissions; 50001 = Missing Access; 40005 = req too large
-  // Indicadores explícitos de timeout/mute (qualquer um já marca como transitório)
+  // Códigos explícitos relacionados a timeout/mute do usuário (transitórios):
+  //  - 40002: account verification required / unable to send (genérico)
+  //  - 40005: request entity too large (não é timeout, mantido fora)
+  //  - 50013 também pode aparecer em timeout — string heuristics confirma
+  //  - 160002 / 220001 + variantes: communication disabled / member is timed out
+  // Sempre que reconhecemos via code OU via texto, marcamos como transitório.
+  const TIMEOUT_CODES = new Set<number>([40002, 160002, 220001]);
   const isTimeout =
+    (code !== null && TIMEOUT_CODES.has(code)) ||
     lower.includes("timed out") ||
     lower.includes("timeout") ||
     lower.includes("silenced") ||
     lower.includes("communication disabled") ||
     lower.includes("communication is disabled") ||
-    lower.includes("communication has been disabled");
+    lower.includes("communication has been disabled") ||
+    lower.includes("member is timed out") ||
+    lower.includes("você está silenciado");
   // Permissão "real" = código 50013/50001 SEM indício de timeout.
   // Nota: blacklist por isMissingPerm é gated por threshold de erros (>= 3)
   // no chamador, evitando que um único 50013 transitório derrube a org.
