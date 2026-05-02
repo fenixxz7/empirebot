@@ -349,46 +349,6 @@ class Manager {
 
     for (const e of entries) {
       e.client.on("dispatch", (eventName: string, eventData: any) => {
-        // Log diagnóstico: eventos com REQUEST/RELATIONSHIP/INBOX no nome (busca por dispatch desconhecido de message request)
-        if (
-          eventName.includes("REQUEST") ||
-          eventName.includes("RELATIONSHIP") ||
-          eventName.includes("INBOX") ||
-          eventName === "PASSIVE_UPDATE_V1" ||
-          eventName === "PASSIVE_UPDATE_V2" ||
-          eventName === "READY_SUPPLEMENTAL"
-        ) {
-          const keys = eventData && typeof eventData === "object" ? Object.keys(eventData).join(",") : "?";
-          this.log(
-            instanceId,
-            "INFO",
-            "dm",
-            `GW special event: ${eventName} | keys=[${keys}] | token#${e.position}`,
-          ).catch(() => {});
-        }
-
-        // Log diagnóstico: todos os eventos relevantes de canal/thread
-        if (CHANNEL_EVENTS.has(eventName) || eventName.startsWith("THREAD")) {
-          this.log(
-            instanceId,
-            "INFO",
-            "match",
-            `GW event: ${eventName} | ch=${eventData?.name ?? eventData?.id ?? "?"} type=${eventData?.type ?? "?"} guild=${eventData?.guild_id ?? "?"} | token#${e.position}`,
-          ).catch(() => {});
-        }
-
-        // Log de TODOS os CHANNEL_CREATE em DMs (type=1) para diagnóstico de message requests
-        if (eventName === "CHANNEL_CREATE" && eventData?.type === 1) {
-          const r = (eventData.recipients ?? [])[0] as any;
-          const fields = Object.keys(eventData).join(",");
-          this.log(
-            instanceId,
-            "INFO",
-            "dm",
-            `CHANNEL_CREATE DM: user=${r?.username ?? "?"} flags=${eventData.flags} recipient_flags=${eventData.recipient_flags} is_message_request=${eventData.is_message_request} ts=${eventData.is_message_request_timestamp ?? "-"} | fields=[${fields}]`,
-          ).catch(() => {});
-        }
-
         // CHANNEL_CREATE com is_message_request=true: novo DM request → cacheia + notifica responder
         if (eventName === "CHANNEL_CREATE" && eventData?.is_message_request === true) {
           const channelId = String(eventData.id ?? "");
