@@ -373,15 +373,6 @@ export class QueueRunner {
         continue;
       }
 
-      // Seleciona o modo da vez para esta org (round-robin entre modos disponíveis).
-      // Ex: 1ª passagem → 1x1, 2ª passagem → 2x2, 3ª → volta pro 1x1, etc.
-      const modesPresent = [...new Set(eligible.map((c) => c.mode ?? ""))].sort();
-      const modeCurIdx = this.orgModeCursor.get(currentOrgId) ?? 0;
-      const selectedMode = modesPresent[modeCurIdx % modesPresent.length];
-      const modeEligible = eligible.filter((c) => (c.mode ?? "") === selectedMode);
-      // Avança cursor de modo para a próxima passagem nesta org
-      this.orgModeCursor.set(currentOrgId, modeCurIdx + 1);
-
       // Seleciona token ativo com base na estratégia de rotação
       const activeTokenIdx = cfg.tokenStrategy === "single"
         ? 0
@@ -390,7 +381,7 @@ export class QueueRunner {
 
       // Filtra canais de orgs bloqueadas para este token específico
       const blacklistedForToken = this.tokenOrgBlacklist.get(selectedToken.tokenId) ?? new Set<number>();
-      const candidatesForToken = (modeEligible.length > 0 ? modeEligible : eligible).filter(
+      const candidatesForToken = eligible.filter(
         (c) => !blacklistedForToken.has(c.org_id),
       );
       if (candidatesForToken.length === 0) {
@@ -399,24 +390,42 @@ export class QueueRunner {
         continue;
       }
 
+      // Ranqueia TODAS as filas elegíveis da org (todos os modos juntos).
+      // Assim a preferência "com players" funciona cross-mode: se a 1x1 tem
+      // alguém esperando, a gente entra nela mesmo que o cursor de modo
+      // estivesse na 4x4.
       const ranked = await this.rankCandidatesByPlayers(
         candidatesForToken,
         selectedToken,
         cfg.blockedNames,
       );
-      // Seleção: candidatos vêm ranqueados por nº de players desc.
-      // Preferência: 1) com players (se slot aberto), 2) vazia (se preferida ainda aberta),
-      // 3) qualquer (se total < 10 e nenhum match preferencial)
-      let pick = ranked.candidates.find(
-        (r) => r.players > 0 && playersSlot,
-      );
-      if (!pick) {
+
+      // Round-robin de modos: usado APENAS quando vamos pegar uma fila vazia,
+      // pra distribuir igualmente entre os modos selecionados (1x1, 2x2, etc).
+      const modesPresent = [...new Set(candidatesForToken.map((c) => c.mode ?? ""))].sort();
+      const modeCurIdx = this.orgModeCursor.get(currentOrgId) ?? 0;
+      const selectedMode = modesPresent[modeCurIdx % modesPresent.length] ?? "";
+
+      // 1) Se tem fila com player (qualquer modo) e slot aberto → pega a com mais players
+      let pick = ranked.candidates.find((r) => r.players > 0 && playersSlot);
+
+      // 2) Senão, escolhe vazia respeitando round-robin de modo
+      if (!pick && noPlayersSlotPreferred) {
         pick = ranked.candidates.find(
-          (r) => r.players === 0 && noPlayersSlotPreferred,
+          (r) => r.players === 0 && (r.ch.mode ?? "") === selectedMode,
         );
+        // Se não tem vazia no modo da vez, aceita vazia de qualquer modo
+        if (!pick) {
+          pick = ranked.candidates.find((r) => r.players === 0);
+        }
+        // Avança cursor de modo só quando de fato pegou uma vazia
+        if (pick) {
+          this.orgModeCursor.set(currentOrgId, modeCurIdx + 1);
+        }
       }
+
+      // 3) Overflow: total < 10 e nenhum match preferencial → melhor disponível
       if (!pick) {
-        // Sem match preferencial — aceita o melhor disponível (vazia overflow)
         pick = ranked.candidates[0];
       }
       if (!pick) {
