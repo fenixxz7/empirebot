@@ -313,6 +313,39 @@ export class QueueRunner {
     let candidatePlayers = 0;
     let advancedDueToFull = false;
 
+    // ── Pre-pass: prioriza org com fila "com players" ────────────────────
+    // O loop abaixo é round-robin por org e a preferência "com players"
+    // só funciona DENTRO da org da vez. Se a org atual só tem filas vazias
+    // mas outra tem fila com 3 players esperando, o bot entrava na vazia.
+    // Aqui usamos APENAS o playerCache (sem chamar Discord) pra encontrar
+    // a org com mais players visíveis e jogar o cursor pra ela.
+    if (playersSlot) {
+      let bestOrg: { idx: number; players: number } | null = null;
+      for (let i = 0; i < totalOrgs; i++) {
+        const orgId = orgIds[i]!;
+        const orgChs = channels.filter((c) => c.org_id === orgId);
+        if (orgChs.length === 0) continue;
+        const maxForOrg = orgChs[0]?.max_queues ?? 5;
+        const activeForOrg = activePerOrg.get(orgId) ?? 0;
+        if (activeForOrg >= maxForOrg) continue;
+        let maxPlayers = 0;
+        for (const c of orgChs) {
+          const key = `${c.channel_id}:${c.message_id}`;
+          if (activeKeys.has(key)) continue;
+          if (!c.guild_id || !c.message_id || !c.application_id) continue;
+          if (pickEnterButton(c.buttons) === null) continue;
+          const cached = this.playerCache.get(key);
+          if (cached && cached.count > maxPlayers) maxPlayers = cached.count;
+        }
+        if (maxPlayers > 0 && (!bestOrg || maxPlayers > bestOrg.players)) {
+          bestOrg = { idx: i, players: maxPlayers };
+        }
+      }
+      if (bestOrg) {
+        this.orgCursor = bestOrg.idx;
+      }
+    }
+
     while (attempts < totalOrgs) {
       const currentOrgId = orgIds[this.orgCursor % totalOrgs];
       const orgChannels = channels.filter((c) => c.org_id === currentOrgId);
