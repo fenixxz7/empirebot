@@ -288,10 +288,7 @@ export function sanitizeForAutoMod(input: string): string {
  * original está sendo bloqueada por AutoMod. Mantém a intenção de fazer o
  * adversário mandar mensagem (DM/privado).
  */
-export function generateSafeMessageFor(
-  originalTemplate: string,
-  excludeMessage?: string,
-): string {
+export function generateSafeMessageFor(originalTemplate: string): string {
   const sanitized = sanitizeForAutoMod(originalTemplate);
   // Política: alternativa SEMPRE oferece algo + pede DM, sem menção.
   // Se a sanitização não inclui pedido claro de DM/privado ou ficou muito
@@ -305,76 +302,14 @@ export function generateSafeMessageFor(
     lower.includes("msg") ||
     lower.includes("mensagem");
   const tooShort = sanitized.replace(/\{[a-z_]+\}/g, "").trim().length < 8;
-  const sanitizedClashesWithExcluded =
-    excludeMessage != null && sanitized.trim() === excludeMessage.trim();
-  if (!hasDmAsk || tooShort || sanitizedClashesWithExcluded) {
-    return pickRandomSafeTemplate(excludeMessage);
+  if (!hasDmAsk || tooShort) {
+    const pick =
+      SAFE_PROVOCATION_TEMPLATES[
+        Math.floor(Math.random() * SAFE_PROVOCATION_TEMPLATES.length)
+      ]!;
+    return pick;
   }
   return sanitized;
-}
-
-/**
- * Escolhe um template do pool diferente de `excludeMessage` (se possível).
- * Usado para "rotacionar" a alternativa quando a atual já provou falhar.
- */
-export function pickRandomSafeTemplate(excludeMessage?: string): string {
-  const pool = SAFE_PROVOCATION_TEMPLATES;
-  if (!excludeMessage) {
-    return pool[Math.floor(Math.random() * pool.length)]!;
-  }
-  const norm = excludeMessage.trim().toLowerCase();
-  const filtered = pool.filter((t) => t.trim().toLowerCase() !== norm);
-  const candidates = filtered.length > 0 ? filtered : pool;
-  return candidates[Math.floor(Math.random() * candidates.length)]!;
-}
-
-/**
- * Cooldown global por org: quando uma org bate AutoMod múltiplas vezes
- * seguidas (mesmo após rotação de alternativa) ou volta com 340013
- * "envio limitado", colocamos a org em quarentena por X minutos. Durante
- * a quarentena, novos matches são detectados (canal registrado) mas o
- * envio é PULADO — evita queimar mais o token e dá tempo da flag passar.
- *
- * Compartilhado entre instâncias do MatchHandler (chave inclui instanceId).
- * `static` porque o handler é re-instanciado a cada reativação de worker.
- */
-const ORG_COOLDOWNS = new Map<string, number>();
-
-const COOLDOWN_AUTOMOD_MS = 10 * 60 * 1000; // 10 min
-const COOLDOWN_RESTRICTED_MS = 20 * 60 * 1000; // 20 min para 340013
-
-function cooldownKey(instanceId: number, orgKey: string): string {
-  return `${instanceId}:${orgKey}`;
-}
-
-function getCooldownRemainingMs(instanceId: number, orgKey: string): number {
-  if (!orgKey) return 0;
-  const until = ORG_COOLDOWNS.get(cooldownKey(instanceId, orgKey));
-  if (!until) return 0;
-  const remaining = until - Date.now();
-  if (remaining <= 0) {
-    ORG_COOLDOWNS.delete(cooldownKey(instanceId, orgKey));
-    return 0;
-  }
-  return remaining;
-}
-
-function setOrgCooldown(
-  instanceId: number,
-  orgKey: string,
-  ms: number,
-): void {
-  if (!orgKey || ms <= 0) return;
-  const k = cooldownKey(instanceId, orgKey);
-  const current = ORG_COOLDOWNS.get(k) ?? 0;
-  const newUntil = Date.now() + ms;
-  // Mantém o cooldown mais longo se já houver um em vigor.
-  if (newUntil > current) ORG_COOLDOWNS.set(k, newUntil);
-}
-
-function formatCooldownRemaining(ms: number): string {
-  const min = Math.ceil(ms / 60000);
-  return min === 1 ? "1 min" : `${min} min`;
 }
 
 export class MatchHandler {
@@ -554,28 +489,6 @@ export class MatchHandler {
       );
     }
 
-    // ── Cooldown por org ──────────────────────────────────────────────────
-    // Se a org está em quarentena (AutoMod ou 340013 recente), pula o
-    // envio mas o match já foi registrado e o slot da fila já foi liberado
-    // acima. Evita queimar o token batendo de novo na mesma flag enquanto
-    // ela ainda está fresca.
-    const cooldownOrgKey =
-      (orgCtx?.org_name ?? "").toLowerCase() ||
-      (guildId ?? "").toLowerCase();
-    if (cooldownOrgKey) {
-      const remaining = getCooldownRemainingMs(this.instanceId, cooldownOrgKey);
-      if (remaining > 0) {
-        const orgLabelCooldown = orgCtx?.org_name ?? guildId ?? event.name;
-        await this.host.log(
-          this.instanceId,
-          "WARN",
-          "match",
-          `Org ${orgLabelCooldown} em cooldown (${formatCooldownRemaining(remaining)} restantes) — partida #${event.name} registrada mas envio pulado`,
-        );
-        return;
-      }
-    }
-
     // Busca config de mensagem
     const cfg = await query<{
       message_main: string;
@@ -667,19 +580,6 @@ export class MatchHandler {
       const parsedFirst = parseDiscordError(result.error);
       if (parsedFirst.isAutoMod) {
         const orgLabelEarly = orgCtx?.org_name ?? guildId ?? event.name;
-        // 340013 (envio limitado) é detectado como isAutoMod=true (mesmo
-        // pipeline), mas merece cooldown imediato e LONGO — não adianta
-        // tentar fallback porque a restrição é server-side. Aplica o
-        // cooldown já aqui antes de tentar o fallback.
-        if (parsedFirst.isSendRestricted && orgKey) {
-          setOrgCooldown(this.instanceId, orgKey, COOLDOWN_RESTRICTED_MS);
-          await this.host.log(
-            this.instanceId,
-            "WARN",
-            "match",
-            `Org ${orgLabelEarly} com envio restrito (code ${parsedFirst.code}) — cooldown ${formatCooldownRemaining(COOLDOWN_RESTRICTED_MS)}`,
-          );
-        }
         // Persiste a tentativa AutoMod ANTES de tentar o fallback, para que
         // mesmo se o fallback dê sucesso, o 403 inicial fique registrado.
         await query(
@@ -727,14 +627,7 @@ export class MatchHandler {
             blocks >= AUTOMOD_OVERRIDE_THRESHOLD &&
             (existingSource === "pending" || existingSource === "auto")
           ) {
-            // Se o template original que falhou JÁ era um override salvo
-            // (templateSource === "override"), rotaciona pra um diferente
-            // do pool em vez de regenerar o mesmo. Caso contrário gera
-            // partindo do template original.
-            const safeTemplate =
-              templateSource === "override"
-                ? pickRandomSafeTemplate(template)
-                : generateSafeMessageFor(template);
+            const safeTemplate = generateSafeMessageFor(template);
             await query(
               `UPDATE org_message_overrides
                   SET message = $3, source = 'auto', generated_at = NOW()
@@ -746,19 +639,16 @@ export class MatchHandler {
               this.instanceId,
               "WARN",
               "match",
-              `AutoMod bloqueou ${blocks}× em ${orgLabelEarly} — mensagem alternativa ${templateSource === "override" ? "rotacionada" : "gerada"}: "${safeTemplate.slice(0, 80)}"`,
+              `AutoMod bloqueou ${blocks}× em ${orgLabelEarly} — mensagem alternativa gerada automaticamente: "${safeTemplate.slice(0, 80)}"`,
             );
           }
         }
 
         // Tentativa imediata: SEMPRE usa template alternativo seguro
         // (oferta + pedido de DM, sem menção). Política nova: nada de
-        // ping no fallback. Se o template que falhou JÁ era override
-        // salvo, escolhe um diferente do pool pra não bater o mesmo.
-        const safeTemplate =
-          templateSource === "override"
-            ? pickRandomSafeTemplate(template)
-            : generateSafeMessageFor(template);
+        // ping no fallback. O override só é PERSISTIDO depois do
+        // threshold; antes disso o fallback é em memória.
+        const safeTemplate = generateSafeMessageFor(template);
         const fallbackContent = humanize(resolveTemplate(safeTemplate, vars));
 
         if (fallbackContent.trim()) {
@@ -774,38 +664,12 @@ export class MatchHandler {
           // achando que é AutoMod.
           result = r2;
           if (r2.status < 200 || r2.status >= 300) {
-            const parsedSecond = parseDiscordError(r2.error);
             await this.host.log(
               this.instanceId,
               "WARN",
               "match",
-              `Fallback AutoMod também falhou em #${event.name}: HTTP ${r2.status} — ${describeDiscordError(parsedSecond)}`,
+              `Fallback AutoMod também falhou em #${event.name}: HTTP ${r2.status} — ${describeDiscordError(parseDiscordError(r2.error))}`,
             );
-            // Fallback falhou também → coloca a org em cooldown para
-            // parar de queimar o token e rotaciona o override pra um
-            // template DIFERENTE do que acabou de falhar (pra próxima
-            // tentativa quando o cooldown expirar).
-            if (orgKey) {
-              const cdMs =
-                parsedSecond.isSendRestricted
-                  ? COOLDOWN_RESTRICTED_MS
-                  : COOLDOWN_AUTOMOD_MS;
-              setOrgCooldown(this.instanceId, orgKey, cdMs);
-              const rotated = pickRandomSafeTemplate(safeTemplate);
-              await query(
-                `UPDATE org_message_overrides
-                    SET message = $3, source = 'auto', generated_at = NOW()
-                  WHERE instance_id = $1 AND org_key = $2
-                    AND source IN ('pending', 'auto')`,
-                [this.instanceId, orgKey, rotated],
-              ).catch(() => {});
-              await this.host.log(
-                this.instanceId,
-                "WARN",
-                "match",
-                `Org ${orgLabelEarly} entra em cooldown ${formatCooldownRemaining(cdMs)} — alternativa rotacionada pra "${rotated.slice(0, 60)}"`,
-              );
-            }
           }
         }
       }

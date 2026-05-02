@@ -532,6 +532,27 @@ export class MatchHandler {
       [this.instanceId],
     );
 
+    // ── Cooldown por org ──────────────────────────────────────────────────
+    // Se a org está em quarentena (AutoMod ou 340013 recente), pula o
+    // envio mas mantém o match registrado. Evita queimar o token batendo
+    // de novo na mesma flag enquanto ela ainda está fresca.
+    const cooldownOrgKey =
+      (orgCtx?.org_name ?? "").toLowerCase() ||
+      (guildId ?? "").toLowerCase();
+    if (cooldownOrgKey) {
+      const remaining = getCooldownRemainingMs(this.instanceId, cooldownOrgKey);
+      if (remaining > 0) {
+        const orgLabelCooldown = orgCtx?.org_name ?? guildId ?? event.name;
+        await this.host.log(
+          this.instanceId,
+          "WARN",
+          "match",
+          `Org ${orgLabelCooldown} em cooldown (${formatCooldownRemaining(remaining)} restantes) — partida #${event.name} registrada mas envio pulado`,
+        );
+        return;
+      }
+    }
+
     // Libera slot da fila ativa nessa guild (o match aconteceu, slot livre)
     if (guildId && orgCtx) {
       await query(
@@ -552,28 +573,6 @@ export class MatchHandler {
         `UPDATE stats SET na_fila = $2 WHERE instance_id = $1`,
         [this.instanceId, Number(remaining[0]?.c ?? "0")],
       );
-    }
-
-    // ── Cooldown por org ──────────────────────────────────────────────────
-    // Se a org está em quarentena (AutoMod ou 340013 recente), pula o
-    // envio mas o match já foi registrado e o slot da fila já foi liberado
-    // acima. Evita queimar o token batendo de novo na mesma flag enquanto
-    // ela ainda está fresca.
-    const cooldownOrgKey =
-      (orgCtx?.org_name ?? "").toLowerCase() ||
-      (guildId ?? "").toLowerCase();
-    if (cooldownOrgKey) {
-      const remaining = getCooldownRemainingMs(this.instanceId, cooldownOrgKey);
-      if (remaining > 0) {
-        const orgLabelCooldown = orgCtx?.org_name ?? guildId ?? event.name;
-        await this.host.log(
-          this.instanceId,
-          "WARN",
-          "match",
-          `Org ${orgLabelCooldown} em cooldown (${formatCooldownRemaining(remaining)} restantes) — partida #${event.name} registrada mas envio pulado`,
-        );
-        return;
-      }
     }
 
     // Busca config de mensagem
@@ -667,19 +666,6 @@ export class MatchHandler {
       const parsedFirst = parseDiscordError(result.error);
       if (parsedFirst.isAutoMod) {
         const orgLabelEarly = orgCtx?.org_name ?? guildId ?? event.name;
-        // 340013 (envio limitado) é detectado como isAutoMod=true (mesmo
-        // pipeline), mas merece cooldown imediato e LONGO — não adianta
-        // tentar fallback porque a restrição é server-side. Aplica o
-        // cooldown já aqui antes de tentar o fallback.
-        if (parsedFirst.isSendRestricted && orgKey) {
-          setOrgCooldown(this.instanceId, orgKey, COOLDOWN_RESTRICTED_MS);
-          await this.host.log(
-            this.instanceId,
-            "WARN",
-            "match",
-            `Org ${orgLabelEarly} com envio restrito (code ${parsedFirst.code}) — cooldown ${formatCooldownRemaining(COOLDOWN_RESTRICTED_MS)}`,
-          );
-        }
         // Persiste a tentativa AutoMod ANTES de tentar o fallback, para que
         // mesmo se o fallback dê sucesso, o 403 inicial fique registrado.
         await query(
@@ -807,6 +793,18 @@ export class MatchHandler {
               );
             }
           }
+        }
+      } else if (parsedFirst.isSendRestricted) {
+        // 340013 e similares: server-side restriction. Cooldown longo
+        // pra parar de tentar e deixar a flag esfriar.
+        if (orgKey) {
+          setOrgCooldown(this.instanceId, orgKey, COOLDOWN_RESTRICTED_MS);
+          await this.host.log(
+            this.instanceId,
+            "WARN",
+            "match",
+            `Org ${orgCtx?.org_name ?? guildId ?? event.name} com envio restrito (code ${parsedFirst.code}) — cooldown ${formatCooldownRemaining(COOLDOWN_RESTRICTED_MS)}`,
+          );
         }
       }
     }
