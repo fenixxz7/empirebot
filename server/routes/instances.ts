@@ -106,6 +106,11 @@ instancesRouter.post("/:id/stop", async (req, res) => {
 
 instancesRouter.post("/:id/reset-stats", async (req, res) => {
   const id = Number(req.params.id);
+  // Reset COMPLETO: limpa matches/queue_joins junto com stats.
+  // Sem isso, o sync de msgs_enviadas em db/init.ts (que conta matches.msg_sent)
+  // repopula o contador no próximo restart, fazendo o número "voltar".
+  await query(`DELETE FROM queue_joins WHERE instance_id = $1`, [id]);
+  await query(`DELETE FROM matches WHERE instance_id = $1`, [id]);
   await query(
     `UPDATE stats SET entradas = 0, na_fila = 0, partidas = 0, dms = 0,
                       bloqueadas = 0, msgs_enviadas = 0, started_at = NOW()
