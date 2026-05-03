@@ -1,6 +1,7 @@
 node_modules/
 .env
 .env.local
+.env.*.local
 *.log
 .DS_Store
 
@@ -11,3 +12,24 @@ dist/
 *.old
 *.current
 *.bak
+
+# arquivos temporários do Replit / editor
+.cache/
+.local/
+.config/
+.upm/
+.breakpoints
+.replit.local
+
+# assets enviados durante a sessão (prints, vídeos, refs)
+attached_assets/
+
+# pacotes de deploy gerados
+exports/
+*.tar.gz
+*.zip
+
+# IDE
+.vscode/
+.idea/
+*.swp
