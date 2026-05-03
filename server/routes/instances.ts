@@ -40,8 +40,11 @@ instancesRouter.get("/", async (_req, res) => {
   `);
 
   const instances = rows.map((r) => {
+    // Uptime só conta enquanto o bot está rodando. started_at é preservado
+    // após /stop (pra não perder histórico ao reiniciar), mas o tempo
+    // acumulado não deve continuar subindo com o bot pausado.
     const startedAt = r.started_at ? new Date(r.started_at).getTime() : null;
-    const uptimeSec = startedAt
+    const uptimeSec = r.running && startedAt
       ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
       : 0;
     return {

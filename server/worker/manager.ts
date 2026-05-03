@@ -926,8 +926,9 @@ class Manager {
       `, [instanceId]);
       const r = rows[0];
       if (!r) return;
+      // Uptime só conta enquanto running=true (started_at é preservado após /stop).
       const startedAt = r.started_at ? new Date(r.started_at).getTime() : null;
-      const uptime = startedAt
+      const uptime = r.running && startedAt
         ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0;
       broadcast(instanceId, {
         type: "stats",
