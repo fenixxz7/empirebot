@@ -53,7 +53,7 @@ export class DmResponder {
     await query(
       `INSERT INTO logs (instance_id, level, source, message) VALUES ($1, $2, 'dm', $3)`,
       [this.instanceId, level, message],
-    ).catch(() => {});
+    ).catch((e) => console.warn("[dm-responder]", e instanceof Error ? e.message : e));
   }
 
   /**
@@ -114,7 +114,7 @@ export class DmResponder {
     this.running = true;
     this.enabled = true;
     // Drena cache de requests vistos via Gateway antes do responder iniciar
-    this.drainCachedFromManager().catch(() => {});
+    this.drainCachedFromManager().catch((e) => console.warn("[dm-responder]", e instanceof Error ? e.message : e));
     this.scheduleNext(5_000);
   }
 
@@ -187,7 +187,7 @@ export class DmResponder {
   private scheduleNext(delayMs: number) {
     if (!this.running) return;
     this.timer = setTimeout(() => {
-      this.tick().catch(() => {}).finally(() => {
+      this.tick().catch((e) => console.warn("[dm-responder]", e instanceof Error ? e.message : e)).finally(() => {
         if (this.running) this.scheduleNext(60_000);
       });
     }, delayMs);

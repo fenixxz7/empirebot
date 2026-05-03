@@ -1,12 +1,58 @@
 import { Router } from "express";
+import { z } from "zod";
 import { query } from "../db/pool.js";
 import { manager } from "../worker/manager.js";
 import {
   runAutoDiscoveryForInstance,
   type DiscoveryResult,
 } from "../discord/discovery.js";
+import { validate } from "../lib/validate.js";
 
 export const configRouter = Router();
+
+// Body do PUT /:instanceId — validação tolerante.
+// Mantemos o comportamento original do código (que ignorava silenciosamente
+// arrays malformados via `Array.isArray(...)`) — então arrays usam .catch([])
+// pra não quebrar requests legados que passam null/undefined/garbage.
+const TolerantIntArray = z
+  .array(z.coerce.number().int())
+  .optional()
+  .catch(undefined);
+
+const SaveConfigBody = z.object({
+  allowed_categories: z.union([z.string(), z.array(z.string())]),
+  delay_seconds: z.coerce.number().min(0),
+  rotation_minutes: z.coerce.number().min(0),
+  allowed_modes: z.string(),
+  message_main: z.string(),
+  message_per_org: z.string(),
+  image_url: z.string().nullable().optional(),
+  tokens_raw: z.string().optional().default(""),
+  selected_org_ids: TolerantIntArray,
+  selected_token_ids: TolerantIntArray,
+  blocked_names: z.string().optional().default(""),
+  max_valor: z.coerce.number().default(0),
+  token_strategy: z.string().optional().default("single"),
+  token_strategy_n: z.coerce.number().int().min(1).optional().default(5),
+});
+
+// Body do POST /:instanceId/import — formato JSON exportado.
+const ImportConfigBody = z.object({
+  version: z.number().optional(),
+  config: z.object({
+    allowed_categories: z.string().optional(),
+    delay_seconds: z.coerce.number().optional(),
+    rotation_minutes: z.coerce.number().optional(),
+    allowed_modes: z.string().optional(),
+    message_main: z.string().optional(),
+    message_per_org: z.string().optional(),
+    image_url: z.string().nullable().optional(),
+  }, { error: "JSON inválido — campo 'config' ausente." }),
+  selected_orgs: z
+    .array(z.object({ org_id: z.coerce.number().int() }))
+    .optional()
+    .catch(undefined),
+});
 
 function preview(token: string): string {
   if (!token) return "";
@@ -77,7 +123,7 @@ configRouter.get("/:instanceId", async (req, res) => {
 
 const VALID_CATEGORIES = ["Mobile", "Misto", "Emulador", "Tatico", "Full-Soco"];
 
-configRouter.put("/:instanceId", async (req, res) => {
+configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), async (req, res) => {
   const id = Number(req.params.instanceId);
   const {
     allowed_categories, delay_seconds, rotation_minutes,
@@ -85,22 +131,7 @@ configRouter.put("/:instanceId", async (req, res) => {
     tokens_raw, selected_org_ids, blocked_names,
     max_valor, token_strategy, token_strategy_n,
     selected_token_ids,
-  } = req.body as {
-    allowed_categories: string | string[];
-    delay_seconds: number;
-    rotation_minutes: number;
-    allowed_modes: string;
-    message_main: string;
-    message_per_org: string;
-    image_url: string | null;
-    tokens_raw: string;
-    selected_org_ids: number[];
-    selected_token_ids?: number[];
-    blocked_names: string;
-    max_valor: number;
-    token_strategy: string;
-    token_strategy_n: number;
-  };
+  } = req.body;
 
   // allowed_categories pode chegar como array (UI) ou string CSV (terminal/api)
   const cats = Array.isArray(allowed_categories)
@@ -308,26 +339,9 @@ configRouter.get("/:instanceId/export", async (req, res) => {
 });
 
 // Import: recebe JSON exportado e reaplica configuração (sem tokens)
-configRouter.post("/:instanceId/import", async (req, res) => {
+configRouter.post("/:instanceId/import", validate({ body: ImportConfigBody }), async (req, res) => {
   const id = Number(req.params.instanceId);
-  const body = req.body as {
-    version?: number;
-    config?: {
-      allowed_categories?: string;
-      delay_seconds?: number;
-      rotation_minutes?: number;
-      allowed_modes?: string;
-      message_main?: string;
-      message_per_org?: string;
-      image_url?: string | null;
-    };
-    selected_orgs?: { org_id: number }[];
-  };
-
-  if (!body?.config) {
-    return res.status(400).json({ error: "JSON inválido — campo 'config' ausente." });
-  }
-
+  const body = req.body;
   const c = body.config;
   const cats = (c.allowed_categories ?? "Mobile")
     .split(/[\s,;\n]+/).map((s: string) => s.trim()).filter(Boolean);

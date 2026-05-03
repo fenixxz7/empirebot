@@ -340,8 +340,7 @@ export function pickRandomSafeTemplate(excludeMessage?: string): string {
  */
 const ORG_COOLDOWNS = new Map<string, number>();
 
-const COOLDOWN_AUTOMOD_MS = 10 * 60 * 1000; // 10 min
-const COOLDOWN_RESTRICTED_MS = 20 * 60 * 1000; // 20 min para 340013
+import { COOLDOWN_AUTOMOD_MS, COOLDOWN_RESTRICTED_MS } from "../lib/timings.js";
 
 function cooldownKey(instanceId: number, orgKey: string): string {
   return `${instanceId}:${orgKey}`;
@@ -642,7 +641,7 @@ export class MatchHandler {
     // Antes do POST: dispara "está digitando…" e espera um tempo
     // proporcional ao tamanho da mensagem para parecer humano (sem exagero).
     const rest = new DiscordRest(sender.token);
-    await rest.triggerTyping(event.id).catch(() => {});
+    await rest.triggerTyping(event.id).catch((e) => console.warn("[match_handler]", e instanceof Error ? e.message : e));
     const typingMs = Math.min(
       2500,
       800 + content.length * (12 + Math.random() * 18),
@@ -700,7 +699,7 @@ export class MatchHandler {
             parsedFirst.code,
             (parsedFirst.message || "AutoMod").slice(0, 500),
           ],
-        ).catch(() => {});
+        ).catch((e) => console.warn("[match_handler]", e instanceof Error ? e.message : e));
 
         // Incrementa contador AutoMod por org e dispara auto-geração quando
         // atinge o threshold. Override gerado mantém menção do adversário.
@@ -741,7 +740,7 @@ export class MatchHandler {
                 WHERE instance_id = $1 AND org_key = $2
                   AND source IN ('pending', 'auto')`,
               [this.instanceId, orgKey, safeTemplate],
-            ).catch(() => {});
+            ).catch((e) => console.warn("[match_handler]", e instanceof Error ? e.message : e));
             await this.host.log(
               this.instanceId,
               "WARN",
@@ -798,7 +797,7 @@ export class MatchHandler {
                   WHERE instance_id = $1 AND org_key = $2
                     AND source IN ('pending', 'auto')`,
                 [this.instanceId, orgKey, rotated],
-              ).catch(() => {});
+              ).catch((e) => console.warn("[match_handler]", e instanceof Error ? e.message : e));
               await this.host.log(
                 this.instanceId,
                 "WARN",

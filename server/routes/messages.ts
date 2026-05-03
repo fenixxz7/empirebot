@@ -1,9 +1,30 @@
 import { Router } from "express";
+import { z } from "zod";
 import { query } from "../db/pool.js";
 import { dmResponders } from "../worker/manager.js";
 import { DiscordRest } from "../discord/rest.js";
+import { validate } from "../lib/validate.js";
 
 export const messagesRouter = Router();
+
+const DmConfigBody = z.object({
+  enabled: z.coerce.boolean(),
+  min_delay_msg: z.coerce.number().min(0).default(1.5),
+  max_delay_msg: z.coerce.number().min(0).default(2.5),
+  min_delay_user: z.coerce.number().min(0).default(10),
+  max_delay_user: z.coerce.number().min(0).default(15),
+});
+
+const CreateMessageBody = z.object({
+  name: z.string().default(""),
+  body: z.string().default(""),
+});
+
+const UpdateMessageBody = z.object({
+  name: z.string().optional(),
+  body: z.string().optional(),
+  position: z.coerce.number().int().optional(),
+});
 
 messagesRouter.get("/config/:instanceId", async (req, res) => {
   const id = Number(req.params.instanceId);
@@ -19,7 +40,7 @@ messagesRouter.get("/config/:instanceId", async (req, res) => {
   res.json(rows[0] ?? { enabled: false, min_delay_msg: 1.5, max_delay_msg: 2.5, min_delay_user: 10, max_delay_user: 15 });
 });
 
-messagesRouter.put("/config/:instanceId", async (req, res) => {
+messagesRouter.put("/config/:instanceId", validate({ body: DmConfigBody }), async (req, res) => {
   const id = Number(req.params.instanceId);
   const { enabled, min_delay_msg, max_delay_msg, min_delay_user, max_delay_user } = req.body;
 
@@ -53,9 +74,9 @@ messagesRouter.get("/:instanceId", async (req, res) => {
   res.json(rows);
 });
 
-messagesRouter.post("/:instanceId", async (req, res) => {
+messagesRouter.post("/:instanceId", validate({ body: CreateMessageBody }), async (req, res) => {
   const id = Number(req.params.instanceId);
-  const { name, body } = req.body as { name: string; body: string };
+  const { name, body } = req.body;
 
   const maxPos = await query<{ m: number | null }>(
     `SELECT MAX(position) AS m FROM dm_messages WHERE instance_id = $1`,
@@ -70,10 +91,10 @@ messagesRouter.post("/:instanceId", async (req, res) => {
   res.json(rows[0]);
 });
 
-messagesRouter.put("/:instanceId/:msgId", async (req, res) => {
+messagesRouter.put("/:instanceId/:msgId", validate({ body: UpdateMessageBody }), async (req, res) => {
   const instanceId = Number(req.params.instanceId);
   const msgId = Number(req.params.msgId);
-  const { name, body, position } = req.body as { name?: string; body?: string; position?: number };
+  const { name, body, position } = req.body;
 
   const fields: string[] = [];
   const vals: unknown[] = [];

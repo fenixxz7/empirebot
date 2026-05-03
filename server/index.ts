@@ -10,6 +10,8 @@ import { mountApi } from "./routes/index.js";
 import { query } from "./db/pool.js";
 import { manager, setWsServer, dmResponders } from "./worker/manager.js";
 import { DmResponder } from "./engine/dm-responder.js";
+import { errorMiddleware } from "./lib/asyncHandler.js";
+import { SESSION_COOKIE_MAX_AGE_MS, LOG_ROTATION_INTERVAL_MS } from "./lib/timings.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 5000);
@@ -44,7 +46,7 @@ async function main() {
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 dias
+      maxAge: SESSION_COOKIE_MAX_AGE_MS,
       sameSite: "lax",
     },
   }));
@@ -58,6 +60,9 @@ async function main() {
   }
 
   mountApi(app);
+
+  // Middleware global de erro — DEVE vir depois de todas as rotas
+  app.use(errorMiddleware);
 
   const httpServer = createHttpServer(app);
 
@@ -127,7 +132,7 @@ async function main() {
     }
   }
   rotateLogs();
-  setInterval(rotateLogs, 6 * 60 * 60 * 1000);
+  setInterval(rotateLogs, LOG_ROTATION_INTERVAL_MS);
 
   httpServer.listen(PORT, "0.0.0.0", async () => {
     console.log(`[server] listening on http://0.0.0.0:${PORT}`);

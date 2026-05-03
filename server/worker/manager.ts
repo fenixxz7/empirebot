@@ -251,7 +251,7 @@ class Manager {
               );
               responder
                 .pushFromGateway(String(ch.id), userId, username)
-                .catch(() => {});
+                .catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
             }
           }
         }
@@ -382,10 +382,10 @@ class Manager {
               "INFO",
               "dm",
               `Novo message request: ${username} (canal ${channelId}) cacheado.`,
-            ).catch(() => {});
+            ).catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
             const responder = dmResponders.get(instanceId);
             if (responder) {
-              responder.pushFromGateway(channelId, userId, username).catch(() => {});
+              responder.pushFromGateway(channelId, userId, username).catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
             }
           }
         }
@@ -443,7 +443,7 @@ class Manager {
                 if (responder) {
                   responder
                     .pushFromGateway(chId, authorId, username)
-                    .catch(() => {});
+                    .catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
                 }
               }
               if (!seenDmChannels.has(chId)) {
@@ -455,13 +455,13 @@ class Manager {
                 query(
                   `UPDATE stats SET dms = dms + 1 WHERE instance_id = $1`,
                   [instanceId],
-                ).catch(() => {});
+                ).catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
                 this.log(
                   instanceId,
                   "INFO",
                   "dm",
                   `DM recebida de ${username} (<@${authorId}>)${isBot ? " — bot ignorado" : " — adicionado à fila"}`,
-                ).catch(() => {});
+                ).catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
               }
             };
 
@@ -537,10 +537,10 @@ class Manager {
                 "INFO",
                 "match",
                 `Detectado via MESSAGE_CREATE: #${data.name} (token #${e.position})`,
-              ).catch(() => {});
-              matchHandler.onChannelCreate(data, matchTokens).catch(() => {});
+              ).catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
+              matchHandler.onChannelCreate(data, matchTokens).catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
             })
-            .catch(() => {});
+            .catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
           return;
         }
 
@@ -549,7 +549,7 @@ class Manager {
           const threads: any[] = eventData?.threads ?? [];
           const matchTokens = this.buildMatchTokens(instanceId, e.tokenId);
           for (const t of threads) {
-            matchHandler.onChannelCreate(t, matchTokens).catch(() => {});
+            matchHandler.onChannelCreate(t, matchTokens).catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
           }
           return;
         }
@@ -568,8 +568,8 @@ class Manager {
               "GET",
               `/channels/${eventData.id}`,
             ).then(({ data }) => {
-              if (data) matchHandler.onChannelCreate(data, matchTokens).catch(() => {});
-            }).catch(() => {});
+              if (data) matchHandler.onChannelCreate(data, matchTokens).catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
+            }).catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
           }
           return;
         }
@@ -580,7 +580,7 @@ class Manager {
           if (threads.length > 0) {
             const matchTokens = this.buildMatchTokens(instanceId, e.tokenId);
             for (const t of threads) {
-              matchHandler.onChannelCreate(t, matchTokens).catch(() => {});
+              matchHandler.onChannelCreate(t, matchTokens).catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
             }
           }
           return;
@@ -603,7 +603,7 @@ class Manager {
 
         // CHANNEL_CREATE / THREAD_CREATE: caminho principal
         const matchTokens = this.buildMatchTokens(instanceId, e.tokenId);
-        matchHandler.onChannelCreate(eventData, matchTokens).catch(() => {});
+        matchHandler.onChannelCreate(eventData, matchTokens).catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
       });
     }
 
@@ -810,11 +810,11 @@ class Manager {
           payload: { id: row.id, ts: row.ts, level, source, message },
         });
       }
-    } catch {
-      /* noop */
+    } catch (e) {
+      console.warn("[manager:log]", e instanceof Error ? e.message : e);
     }
     // Broadcast stats snapshot after every log entry
-    this.broadcastStats(instanceId).catch(() => {});
+    this.broadcastStats(instanceId).catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
   };
 
   blacklistOrgForToken = async (
@@ -834,7 +834,7 @@ class Manager {
         `INSERT INTO token_org_blacklist (token_id, org_id, reason)
          VALUES ($1, $2, $3) ON CONFLICT (token_id, org_id) DO NOTHING`,
         [tokenId, orgId, reason],
-      ).catch(() => {});
+      ).catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
       await this.log(instanceId, "WARN", "engine",
         `Org "${orgName}" bloqueada para token #${tokenPos} (sem runner ativo) — ${reason}`);
     }
@@ -945,7 +945,9 @@ class Manager {
           next_rotation_seconds: this.getNextRotationSeconds(instanceId),
         },
       });
-    } catch { /* noop */ }
+    } catch (e) {
+      console.warn("[manager:broadcastStats]", e instanceof Error ? e.message : e);
+    }
   }
 
 }

@@ -57,7 +57,7 @@ const NO_WORK_LOG_INTERVAL_MS = 60_000;
 const PLAYER_CACHE_MS = 45_000;
 const PLAYER_CACHE_403_MS = 10 * 60_000;
 const MAX_FRESH_FETCH_PER_TICK = 4;
-const ACTIVE_QUEUE_TTL_MS = 4 * 60 * 1000;
+import { ACTIVE_QUEUE_TTL_MS } from "../lib/timings.js";
 
 // === RATE WINDOW (10 filas / minuto, depois pausa) ===
 const RATE_WINDOW_MS = 60_000;             // janela de 60s

@@ -1,9 +1,35 @@
 import { Router } from "express";
+import { z } from "zod";
 import { query } from "../db/pool.js";
+import { validate } from "../lib/validate.js";
 
 export const orgsRouter = Router();
 
-const VALID_CATEGORIES = ["Mobile", "Misto", "Emulador", "Tatico", "Full-Soco"];
+const VALID_CATEGORIES = ["Mobile", "Misto", "Emulador", "Tatico", "Full-Soco"] as const;
+
+// Schemas tolerantes: preservam o comportamento de coerção do código original
+// (`Number(...)`, `.toString().trim()`, etc) pra não quebrar clientes legados.
+// Limites largos servem só pra cortar lixo absurdo, não pra apertar contrato.
+const GuildIdField = z
+  .union([z.string(), z.number(), z.null(), z.undefined()])
+  .transform((v) => (v == null ? null : String(v).trim() || null));
+
+const CreateOrgBody = z.object({
+  name: z.string().trim().min(1, "Nome obrigatório"),
+  category: z.enum(VALID_CATEGORIES),
+  guild_id: GuildIdField.optional(),
+  max_queues: z.coerce.number().int().min(1).default(5),
+  priority: z.coerce.number().int().default(0),
+  enabled: z.coerce.boolean().default(true),
+});
+
+const UpdateOrgBody = z.object({
+  guild_id: GuildIdField.optional(),
+  name: z.string().trim().min(1).optional(),
+  max_queues: z.coerce.number().int().min(1).optional(),
+  enabled: z.coerce.boolean().optional(),
+  priority: z.coerce.number().int().optional(),
+});
 
 orgsRouter.get("/", async (_req, res) => {
   // Listagem é sempre completa — a categoria por org é metadata informativa.
@@ -26,34 +52,15 @@ orgsRouter.get("/", async (_req, res) => {
   res.json(rows);
 });
 
-orgsRouter.post("/", async (req, res) => {
-  const { name, category, guild_id, max_queues, priority, enabled } = req.body as {
-    name: string;
-    category: string;
-    guild_id?: string | null;
-    max_queues?: number;
-    priority?: number;
-    enabled?: boolean;
-  };
-  if (!name || !category || !VALID_CATEGORIES.includes(category)) {
-    return res
-      .status(400)
-      .json({ error: `Informe um nome e uma categoria válida (${VALID_CATEGORIES.join(", ")})` });
-  }
-  const g = (guild_id ?? "").toString().trim();
+orgsRouter.post("/", validate({ body: CreateOrgBody }), async (req, res) => {
+  const { name, category, guild_id, max_queues, priority, enabled } = req.body;
+  // guild_id já vem normalizado (string|null) pelo transform do schema
   try {
     const rows = await query<{ id: number }>(
       `INSERT INTO orgs (name, category, guild_id, max_queues, priority, enabled)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id`,
-      [
-        name.trim(),
-        category,
-        g.length > 0 ? g : null,
-        Number(max_queues ?? 5),
-        Number(priority ?? 0),
-        enabled === undefined ? true : !!enabled,
-      ],
+      [name, category, guild_id ?? null, max_queues, priority, enabled],
     );
     res.json({ ok: true, id: rows[0]?.id });
   } catch (err) {
@@ -67,24 +74,18 @@ orgsRouter.delete("/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
-orgsRouter.patch("/:id", async (req, res) => {
+orgsRouter.patch("/:id", validate({ body: UpdateOrgBody }), async (req, res) => {
   const id = Number(req.params.id);
-  const { guild_id, name, max_queues, enabled, priority } = req.body as {
-    guild_id?: string | null;
-    name?: string;
-    max_queues?: number;
-    enabled?: boolean;
-    priority?: number;
-  };
+  const { guild_id, name, max_queues, enabled, priority } = req.body;
 
   const sets: string[] = [];
   const vals: unknown[] = [];
   let i = 1;
 
   if (guild_id !== undefined) {
-    const g = (guild_id ?? "").toString().trim();
+    // guild_id já vem normalizado (string|null) pelo transform do schema
     sets.push(`guild_id = $${++i}`);
-    vals.push(g.length > 0 ? g : null);
+    vals.push(guild_id);
   }
   if (name !== undefined) {
     sets.push(`name = $${++i}`);
@@ -105,6 +106,9 @@ orgsRouter.patch("/:id", async (req, res) => {
 
   if (sets.length === 0) return res.json({ ok: true });
 
+  // SAFE: `sets` só contém strings hardcoded acima ("guild_id = $2", etc).
+  // Nenhum input do usuário entra na string SQL — só vai como parâmetro
+  // posicional no array `vals`. Falso positivo de scanners de SQLi.
   await query(`UPDATE orgs SET ${sets.join(", ")} WHERE id = $1`, [id, ...vals]);
   res.json({ ok: true });
 });
