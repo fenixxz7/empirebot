@@ -4,6 +4,7 @@ import { query } from "../db/pool.js";
 import { dmResponders } from "../worker/manager.js";
 import { DiscordRest } from "../discord/rest.js";
 import { validate } from "../lib/validate.js";
+import { asyncHandler } from "../lib/asyncHandler.js";
 
 export const messagesRouter = Router();
 
@@ -26,7 +27,7 @@ const UpdateMessageBody = z.object({
   position: z.coerce.number().int().optional(),
 });
 
-messagesRouter.get("/config/:instanceId", async (req, res) => {
+messagesRouter.get("/config/:instanceId", asyncHandler(async (req, res) => {
   const id = Number(req.params.instanceId);
   const rows = await query<{
     enabled: boolean;
@@ -38,9 +39,9 @@ messagesRouter.get("/config/:instanceId", async (req, res) => {
     [id]
   );
   res.json(rows[0] ?? { enabled: false, min_delay_msg: 1.5, max_delay_msg: 2.5, min_delay_user: 10, max_delay_user: 15 });
-});
+}));
 
-messagesRouter.put("/config/:instanceId", validate({ body: DmConfigBody }), async (req, res) => {
+messagesRouter.put("/config/:instanceId", validate({ body: DmConfigBody }), asyncHandler(async (req, res) => {
   const id = Number(req.params.instanceId);
   const { enabled, min_delay_msg, max_delay_msg, min_delay_user, max_delay_user } = req.body;
 
@@ -63,18 +64,18 @@ messagesRouter.put("/config/:instanceId", validate({ body: DmConfigBody }), asyn
   }
 
   res.json({ ok: true });
-});
+}));
 
-messagesRouter.get("/:instanceId", async (req, res) => {
+messagesRouter.get("/:instanceId", asyncHandler(async (req, res) => {
   const id = Number(req.params.instanceId);
   const rows = await query<{ id: number; position: number; name: string; body: string }>(
     `SELECT id, position, name, body FROM dm_messages WHERE instance_id = $1 ORDER BY position ASC`,
     [id]
   );
   res.json(rows);
-});
+}));
 
-messagesRouter.post("/:instanceId", validate({ body: CreateMessageBody }), async (req, res) => {
+messagesRouter.post("/:instanceId", validate({ body: CreateMessageBody }), asyncHandler(async (req, res) => {
   const id = Number(req.params.instanceId);
   const { name, body } = req.body;
 
@@ -89,9 +90,9 @@ messagesRouter.post("/:instanceId", validate({ body: CreateMessageBody }), async
     [id, nextPos, name ?? "", body ?? ""]
   );
   res.json(rows[0]);
-});
+}));
 
-messagesRouter.put("/:instanceId/:msgId", validate({ body: UpdateMessageBody }), async (req, res) => {
+messagesRouter.put("/:instanceId/:msgId", validate({ body: UpdateMessageBody }), asyncHandler(async (req, res) => {
   const instanceId = Number(req.params.instanceId);
   const msgId = Number(req.params.msgId);
   const { name, body, position } = req.body;
@@ -111,16 +112,16 @@ messagesRouter.put("/:instanceId/:msgId", validate({ body: UpdateMessageBody }),
     vals
   );
   res.json({ ok: true });
-});
+}));
 
-messagesRouter.delete("/:instanceId/:msgId", async (req, res) => {
+messagesRouter.delete("/:instanceId/:msgId", asyncHandler(async (req, res) => {
   const instanceId = Number(req.params.instanceId);
   const msgId = Number(req.params.msgId);
   await query(`DELETE FROM dm_messages WHERE id = $1 AND instance_id = $2`, [msgId, instanceId]);
   res.json({ ok: true });
-});
+}));
 
-messagesRouter.get("/:instanceId/queue/snapshot", async (req, res) => {
+messagesRouter.get("/:instanceId/queue/snapshot", asyncHandler(async (req, res) => {
   const id = Number(req.params.instanceId);
   const responder = dmResponders.get(id);
   if (!responder) {
@@ -129,16 +130,15 @@ messagesRouter.get("/:instanceId/queue/snapshot", async (req, res) => {
   }
   const snapshot = await responder.getSnapshot();
   res.json(snapshot);
-});
+}));
 
-messagesRouter.delete("/:instanceId/responded/clear", async (req, res) => {
+messagesRouter.delete("/:instanceId/responded/clear", asyncHandler(async (req, res) => {
   const id = Number(req.params.instanceId);
   await query(`DELETE FROM dm_responded WHERE instance_id = $1`, [id]);
   res.json({ ok: true });
-});
+}));
 
-// Diagnóstico: busca requests raw direto do Discord para cada token conectado
-messagesRouter.get("/:instanceId/debug/requests", async (req, res) => {
+messagesRouter.get("/:instanceId/debug/requests", asyncHandler(async (req, res) => {
   const id = Number(req.params.instanceId);
   const tokens = await query<{ id: number; value: string; username: string | null; position: number }>(
     `SELECT id, value, username, position FROM tokens WHERE instance_id = $1 AND status = 'connected' ORDER BY position ASC`,
@@ -158,7 +158,6 @@ messagesRouter.get("/:instanceId/debug/requests", async (req, res) => {
       let parsed: unknown;
       try { parsed = JSON.parse(raw.text); } catch { parsed = null; }
 
-      // Para arrays, mostra um resumo dos campos de cada item e destaca os que têm is_message_request
       let summary: unknown = undefined;
       if (Array.isArray(parsed)) {
         const arr = parsed as Record<string, unknown>[];
@@ -174,7 +173,6 @@ messagesRouter.get("/:instanceId/debug/requests", async (req, res) => {
           })),
           sample_fields: arr[0] ? Object.keys(arr[0]) : [],
           request_channels: arr.filter(c => c.is_message_request).slice(0, 3),
-          // Lista TODOS os DMs com username para identificar manualmente o "fenixxz"
           all_dms: arr.filter(c => c.type === 1).map(c => {
             const r = (c.recipients as any[])?.[0];
             return {
@@ -209,10 +207,9 @@ messagesRouter.get("/:instanceId/debug/requests", async (req, res) => {
     });
   }
   res.json(results);
-});
+}));
 
-// Forçar varredura imediata do DM Responder
-messagesRouter.post("/:instanceId/scan-now", async (req, res) => {
+messagesRouter.post("/:instanceId/scan-now", asyncHandler(async (req, res) => {
   const id = Number(req.params.instanceId);
   const responder = dmResponders.get(id);
   if (!responder) {
@@ -223,4 +220,4 @@ messagesRouter.post("/:instanceId/scan-now", async (req, res) => {
   await responder.tick();
   const snapshot = await responder.getSnapshot();
   res.json({ ok: true, drained, snapshot });
-});
+}));

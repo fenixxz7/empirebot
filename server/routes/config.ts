@@ -7,6 +7,7 @@ import {
   type DiscoveryResult,
 } from "../discord/discovery.js";
 import { validate } from "../lib/validate.js";
+import { asyncHandler } from "../lib/asyncHandler.js";
 
 export const configRouter = Router();
 
@@ -60,7 +61,7 @@ function preview(token: string): string {
   return `${token.slice(0, 6)}…${token.slice(-4)}`;
 }
 
-configRouter.get("/:instanceId", async (req, res) => {
+configRouter.get("/:instanceId", asyncHandler(async (req, res) => {
   const id = Number(req.params.instanceId);
 
   const cfg = await query<{
@@ -119,11 +120,11 @@ configRouter.get("/:instanceId", async (req, res) => {
     }),
     selected_org_ids: selectedOrgs.map((r) => r.org_id),
   });
-});
+}));
 
 const VALID_CATEGORIES = ["Mobile", "Misto", "Emulador", "Tatico", "Full-Soco"];
 
-configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), async (req, res) => {
+configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandler(async (req, res) => {
   const id = Number(req.params.instanceId);
   const {
     allowed_categories, delay_seconds, rotation_minutes,
@@ -303,10 +304,10 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), async (req,
   }
 
   res.json({ ok: true, discovery, discovery_skipped });
-});
+}));
 
 // Export: devolve JSON com toda a configuração da instância
-configRouter.get("/:instanceId/export", async (req, res) => {
+configRouter.get("/:instanceId/export", asyncHandler(async (req, res) => {
   const id = Number(req.params.instanceId);
 
   const cfg = await query<{
@@ -336,10 +337,10 @@ configRouter.get("/:instanceId/export", async (req, res) => {
 
   res.setHeader("Content-Disposition", `attachment; filename="imperiuns-config-${id}.json"`);
   res.json(payload);
-});
+}));
 
 // Import: recebe JSON exportado e reaplica configuração (sem tokens)
-configRouter.post("/:instanceId/import", validate({ body: ImportConfigBody }), async (req, res) => {
+configRouter.post("/:instanceId/import", validate({ body: ImportConfigBody }), asyncHandler(async (req, res) => {
   const id = Number(req.params.instanceId);
   const body = req.body;
   const c = body.config;
@@ -366,10 +367,17 @@ configRouter.post("/:instanceId/import", validate({ body: ImportConfigBody }), a
   if (Array.isArray(body.selected_orgs) && body.selected_orgs.length > 0) {
     await query(`DELETE FROM instance_orgs WHERE instance_id = $1`, [id]);
     for (const o of body.selected_orgs) {
-      await query(
-        `INSERT INTO instance_orgs (instance_id, org_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-        [id, o.org_id],
+      // Só insere se a org realmente existir no banco (evita FK violation ao importar de outro ambiente)
+      const exists = await query<{ id: number }>(
+        `SELECT id FROM orgs WHERE id = $1`,
+        [o.org_id],
       );
+      if (exists.length > 0) {
+        await query(
+          `INSERT INTO instance_orgs (instance_id, org_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+          [id, o.org_id],
+        );
+      }
     }
   }
 
@@ -380,4 +388,4 @@ configRouter.post("/:instanceId/import", validate({ body: ImportConfigBody }), a
   );
 
   res.json({ ok: true });
-});
+}));

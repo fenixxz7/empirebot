@@ -1,10 +1,11 @@
 import { Router } from "express";
 import { query } from "../db/pool.js";
 import { manager } from "../worker/manager.js";
+import { asyncHandler } from "../lib/asyncHandler.js";
 
 export const instancesRouter = Router();
 
-instancesRouter.get("/", async (_req, res) => {
+instancesRouter.get("/", asyncHandler(async (_req, res) => {
   const rows = await query<{
     id: number;
     name: string;
@@ -40,9 +41,6 @@ instancesRouter.get("/", async (_req, res) => {
   `);
 
   const instances = rows.map((r) => {
-    // Uptime só conta enquanto o bot está rodando. started_at é preservado
-    // após /stop (pra não perder histórico ao reiniciar), mas o tempo
-    // acumulado não deve continuar subindo com o bot pausado.
     const startedAt = r.started_at ? new Date(r.started_at).getTime() : null;
     const uptimeSec = r.running && startedAt
       ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
@@ -69,12 +67,11 @@ instancesRouter.get("/", async (_req, res) => {
   });
 
   res.json(instances);
-});
+}));
 
-instancesRouter.post("/:id/start", async (req, res) => {
+instancesRouter.post("/:id/start", asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
   await query(`UPDATE instances SET running = TRUE WHERE id = $1`, [id]);
-  // Só define started_at se ainda não estiver definido — não reseta o uptime ao reiniciar
   await query(
     `UPDATE stats SET started_at = COALESCE(started_at, NOW()) WHERE instance_id = $1`,
     [id],
@@ -84,17 +81,15 @@ instancesRouter.post("/:id/start", async (req, res) => {
      VALUES ($1, 'INFO', 'control', 'Instância iniciada')`,
     [id],
   );
-  // start workers (não bloqueante)
   manager.start(id).catch((err) => {
     console.error("[manager.start]", err);
   });
   res.json({ ok: true });
-});
+}));
 
-instancesRouter.post("/:id/stop", async (req, res) => {
+instancesRouter.post("/:id/stop", asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
   await query(`UPDATE instances SET running = FALSE WHERE id = $1`, [id]);
-  // Não zera started_at ao parar — uptime só reseta via reset-stats ou troca de token
   await manager.stop(id);
   await query(
     `INSERT INTO logs (instance_id, level, source, message)
@@ -102,13 +97,10 @@ instancesRouter.post("/:id/stop", async (req, res) => {
     [id],
   );
   res.json({ ok: true });
-});
+}));
 
-instancesRouter.post("/:id/reset-stats", async (req, res) => {
+instancesRouter.post("/:id/reset-stats", asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
-  // Reset COMPLETO: limpa matches/queue_joins junto com stats.
-  // Sem isso, o sync de msgs_enviadas em db/init.ts (que conta matches.msg_sent)
-  // repopula o contador no próximo restart, fazendo o número "voltar".
   await query(`DELETE FROM queue_joins WHERE instance_id = $1`, [id]);
   await query(`DELETE FROM matches WHERE instance_id = $1`, [id]);
   await query(
@@ -123,4 +115,4 @@ instancesRouter.post("/:id/reset-stats", async (req, res) => {
     [id],
   );
   res.json({ ok: true });
-});
+}));

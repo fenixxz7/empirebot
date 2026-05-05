@@ -2,14 +2,12 @@ import { Router } from "express";
 import { z } from "zod";
 import { query } from "../db/pool.js";
 import { validate } from "../lib/validate.js";
+import { asyncHandler } from "../lib/asyncHandler.js";
 
 export const orgsRouter = Router();
 
 const VALID_CATEGORIES = ["Mobile", "Misto", "Emulador", "Tatico", "Full-Soco"] as const;
 
-// Schemas tolerantes: preservam o comportamento de coerção do código original
-// (`Number(...)`, `.toString().trim()`, etc) pra não quebrar clientes legados.
-// Limites largos servem só pra cortar lixo absurdo, não pra apertar contrato.
 const GuildIdField = z
   .union([z.string(), z.number(), z.null(), z.undefined()])
   .transform((v) => (v == null ? null : String(v).trim() || null));
@@ -31,10 +29,7 @@ const UpdateOrgBody = z.object({
   priority: z.coerce.number().int().optional(),
 });
 
-orgsRouter.get("/", async (_req, res) => {
-  // Listagem é sempre completa — a categoria por org é metadata informativa.
-  // O que filtra o que o bot entra é `instance_configs.allowed_categories`
-  // aplicado por canal (org_channels.category).
+orgsRouter.get("/", asyncHandler(async (_req, res) => {
   const rows = await query(
     `SELECT o.id, o.guild_id, o.name, o.category, o.max_queues, o.enabled, o.priority,
             COALESCE(c.cnt, 0)::int AS channels_count,
@@ -50,31 +45,26 @@ orgsRouter.get("/", async (_req, res) => {
      ORDER BY o.name ASC`,
   );
   res.json(rows);
-});
+}));
 
-orgsRouter.post("/", validate({ body: CreateOrgBody }), async (req, res) => {
+orgsRouter.post("/", validate({ body: CreateOrgBody }), asyncHandler(async (req, res) => {
   const { name, category, guild_id, max_queues, priority, enabled } = req.body;
-  // guild_id já vem normalizado (string|null) pelo transform do schema
-  try {
-    const rows = await query<{ id: number }>(
-      `INSERT INTO orgs (name, category, guild_id, max_queues, priority, enabled)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id`,
-      [name, category, guild_id ?? null, max_queues, priority, enabled],
-    );
-    res.json({ ok: true, id: rows[0]?.id });
-  } catch (err) {
-    res.status(400).json({ error: (err as Error).message });
-  }
-});
+  const rows = await query<{ id: number }>(
+    `INSERT INTO orgs (name, category, guild_id, max_queues, priority, enabled)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING id`,
+    [name, category, guild_id ?? null, max_queues, priority, enabled],
+  );
+  res.json({ ok: true, id: rows[0]?.id });
+}));
 
-orgsRouter.delete("/:id", async (req, res) => {
+orgsRouter.delete("/:id", asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
   await query(`DELETE FROM orgs WHERE id = $1`, [id]);
   res.json({ ok: true });
-});
+}));
 
-orgsRouter.patch("/:id", validate({ body: UpdateOrgBody }), async (req, res) => {
+orgsRouter.patch("/:id", validate({ body: UpdateOrgBody }), asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
   const { guild_id, name, max_queues, enabled, priority } = req.body;
 
@@ -83,7 +73,6 @@ orgsRouter.patch("/:id", validate({ body: UpdateOrgBody }), async (req, res) => 
   let i = 1;
 
   if (guild_id !== undefined) {
-    // guild_id já vem normalizado (string|null) pelo transform do schema
     sets.push(`guild_id = $${++i}`);
     vals.push(guild_id);
   }
@@ -106,14 +95,11 @@ orgsRouter.patch("/:id", validate({ body: UpdateOrgBody }), async (req, res) => 
 
   if (sets.length === 0) return res.json({ ok: true });
 
-  // SAFE: `sets` só contém strings hardcoded acima ("guild_id = $2", etc).
-  // Nenhum input do usuário entra na string SQL — só vai como parâmetro
-  // posicional no array `vals`. Falso positivo de scanners de SQLi.
   await query(`UPDATE orgs SET ${sets.join(", ")} WHERE id = $1`, [id, ...vals]);
   res.json({ ok: true });
-});
+}));
 
-orgsRouter.get("/:id/channels", async (req, res) => {
+orgsRouter.get("/:id/channels", asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
   const rows = await query(
     `SELECT id, channel_id, channel_name, category, mode, message_id, embed_title,
@@ -124,4 +110,4 @@ orgsRouter.get("/:id/channels", async (req, res) => {
     [id],
   );
   res.json(rows);
-});
+}));

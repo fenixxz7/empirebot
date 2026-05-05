@@ -1,10 +1,11 @@
 import { Router } from "express";
 import { query } from "../db/pool.js";
 import { discoverOrg, type DiscoveryResult } from "../discord/discovery.js";
+import { asyncHandler } from "../lib/asyncHandler.js";
 
 export const discoveryRouter = Router();
 
-discoveryRouter.post("/:instanceId", async (req, res) => {
+discoveryRouter.post("/:instanceId", asyncHandler(async (req, res) => {
   const instanceId = Number(req.params.instanceId);
   const orgIds = Array.isArray(req.body?.org_ids)
     ? (req.body.org_ids as number[]).map(Number)
@@ -101,7 +102,7 @@ discoveryRouter.post("/:instanceId", async (req, res) => {
 
   await log(instanceId, "INFO", "discovery", "Descoberta concluída");
   res.json({ ok: true, results });
-});
+}));
 
 async function log(
   instanceId: number,
