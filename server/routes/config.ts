@@ -50,7 +50,11 @@ const ImportConfigBody = z.object({
     image_url: z.string().nullable().optional(),
   }, { error: "JSON inválido — campo 'config' ausente." }),
   selected_orgs: z
-    .array(z.object({ org_id: z.coerce.number().int() }))
+    .array(z.object({
+      org_id: z.coerce.number().int(),
+      org_name: z.string().optional(),
+      guild_id: z.string().nullable().optional(),
+    }))
     .optional()
     .catch(undefined),
 });
@@ -365,19 +369,28 @@ configRouter.post("/:instanceId/import", validate({ body: ImportConfigBody }), a
   );
 
   if (Array.isArray(body.selected_orgs) && body.selected_orgs.length > 0) {
+    // Upsert orgs com o ID original (preserva referências entre instâncias)
+    for (const o of body.selected_orgs) {
+      const name = o.org_name?.trim() || `org_${o.org_id}`;
+      const guildId = o.guild_id?.trim() || null;
+      await query(
+        `INSERT INTO orgs (id, name, guild_id, category, max_queues, enabled, priority)
+         VALUES ($1, $2, $3, 'Mobile', 5, TRUE, 0)
+         ON CONFLICT (id) DO UPDATE
+           SET guild_id = EXCLUDED.guild_id,
+               name     = EXCLUDED.name`,
+        [o.org_id, name, guildId],
+      );
+    }
+    // Garante que a sequência não conflite com IDs inseridos explicitamente
+    await query(`SELECT setval('orgs_id_seq', (SELECT MAX(id) FROM orgs))`);
+
     await query(`DELETE FROM instance_orgs WHERE instance_id = $1`, [id]);
     for (const o of body.selected_orgs) {
-      // Só insere se a org realmente existir no banco (evita FK violation ao importar de outro ambiente)
-      const exists = await query<{ id: number }>(
-        `SELECT id FROM orgs WHERE id = $1`,
-        [o.org_id],
+      await query(
+        `INSERT INTO instance_orgs (instance_id, org_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+        [id, o.org_id],
       );
-      if (exists.length > 0) {
-        await query(
-          `INSERT INTO instance_orgs (instance_id, org_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-          [id, o.org_id],
-        );
-      }
     }
   }
 
