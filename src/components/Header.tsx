@@ -17,12 +17,6 @@ export function Header({ instance }: { instance: InstanceState | null }) {
             </span>
             <div className="ml-auto flex gap-2">
               <a
-                href="/messages"
-                className="text-[11px] uppercase tracking-widest text-blue-400 hover:text-blue-300 transition-colors border border-blue-500/30 hover:border-blue-400/50 rounded-lg px-3 py-1"
-              >
-                💬 Messages
-              </a>
-              <a
                 href="/stats"
                 className="text-[11px] uppercase tracking-widest text-violet-400 hover:text-violet-300 transition-colors border border-violet-500/30 hover:border-violet-400/50 rounded-lg px-3 py-1"
               >

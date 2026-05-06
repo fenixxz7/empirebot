@@ -82,11 +82,16 @@ configRouter.get("/:instanceId", asyncHandler(async (req, res) => {
     [id]
   );
 
-  // Pool global de tokens
+  // Pool de tokens desta instância (apenas os selecionados para ela)
   const tokenPool = await query<{
     id: number; label: string | null; value: string; status: string; username: string | null;
   }>(
-    `SELECT id, label, value, status, username FROM token_pool ORDER BY id ASC`
+    `SELECT tp.id, tp.label, tp.value, tp.status, tp.username
+     FROM token_pool tp
+     INNER JOIN instance_token_selection its ON its.token_pool_id = tp.id
+     WHERE its.instance_id = $1
+     ORDER BY its.position ASC`,
+    [id]
   );
 
   // IDs selecionados para esta instância

@@ -282,6 +282,21 @@ export async function initDatabase(): Promise<void> {
     ON CONFLICT DO NOTHING
   `);
 
+  // Orgs por instância: adiciona instance_id e remove unique global de guild_id
+  await pool.query(
+    `ALTER TABLE orgs ADD COLUMN IF NOT EXISTS instance_id INTEGER REFERENCES instances(id) ON DELETE CASCADE`,
+  );
+  // Preenche orgs existentes com a instância associada via instance_orgs
+  await pool.query(`
+    UPDATE orgs SET instance_id = (
+      SELECT io.instance_id FROM instance_orgs io WHERE io.org_id = orgs.id LIMIT 1
+    ) WHERE instance_id IS NULL AND EXISTS (
+      SELECT 1 FROM instance_orgs io WHERE io.org_id = orgs.id
+    )
+  `);
+  // Remove constraint UNIQUE global de guild_id (permite mesmo guild em instâncias distintas)
+  await pool.query(`ALTER TABLE orgs DROP CONSTRAINT IF EXISTS orgs_guild_id_key`);
+
   // Garante que ninguém ficou com fila "fantasma" entre boots
   await pool.query(`DELETE FROM active_queues`);
 

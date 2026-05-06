@@ -19,6 +19,7 @@ const CreateOrgBody = z.object({
   max_queues: z.coerce.number().int().min(1).default(5),
   priority: z.coerce.number().int().default(0),
   enabled: z.coerce.boolean().default(true),
+  instance_id: z.coerce.number().int().optional(),
 });
 
 const UpdateOrgBody = z.object({
@@ -29,33 +30,63 @@ const UpdateOrgBody = z.object({
   priority: z.coerce.number().int().optional(),
 });
 
-orgsRouter.get("/", asyncHandler(async (_req, res) => {
-  const rows = await query(
-    `SELECT o.id, o.guild_id, o.name, o.category, o.max_queues, o.enabled, o.priority,
-            COALESCE(c.cnt, 0)::int AS channels_count,
-            c.last_scanned_at
-     FROM orgs o
-     LEFT JOIN (
-       SELECT org_id,
-              COUNT(*)::int AS cnt,
-              MAX(last_scanned_at) AS last_scanned_at
-       FROM org_channels
-       GROUP BY org_id
-     ) c ON c.org_id = o.id
-     ORDER BY o.name ASC`,
-  );
+orgsRouter.get("/", asyncHandler(async (req, res) => {
+  const instanceId = req.query.instance_id ? Number(req.query.instance_id) : null;
+
+  let rows;
+  if (instanceId) {
+    rows = await query(
+      `SELECT o.id, o.guild_id, o.name, o.category, o.max_queues, o.enabled, o.priority,
+              COALESCE(c.cnt, 0)::int AS channels_count,
+              c.last_scanned_at
+       FROM orgs o
+       LEFT JOIN (
+         SELECT org_id,
+                COUNT(*)::int AS cnt,
+                MAX(last_scanned_at) AS last_scanned_at
+         FROM org_channels
+         GROUP BY org_id
+       ) c ON c.org_id = o.id
+       WHERE o.instance_id = $1
+       ORDER BY o.name ASC`,
+      [instanceId],
+    );
+  } else {
+    rows = await query(
+      `SELECT o.id, o.guild_id, o.name, o.category, o.max_queues, o.enabled, o.priority,
+              COALESCE(c.cnt, 0)::int AS channels_count,
+              c.last_scanned_at
+       FROM orgs o
+       LEFT JOIN (
+         SELECT org_id,
+                COUNT(*)::int AS cnt,
+                MAX(last_scanned_at) AS last_scanned_at
+         FROM org_channels
+         GROUP BY org_id
+       ) c ON c.org_id = o.id
+       ORDER BY o.name ASC`,
+    );
+  }
   res.json(rows);
 }));
 
 orgsRouter.post("/", validate({ body: CreateOrgBody }), asyncHandler(async (req, res) => {
-  const { name, category, guild_id, max_queues, priority, enabled } = req.body;
+  const { name, category, guild_id, max_queues, priority, enabled, instance_id } = req.body;
   const rows = await query<{ id: number }>(
-    `INSERT INTO orgs (name, category, guild_id, max_queues, priority, enabled)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO orgs (name, category, guild_id, max_queues, priority, enabled, instance_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING id`,
-    [name, category, guild_id ?? null, max_queues, priority, enabled],
+    [name, category, guild_id ?? null, max_queues, priority, enabled, instance_id ?? null],
   );
-  res.json({ ok: true, id: rows[0]?.id });
+  const orgId = rows[0]?.id;
+  // Auto-seleciona a org na instância ao criar
+  if (orgId && instance_id) {
+    await query(
+      `INSERT INTO instance_orgs (instance_id, org_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [instance_id, orgId],
+    );
+  }
+  res.json({ ok: true, id: orgId });
 }));
 
 orgsRouter.delete("/:id", asyncHandler(async (req, res) => {

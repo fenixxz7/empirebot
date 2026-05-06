@@ -126,7 +126,7 @@ export function ConfigForm({
   }
 
   async function reloadTokenPool() {
-    const rows = await api<TokenPoolEntry[]>(`/api/tokens`);
+    const rows = await api<TokenPoolEntry[]>(`/api/tokens?instance_id=${instanceId}`);
     setTokenPool(rows);
   }
 
@@ -136,16 +136,14 @@ export function ConfigForm({
   }, [instanceId]);
 
   async function reloadOrgs() {
-    // Listamos todas as orgs cadastradas, sem filtrar por categoria — a
-    // categoria por canal é o que controla onde o bot entra.
-    const rows = await api<Org[]>(`/api/orgs`);
+    const rows = await api<Org[]>(`/api/orgs?instance_id=${instanceId}`);
     setOrgs(rows);
   }
 
   useEffect(() => {
     reloadOrgs().catch(console.error);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [instanceId]);
 
   function toggleCat(c: Category) {
     setAllowedCats((prev) => {
@@ -213,6 +211,7 @@ export function ConfigForm({
           name,
           category: newOrgCategory,
           guild_id: newOrgGuild.trim() || null,
+          instance_id: instanceId,
         }),
       });
       cancelOrgsAction();
@@ -302,7 +301,7 @@ export function ConfigForm({
     try {
       await api(`/api/tokens`, {
         method: "POST",
-        body: JSON.stringify({ value: val, label: newTokenLabel.trim() || null }),
+        body: JSON.stringify({ value: val, label: newTokenLabel.trim() || null, instance_id: instanceId }),
       });
       cancelTokensAction();
       await reloadTokenPool();
