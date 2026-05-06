@@ -5,9 +5,18 @@ import { asyncHandler } from "../lib/asyncHandler.js";
 
 export const authRouter = Router();
 
-function requireAdmin(req: Request, res: Response, next: NextFunction) {
+export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   if ((req.session as any)?.is_admin) return next();
   res.status(403).json({ error: "Acesso restrito ao administrador." });
+}
+
+function getClientIp(req: Request): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (forwarded) {
+    const ip = Array.isArray(forwarded) ? forwarded[0] : forwarded.split(",")[0];
+    return ip?.trim() ?? req.ip ?? "desconhecido";
+  }
+  return req.ip ?? "desconhecido";
 }
 
 authRouter.post("/login", asyncHandler(async (req, res) => {
@@ -31,8 +40,19 @@ authRouter.post("/login", asyncHandler(async (req, res) => {
     [password ?? ""]
   );
   if (keys.length > 0) {
+    const keyId = keys[0]!.id;
+    const now = new Date();
     (req.session as any).authenticated = true;
     (req.session as any).is_admin = false;
+    (req.session as any).access_key_id = keyId;
+    (req.session as any).logged_in_at = now.toISOString();
+
+    const ip = getClientIp(req);
+    await query(
+      `INSERT INTO access_key_logins (access_key_id, ip) VALUES ($1, $2)`,
+      [keyId, ip]
+    );
+
     res.json({ ok: true });
     return;
   }
@@ -45,17 +65,35 @@ authRouter.post("/logout", (req, res) => {
   res.json({ ok: true });
 });
 
-authRouter.get("/check", (req, res) => {
+authRouter.get("/check", asyncHandler(async (req, res) => {
   const session = req.session as any;
+  if (!session?.authenticated) {
+    res.json({ authenticated: false, is_admin: false });
+    return;
+  }
+
+  if (session.access_key_id) {
+    const rows = await query<{ force_logout_at: string | null }>(
+      `SELECT force_logout_at FROM access_keys WHERE id = $1`,
+      [session.access_key_id]
+    );
+    const key = rows[0];
+    if (!key || (key.force_logout_at && new Date(key.force_logout_at) > new Date(session.logged_in_at))) {
+      req.session.destroy(() => {});
+      res.json({ authenticated: false, is_admin: false });
+      return;
+    }
+  }
+
   res.json({
     authenticated: !!session?.authenticated,
     is_admin: !!session?.is_admin,
   });
-});
+}));
 
 authRouter.get("/access-keys", requireAdmin, asyncHandler(async (_req, res) => {
-  const rows = await query<{ id: number; label: string; created_at: string }>(
-    `SELECT id, label, created_at FROM access_keys ORDER BY created_at DESC`
+  const rows = await query<{ id: number; label: string; created_at: string; force_logout_at: string | null }>(
+    `SELECT id, label, created_at, force_logout_at FROM access_keys ORDER BY created_at DESC`
   );
   res.json(rows);
 }));
@@ -80,5 +118,20 @@ authRouter.post("/access-keys", requireAdmin, asyncHandler(async (req, res) => {
 authRouter.delete("/access-keys/:id", requireAdmin, asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
   await query(`DELETE FROM access_keys WHERE id = $1`, [id]);
+  res.json({ ok: true });
+}));
+
+authRouter.get("/access-keys/:id/logins", requireAdmin, asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  const rows = await query<{ ip: string; logged_in_at: string }>(
+    `SELECT ip, logged_in_at FROM access_key_logins WHERE access_key_id = $1 ORDER BY logged_in_at DESC LIMIT 50`,
+    [id]
+  );
+  res.json(rows);
+}));
+
+authRouter.post("/access-keys/:id/force-logout", requireAdmin, asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  await query(`UPDATE access_keys SET force_logout_at = NOW() WHERE id = $1`, [id]);
   res.json({ ok: true });
 }));

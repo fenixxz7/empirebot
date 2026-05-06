@@ -285,10 +285,22 @@ export async function initDatabase(): Promise<void> {
   // Senhas de acesso temporárias (multi-usuário)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS access_keys (
-      id         SERIAL PRIMARY KEY,
-      label      TEXT NOT NULL,
-      password   TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      id             SERIAL PRIMARY KEY,
+      label          TEXT NOT NULL,
+      password       TEXT NOT NULL,
+      created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      force_logout_at TIMESTAMPTZ
+    )
+  `);
+  await pool.query(`ALTER TABLE access_keys ADD COLUMN IF NOT EXISTS force_logout_at TIMESTAMPTZ`);
+
+  // Histórico de logins por chave de acesso
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS access_key_logins (
+      id            SERIAL PRIMARY KEY,
+      access_key_id INTEGER NOT NULL REFERENCES access_keys(id) ON DELETE CASCADE,
+      ip            TEXT NOT NULL,
+      logged_in_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
 

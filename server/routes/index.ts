@@ -12,10 +12,32 @@ import { blacklistRouter } from "./blacklist.js";
 import { sendErrorsRouter } from "./send-errors.js";
 import { messageOverridesRouter } from "./message-overrides.js";
 import { pool } from "../db/pool.js";
+import { query } from "../db/pool.js";
 
 function requireAuth(req: Request, res: Response, next: NextFunction) {
-  if ((req.session as any)?.authenticated) return next();
-  res.status(401).json({ error: "Não autenticado" });
+  const session = req.session as any;
+  if (!session?.authenticated) {
+    res.status(401).json({ error: "Não autenticado" });
+    return;
+  }
+
+  if (session.access_key_id) {
+    query<{ force_logout_at: string | null }>(
+      `SELECT force_logout_at FROM access_keys WHERE id = $1`,
+      [session.access_key_id]
+    ).then(rows => {
+      const key = rows[0];
+      if (!key || (key.force_logout_at && new Date(key.force_logout_at) > new Date(session.logged_in_at))) {
+        req.session.destroy(() => {});
+        res.status(401).json({ error: "Sessão encerrada pelo administrador." });
+        return;
+      }
+      next();
+    }).catch(() => next());
+    return;
+  }
+
+  next();
 }
 
 export function mountApi(app: Express): void {

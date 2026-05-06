@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
-type AccessKey = { id: number; label: string; created_at: string };
+type AccessKey = { id: number; label: string; created_at: string; force_logout_at: string | null };
+type LoginEntry = { ip: string; logged_in_at: string };
 
 export default function AccessKeys() {
   const [keys, setKeys] = useState<AccessKey[]>([]);
@@ -9,6 +10,9 @@ export default function AccessKeys() {
   const [password, setPassword] = useState("");
   const [adding, setAdding] = useState(false);
   const [feedback, setFeedback] = useState<{ msg: string; ok: boolean } | null>(null);
+  const [logins, setLogins] = useState<Record<number, LoginEntry[]>>({});
+  const [expanded, setExpanded] = useState<Record<number, boolean>>({});
+  const [loadingLogins, setLoadingLogins] = useState<Record<number, boolean>>({});
 
   async function load() {
     setLoading(true);
@@ -64,6 +68,36 @@ export default function AccessKeys() {
     }
   }
 
+  async function handleForceLogout(id: number, label: string) {
+    if (!confirm(`Forçar logout de todas as sessões ativas de "${label}"?`)) return;
+    try {
+      const res = await fetch(`/api/auth/access-keys/${id}/force-logout`, { method: "POST" });
+      if (!res.ok) throw new Error();
+      await load();
+      showFeedback(`Sessões de "${label}" encerradas.`, true);
+    } catch {
+      showFeedback("Erro ao forçar logout.", false);
+    }
+  }
+
+  async function toggleLogins(id: number) {
+    const nowExpanded = !expanded[id];
+    setExpanded(prev => ({ ...prev, [id]: nowExpanded }));
+
+    if (nowExpanded && !logins[id]) {
+      setLoadingLogins(prev => ({ ...prev, [id]: true }));
+      try {
+        const res = await fetch(`/api/auth/access-keys/${id}/logins`);
+        const data: LoginEntry[] = await res.json();
+        setLogins(prev => ({ ...prev, [id]: data }));
+      } catch {
+        setLogins(prev => ({ ...prev, [id]: [] }));
+      } finally {
+        setLoadingLogins(prev => ({ ...prev, [id]: false }));
+      }
+    }
+  }
+
   const inputStyle: React.CSSProperties = {
     width: "100%",
     background: "#0f1117",
@@ -78,7 +112,7 @@ export default function AccessKeys() {
 
   return (
     <div style={{ minHeight: "100vh", background: "#0f1117", padding: "32px 16px", fontFamily: "'Inter', sans-serif" }}>
-      <div style={{ maxWidth: 560, margin: "0 auto" }}>
+      <div style={{ maxWidth: 600, margin: "0 auto" }}>
 
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 28 }}>
           <a href="/" style={{ color: "#6b7280", fontSize: 13, textDecoration: "none" }}>← Voltar</a>
@@ -169,33 +203,111 @@ export default function AccessKeys() {
 
           {!loading && keys.map(k => (
             <div key={k.id} style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 12,
-              padding: "12px 0",
               borderBottom: "1px solid #2a2d3d",
+              paddingBottom: 12,
+              marginBottom: 12,
             }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ color: "#f0f0f0", fontSize: 14, fontWeight: 600 }}>{k.label}</div>
-                <div style={{ color: "#6b7280", fontSize: 12, marginTop: 2 }}>
-                  Criado em {new Date(k.created_at).toLocaleString("pt-BR")}
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ color: "#f0f0f0", fontSize: 14, fontWeight: 600 }}>{k.label}</div>
+                  <div style={{ color: "#6b7280", fontSize: 12, marginTop: 2 }}>
+                    Criado em {new Date(k.created_at).toLocaleString("pt-BR")}
+                  </div>
                 </div>
+
+                <button
+                  onClick={() => toggleLogins(k.id)}
+                  title="Ver IPs de login"
+                  style={{
+                    background: expanded[k.id] ? "rgba(99,102,241,0.2)" : "rgba(99,102,241,0.08)",
+                    border: "1px solid rgba(99,102,241,0.3)",
+                    color: "#a5b4fc",
+                    borderRadius: 7,
+                    padding: "5px 11px",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  {expanded[k.id] ? "▲ IPs" : "▼ IPs"}
+                </button>
+
+                <button
+                  onClick={() => handleForceLogout(k.id, k.label)}
+                  title="Forçar logout de todas as sessões ativas"
+                  style={{
+                    background: "rgba(251,146,60,0.1)",
+                    border: "1px solid rgba(251,146,60,0.3)",
+                    color: "#fb923c",
+                    borderRadius: 7,
+                    padding: "5px 11px",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  ⏻ Logout
+                </button>
+
+                <button
+                  onClick={() => handleDelete(k.id, k.label)}
+                  style={{
+                    background: "rgba(239,68,68,0.1)",
+                    border: "1px solid rgba(239,68,68,0.3)",
+                    color: "#f87171",
+                    borderRadius: 7,
+                    padding: "5px 11px",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  Revogar
+                </button>
               </div>
-              <button
-                onClick={() => handleDelete(k.id, k.label)}
-                style={{
-                  background: "rgba(239,68,68,0.1)",
-                  border: "1px solid rgba(239,68,68,0.3)",
-                  color: "#f87171",
-                  borderRadius: 7,
-                  padding: "6px 14px",
-                  fontSize: 12,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
-              >
-                Revogar
-              </button>
+
+              {expanded[k.id] && (
+                <div style={{
+                  marginTop: 10,
+                  background: "#0f1117",
+                  border: "1px solid #2a2d3d",
+                  borderRadius: 8,
+                  padding: "10px 14px",
+                }}>
+                  {loadingLogins[k.id] && (
+                    <p style={{ color: "#6b7280", fontSize: 12, margin: 0 }}>Carregando…</p>
+                  )}
+                  {!loadingLogins[k.id] && (!logins[k.id] || logins[k.id]!.length === 0) && (
+                    <p style={{ color: "#6b7280", fontSize: 12, margin: 0 }}>Nenhum login registrado ainda.</p>
+                  )}
+                  {!loadingLogins[k.id] && logins[k.id] && logins[k.id]!.length > 0 && (
+                    <div>
+                      <div style={{ color: "#6b7280", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>
+                        Últimos logins
+                      </div>
+                      {logins[k.id]!.map((entry, i) => (
+                        <div key={i} style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          padding: "4px 0",
+                          borderBottom: i < logins[k.id]!.length - 1 ? "1px solid #1a1d27" : "none",
+                        }}>
+                          <span style={{ color: "#e2e8f0", fontSize: 13, fontFamily: "monospace" }}>{entry.ip}</span>
+                          <span style={{ color: "#6b7280", fontSize: 11 }}>
+                            {new Date(entry.logged_in_at).toLocaleString("pt-BR")}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {k.force_logout_at && (
+                    <div style={{ marginTop: 8, color: "#fb923c", fontSize: 11 }}>
+                      ⚠ Logout forçado em {new Date(k.force_logout_at).toLocaleString("pt-BR")} — sessões anteriores a este horário foram encerradas.
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ))}
         </div>
