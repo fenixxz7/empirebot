@@ -433,11 +433,11 @@ export class QueueRunner {
       // MAS: se a org já tem >=50% do max_queues ocupado por filas vazias paradas,
       // bloqueia novas vazias (só permite com player). Evita encher de fila vazia
       // que nunca vira partida e desperdiça os slots da org.
-      // Preferência 80/20: filas vazias só são selecionadas aqui 20% das vezes;
-      // nos outros 80% cai no Passo 3 (overflow) que prefere com-player se houver.
+      // Preferência 70/30: filas vazias só são selecionadas aqui 30% das vezes;
+      // nos outros 70% cai no Passo 3 (overflow) que prefere com-player se houver.
       const emptiesForOrg = emptiesPerOrg.get(currentOrgId) ?? 0;
       const emptyBlocked = emptiesForOrg * 2 >= maxForOrg;
-      if (!pick && noPlayersSlotPreferred && !emptyBlocked && Math.random() < 0.20) {
+      if (!pick && noPlayersSlotPreferred && !emptyBlocked && Math.random() < 0.30) {
         for (let i = 0; i < orderedModes.length; i++) {
           const m = orderedModes[i]!;
           const hit = ranked.candidates.find(
