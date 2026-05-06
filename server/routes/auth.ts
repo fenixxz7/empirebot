@@ -19,9 +19,22 @@ function getClientIp(req: Request): string {
   return req.ip ?? "desconhecido";
 }
 
+async function recordAudit(action: string, opts: {
+  access_key_label?: string;
+  access_key_id?: number;
+  ip?: string;
+  detail?: string;
+}) {
+  await query(
+    `INSERT INTO audit_logs (action, access_key_label, access_key_id, ip, detail) VALUES ($1,$2,$3,$4,$5)`,
+    [action, opts.access_key_label ?? null, opts.access_key_id ?? null, opts.ip ?? null, opts.detail ?? null]
+  );
+}
+
 authRouter.post("/login", asyncHandler(async (req, res) => {
   const { username, password } = req.body as { username?: string; password?: string };
   const adminPass = process.env.ADMIN_PASSWORD;
+  const ip = getClientIp(req);
 
   if (!adminPass) {
     res.status(500).json({ error: "ADMIN_PASSWORD não configurada no servidor." });
@@ -31,32 +44,39 @@ authRouter.post("/login", asyncHandler(async (req, res) => {
   if (username === "admin" && password === adminPass) {
     (req.session as any).authenticated = true;
     (req.session as any).is_admin = true;
+    await recordAudit("login_admin", { ip });
     res.json({ ok: true });
     return;
   }
 
-  const keys = await query<{ id: number }>(
-    `SELECT id FROM access_keys WHERE password = $1`,
+  const keys = await query<{ id: number; label: string; expires_at: string | null }>(
+    `SELECT id, label, expires_at FROM access_keys WHERE password = $1`,
     [password ?? ""]
   );
+
   if (keys.length > 0) {
-    const keyId = keys[0]!.id;
+    const key = keys[0]!;
+
+    if (key.expires_at && new Date(key.expires_at) < new Date()) {
+      await recordAudit("login_expired", { access_key_id: key.id, access_key_label: key.label, ip });
+      res.status(401).json({ error: "Este acesso expirou." });
+      return;
+    }
+
     const now = new Date();
     (req.session as any).authenticated = true;
     (req.session as any).is_admin = false;
-    (req.session as any).access_key_id = keyId;
+    (req.session as any).access_key_id = key.id;
     (req.session as any).logged_in_at = now.toISOString();
 
-    const ip = getClientIp(req);
-    await query(
-      `INSERT INTO access_key_logins (access_key_id, ip) VALUES ($1, $2)`,
-      [keyId, ip]
-    );
+    await query(`INSERT INTO access_key_logins (access_key_id, ip) VALUES ($1, $2)`, [key.id, ip]);
+    await recordAudit("login", { access_key_id: key.id, access_key_label: key.label, ip });
 
     res.json({ ok: true });
     return;
   }
 
+  await recordAudit("login_failed", { ip, detail: `username: ${username ?? ""}` });
   res.status(401).json({ error: "Usuário ou senha incorretos." });
 }));
 
@@ -73,33 +93,36 @@ authRouter.get("/check", asyncHandler(async (req, res) => {
   }
 
   if (session.access_key_id) {
-    const rows = await query<{ force_logout_at: string | null }>(
-      `SELECT force_logout_at FROM access_keys WHERE id = $1`,
+    const rows = await query<{ force_logout_at: string | null; expires_at: string | null }>(
+      `SELECT force_logout_at, expires_at FROM access_keys WHERE id = $1`,
       [session.access_key_id]
     );
     const key = rows[0];
-    if (!key || (key.force_logout_at && new Date(key.force_logout_at) > new Date(session.logged_in_at))) {
+    const loggedInAt = new Date(session.logged_in_at);
+    const isForceLoggedOut = key && key.force_logout_at && new Date(key.force_logout_at) > loggedInAt;
+    const isExpired = key && key.expires_at && new Date(key.expires_at) < new Date();
+
+    if (!key || isForceLoggedOut || isExpired) {
       req.session.destroy(() => {});
       res.json({ authenticated: false, is_admin: false });
       return;
     }
   }
 
-  res.json({
-    authenticated: !!session?.authenticated,
-    is_admin: !!session?.is_admin,
-  });
+  res.json({ authenticated: !!session?.authenticated, is_admin: !!session?.is_admin });
 }));
 
 authRouter.get("/access-keys", requireAdmin, asyncHandler(async (_req, res) => {
-  const rows = await query<{ id: number; label: string; created_at: string; force_logout_at: string | null }>(
-    `SELECT id, label, created_at, force_logout_at FROM access_keys ORDER BY created_at DESC`
+  const rows = await query<{ id: number; label: string; created_at: string; force_logout_at: string | null; expires_at: string | null }>(
+    `SELECT id, label, created_at, force_logout_at, expires_at FROM access_keys ORDER BY created_at DESC`
   );
   res.json(rows);
 }));
 
 authRouter.post("/access-keys", requireAdmin, asyncHandler(async (req, res) => {
-  const { label, password } = req.body as { label?: string; password?: string };
+  const { label, password, expires_at } = req.body as { label?: string; password?: string; expires_at?: string | null };
+  const ip = getClientIp(req);
+
   if (!label?.trim()) {
     res.status(400).json({ error: "Informe um rótulo para identificar o acesso." });
     return;
@@ -108,16 +131,36 @@ authRouter.post("/access-keys", requireAdmin, asyncHandler(async (req, res) => {
     res.status(400).json({ error: "A senha deve ter ao menos 4 caracteres." });
     return;
   }
+
+  const expiresAt = expires_at ? new Date(expires_at) : null;
+  if (expiresAt && isNaN(expiresAt.getTime())) {
+    res.status(400).json({ error: "Data de expiração inválida." });
+    return;
+  }
+
   const rows = await query<{ id: number }>(
-    `INSERT INTO access_keys (label, password) VALUES ($1, $2) RETURNING id`,
-    [label.trim(), password.trim()]
+    `INSERT INTO access_keys (label, password, expires_at) VALUES ($1, $2, $3) RETURNING id`,
+    [label.trim(), password.trim(), expiresAt ?? null]
   );
-  res.json({ ok: true, id: rows[0]!.id });
+
+  const newId = rows[0]!.id;
+  await recordAudit("create", {
+    access_key_id: newId,
+    access_key_label: label.trim(),
+    ip,
+    detail: expiresAt ? `expira em ${expiresAt.toISOString()}` : "sem expiração",
+  });
+
+  res.json({ ok: true, id: newId });
 }));
 
 authRouter.delete("/access-keys/:id", requireAdmin, asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
+  const ip = getClientIp(req);
+  const rows = await query<{ label: string }>(`SELECT label FROM access_keys WHERE id = $1`, [id]);
+  const label = rows[0]?.label ?? "desconhecido";
   await query(`DELETE FROM access_keys WHERE id = $1`, [id]);
+  await recordAudit("revoke", { access_key_id: id, access_key_label: label, ip });
   res.json({ ok: true });
 }));
 
@@ -132,6 +175,26 @@ authRouter.get("/access-keys/:id/logins", requireAdmin, asyncHandler(async (req,
 
 authRouter.post("/access-keys/:id/force-logout", requireAdmin, asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
+  const ip = getClientIp(req);
+  const rows = await query<{ label: string }>(`SELECT label FROM access_keys WHERE id = $1`, [id]);
+  const label = rows[0]?.label ?? "desconhecido";
   await query(`UPDATE access_keys SET force_logout_at = NOW() WHERE id = $1`, [id]);
+  await recordAudit("force_logout", { access_key_id: id, access_key_label: label, ip });
   res.json({ ok: true });
+}));
+
+authRouter.get("/audit-logs", requireAdmin, asyncHandler(async (_req, res) => {
+  const rows = await query<{
+    id: number;
+    action: string;
+    access_key_label: string | null;
+    access_key_id: number | null;
+    ip: string | null;
+    detail: string | null;
+    performed_at: string;
+  }>(
+    `SELECT id, action, access_key_label, access_key_id, ip, detail, performed_at
+     FROM audit_logs ORDER BY performed_at DESC LIMIT 200`
+  );
+  res.json(rows);
 }));

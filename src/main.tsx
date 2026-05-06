@@ -5,6 +5,7 @@ import Stats from "./pages/Stats";
 import Messages from "./pages/Messages";
 import Login from "./pages/Login";
 import AccessKeys from "./pages/AccessKeys";
+import AuditLog from "./pages/AuditLog";
 import "./index.css";
 
 type AuthState = { status: "loading" } | { status: "unauthenticated" } | { status: "authenticated"; isAdmin: boolean };
@@ -54,6 +55,9 @@ function Root() {
   if (path.startsWith("/messages")) return <Messages />;
   if (path.startsWith("/acessos")) {
     return auth.isAdmin ? <AccessKeys /> : <App isAdmin={false} />;
+  }
+  if (path.startsWith("/auditoria")) {
+    return auth.isAdmin ? <AuditLog /> : <App isAdmin={false} />;
   }
   return <App isAdmin={auth.isAdmin} />;
 }

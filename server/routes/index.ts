@@ -22,12 +22,15 @@ function requireAuth(req: Request, res: Response, next: NextFunction) {
   }
 
   if (session.access_key_id) {
-    query<{ force_logout_at: string | null }>(
-      `SELECT force_logout_at FROM access_keys WHERE id = $1`,
+    query<{ force_logout_at: string | null; expires_at: string | null }>(
+      `SELECT force_logout_at, expires_at FROM access_keys WHERE id = $1`,
       [session.access_key_id]
     ).then(rows => {
       const key = rows[0];
-      if (!key || (key.force_logout_at && new Date(key.force_logout_at) > new Date(session.logged_in_at))) {
+      const loggedInAt = new Date(session.logged_in_at);
+      const isForceLoggedOut = key && key.force_logout_at && new Date(key.force_logout_at) > loggedInAt;
+      const isExpired = key && key.expires_at && new Date(key.expires_at) < new Date();
+      if (!key || isForceLoggedOut || isExpired) {
         req.session.destroy(() => {});
         res.status(401).json({ error: "Sessão encerrada pelo administrador." });
         return;

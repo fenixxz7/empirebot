@@ -293,6 +293,7 @@ export async function initDatabase(): Promise<void> {
     )
   `);
   await pool.query(`ALTER TABLE access_keys ADD COLUMN IF NOT EXISTS force_logout_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE access_keys ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`);
 
   // Histórico de logins por chave de acesso
   await pool.query(`
@@ -301,6 +302,19 @@ export async function initDatabase(): Promise<void> {
       access_key_id INTEGER NOT NULL REFERENCES access_keys(id) ON DELETE CASCADE,
       ip            TEXT NOT NULL,
       logged_in_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  // Log de auditoria de ações administrativas
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id               SERIAL PRIMARY KEY,
+      action           TEXT NOT NULL,
+      access_key_label TEXT,
+      access_key_id    INTEGER,
+      ip               TEXT,
+      detail           TEXT,
+      performed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
 

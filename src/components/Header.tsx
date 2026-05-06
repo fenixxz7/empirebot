@@ -17,12 +17,20 @@ export function Header({ instance, isAdmin = false }: { instance: InstanceState 
             </span>
             <div className="ml-auto flex gap-2">
               {isAdmin && (
-                <a
-                  href="/acessos"
-                  className="text-[11px] uppercase tracking-widest text-amber-400 hover:text-amber-300 transition-colors border border-amber-500/30 hover:border-amber-400/50 rounded-lg px-3 py-1"
-                >
-                  🔑 Acessos
-                </a>
+                <>
+                  <a
+                    href="/acessos"
+                    className="text-[11px] uppercase tracking-widest text-amber-400 hover:text-amber-300 transition-colors border border-amber-500/30 hover:border-amber-400/50 rounded-lg px-3 py-1"
+                  >
+                    🔑 Acessos
+                  </a>
+                  <a
+                    href="/auditoria"
+                    className="text-[11px] uppercase tracking-widest text-violet-400 hover:text-violet-300 transition-colors border border-violet-500/30 hover:border-violet-400/50 rounded-lg px-3 py-1"
+                  >
+                    📋 Auditoria
+                  </a>
+                </>
               )}
               <a
                 href="/stats"
