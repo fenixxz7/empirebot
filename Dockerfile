@@ -11,10 +11,11 @@ RUN npm run build
 ### Stage 2 — runtime
 FROM node:20-alpine AS runtime
 WORKDIR /app
-ENV NODE_ENV=production
 
 COPY package.json package-lock.json ./
 RUN npm ci && npm cache clean --force
+
+ENV NODE_ENV=production
 
 COPY --from=builder /app/dist ./dist
 COPY server ./server
