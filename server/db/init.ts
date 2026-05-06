@@ -282,6 +282,16 @@ export async function initDatabase(): Promise<void> {
     ON CONFLICT DO NOTHING
   `);
 
+  // Senhas de acesso temporárias (multi-usuário)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS access_keys (
+      id         SERIAL PRIMARY KEY,
+      label      TEXT NOT NULL,
+      password   TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   // Orgs por instância: adiciona instance_id e remove unique global de guild_id
   await pool.query(
     `ALTER TABLE orgs ADD COLUMN IF NOT EXISTS instance_id INTEGER REFERENCES instances(id) ON DELETE CASCADE`,

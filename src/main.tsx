@@ -4,21 +4,27 @@ import { App } from "./App";
 import Stats from "./pages/Stats";
 import Messages from "./pages/Messages";
 import Login from "./pages/Login";
+import AccessKeys from "./pages/AccessKeys";
 import "./index.css";
 
+type AuthState = { status: "loading" } | { status: "unauthenticated" } | { status: "authenticated"; isAdmin: boolean };
+
 function Root() {
-  const [authState, setAuthState] = useState<"loading" | "authenticated" | "unauthenticated">("loading");
+  const [auth, setAuth] = useState<AuthState>({ status: "loading" });
 
   useEffect(() => {
     fetch("/api/auth/check")
       .then(r => r.json())
-      .then((data: { authenticated: boolean }) => {
-        setAuthState(data.authenticated ? "authenticated" : "unauthenticated");
+      .then((data: { authenticated: boolean; is_admin: boolean }) => {
+        setAuth(data.authenticated
+          ? { status: "authenticated", isAdmin: !!data.is_admin }
+          : { status: "unauthenticated" }
+        );
       })
-      .catch(() => setAuthState("unauthenticated"));
+      .catch(() => setAuth({ status: "unauthenticated" }));
   }, []);
 
-  if (authState === "loading") {
+  if (auth.status === "loading") {
     return (
       <div style={{
         minHeight: "100vh",
@@ -35,15 +41,21 @@ function Root() {
     );
   }
 
-  if (authState === "unauthenticated") {
-    return <Login onLogin={() => setAuthState("authenticated")} />;
+  if (auth.status === "unauthenticated") {
+    return <Login onLogin={() => {
+      fetch("/api/auth/check").then(r => r.json()).then((data: { authenticated: boolean; is_admin: boolean }) => {
+        setAuth({ status: "authenticated", isAdmin: !!data.is_admin });
+      });
+    }} />;
   }
 
   const path = window.location.pathname;
-  const isStats = path.startsWith("/stats");
-  const isMessages = path.startsWith("/messages");
-
-  return isStats ? <Stats /> : isMessages ? <Messages /> : <App />;
+  if (path.startsWith("/stats")) return <Stats />;
+  if (path.startsWith("/messages")) return <Messages />;
+  if (path.startsWith("/acessos")) {
+    return auth.isAdmin ? <AccessKeys /> : <App isAdmin={false} />;
+  }
+  return <App isAdmin={auth.isAdmin} />;
 }
 
 createRoot(document.getElementById("root")!).render(

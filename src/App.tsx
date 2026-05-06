@@ -10,7 +10,7 @@ import { BlacklistPanel } from "@/components/BlacklistPanel";
 import { SendErrorsPanel } from "@/components/SendErrorsPanel";
 import { MessageOverridesPanel } from "@/components/MessageOverridesPanel";
 
-export function App() {
+export function App({ isAdmin = false }: { isAdmin?: boolean }) {
   const [instances, setInstances] = useState<InstanceState[]>([]);
   const [activeIdx, setActiveIdx] = useState(0);
   const wsRefs = useRef<Map<number, WebSocket>>(new Map());
@@ -136,7 +136,7 @@ export function App() {
           </div>
         )}
 
-        <Header instance={instance} />
+        <Header instance={instance} isAdmin={isAdmin} />
 
         <div className="grid lg:grid-cols-2 gap-6">
           <ControlPanel instance={instance} onToggle={toggle} />
