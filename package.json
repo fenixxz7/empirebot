@@ -4,10 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx server/index.ts",
-    "build": "vite build",
-    "start": "NODE_ENV=production tsx server/index.ts",
-    "db:init": "tsx server/db/init.ts"
+    "dev": "node_modules/.bin/tsx server/index.ts",
+    "build": "node_modules/.bin/vite build",
+    "start": "NODE_ENV=production node_modules/.bin/tsx server/index.ts",
+    "db:init": "node_modules/.bin/tsx server/db/init.ts"
   },
   "dependencies": {
     "@types/express-session": "^1.19.0",
