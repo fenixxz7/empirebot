@@ -11,6 +11,17 @@ export async function initDatabase(): Promise<void> {
   const sql = readFileSync(path.join(__dirname, "schema.sql"), "utf8");
   await pool.query(sql);
 
+  // Garante colunas de orgs necessárias antes de qualquer query que as use
+  await pool.query(
+    `ALTER TABLE orgs ADD COLUMN IF NOT EXISTS discovery_blocked BOOLEAN NOT NULL DEFAULT FALSE`,
+  );
+  await pool.query(
+    `ALTER TABLE orgs ADD COLUMN IF NOT EXISTS last_discovered_at TIMESTAMPTZ`,
+  );
+  await pool.query(
+    `ALTER TABLE orgs ADD COLUMN IF NOT EXISTS instance_id INTEGER REFERENCES instances(id) ON DELETE CASCADE`,
+  );
+
   // Migrações idempotentes para bancos antigos
   await pool.query(
     `ALTER TABLE org_channels ADD COLUMN IF NOT EXISTS application_id TEXT`,
