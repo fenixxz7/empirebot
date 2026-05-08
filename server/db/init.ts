@@ -199,6 +199,11 @@ export async function initDatabase(): Promise<void> {
      WHERE m.instance_id = s.instance_id
   `);
 
+  // Discovery bloqueada permanentemente por erro de acesso/ban (ex: código 50001)
+  await pool.query(
+    `ALTER TABLE orgs ADD COLUMN IF NOT EXISTS discovery_blocked BOOLEAN NOT NULL DEFAULT FALSE`,
+  );
+
   // Orgs inválidas por token — ban, sem acesso, timeout de guild
   await pool.query(`
     CREATE TABLE IF NOT EXISTS token_org_blacklist (

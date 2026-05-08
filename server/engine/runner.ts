@@ -349,7 +349,17 @@ export class QueueRunner {
     // mas outra tem fila com 3 players esperando, o bot entrava na vazia.
     // Aqui usamos APENAS o playerCache (sem chamar Discord) pra encontrar
     // a org com mais players visíveis e jogar o cursor pra ela.
-    if (playersSlot) {
+    //
+    // EXCEÇÃO: se clicksPerOrg > 0 e já começamos a sequência na org atual
+    // (count > 0), NÃO deixamos o pre-pass redirecionar o cursor — a
+    // sequência tem que completar na org atual antes de qualquer salto.
+    const _prePassOrgId = orgIds[this.orgCursor % totalOrgs];
+    const _midSequence =
+      cfg.clicksPerOrg > 0 &&
+      _prePassOrgId !== undefined &&
+      (this.orgClickCounts.get(_prePassOrgId) ?? 0) > 0;
+
+    if (playersSlot && !_midSequence) {
       let bestOrg: { idx: number; players: number } | null = null;
       for (let i = 0; i < totalOrgs; i++) {
         const orgId = orgIds[i]!;

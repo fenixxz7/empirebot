@@ -241,6 +241,17 @@ function sleep(ms: number) {
  * Reutilizado pelo PUT /api/config e pelo manager.start (após o token
  * conectar).
  */
+/** Retorna true se o erro indica acesso negado permanente (código 50001 ou ban). */
+function isPermanentAccessError(error: string | undefined): boolean {
+  if (!error) return false;
+  try {
+    const parsed = JSON.parse(error);
+    return parsed?.code === 50001;
+  } catch {
+    return error.includes("50001");
+  }
+}
+
 export async function runAutoDiscoveryForInstance(
   instanceId: number,
   token: string,
@@ -259,7 +270,8 @@ export async function runAutoDiscoveryForInstance(
      ) c ON c.org_id = o.id
      WHERE o.guild_id IS NOT NULL
        AND o.guild_id <> ''
-       AND COALESCE(c.cnt, 0) = 0`,
+       AND COALESCE(c.cnt, 0) = 0
+       AND NOT COALESCE(o.discovery_blocked, FALSE)`,
     [instanceId],
   );
 
@@ -268,18 +280,32 @@ export async function runAutoDiscoveryForInstance(
     try {
       const r = await discoverOrg(token, o.id, o.guild_id!);
       results.push(r);
-      await query(
-        `INSERT INTO logs (instance_id, level, source, message)
-         VALUES ($1, $2, $3, $4)`,
-        [
-          instanceId,
-          r.ok ? "INFO" : "ERROR",
-          "discovery",
-          r.ok
-            ? `${o.name}: ${r.channels_found} ${pluralCanal(r.channels_found)} escaneado(s), ${r.queues_saved} fila(s) cadastradas`
-            : `${o.name}: falha (${r.error ?? "erro"})`,
-        ],
-      );
+
+      if (!r.ok && isPermanentAccessError(r.error)) {
+        // Marca a org como permanentemente inacessível — não tenta mais automaticamente
+        await query(
+          `UPDATE orgs SET discovery_blocked = TRUE WHERE id = $1`,
+          [o.id],
+        );
+        await query(
+          `INSERT INTO logs (instance_id, level, source, message)
+           VALUES ($1, 'WARN', 'discovery', $2)`,
+          [instanceId, `${o.name}: sem acesso (50001) — discovery bloqueada permanentemente`],
+        );
+      } else {
+        await query(
+          `INSERT INTO logs (instance_id, level, source, message)
+           VALUES ($1, $2, $3, $4)`,
+          [
+            instanceId,
+            r.ok ? "INFO" : "ERROR",
+            "discovery",
+            r.ok
+              ? `${o.name}: ${r.channels_found} ${pluralCanal(r.channels_found)} escaneado(s), ${r.queues_saved} fila(s) cadastradas`
+              : `${o.name}: falha (${r.error ?? "erro"})`,
+          ],
+        );
+      }
     } catch (err) {
       await query(
         `INSERT INTO logs (instance_id, level, source, message)
