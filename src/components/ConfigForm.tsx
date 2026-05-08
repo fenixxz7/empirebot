@@ -710,6 +710,26 @@ export function ConfigForm({
         </Section>
       </div>
 
+      <Section title="Cliques por org antes de avançar">
+        <div className="flex items-center gap-3">
+          <input
+            className="input w-24"
+            type="number"
+            min={0}
+            step={1}
+            placeholder="10"
+            value={clicksPerOrg}
+            onChange={(e) => setClicksPerOrg(Math.max(0, Number(e.target.value)))}
+          />
+          <span className="text-slate-400 text-sm">
+            {clicksPerOrg === 0 ? "Sem limite" : `${clicksPerOrg} cliques → próxima org`}
+          </span>
+        </div>
+        <p className="text-xs text-slate-500 mt-2">
+          Após esse número de entradas em uma org, o bot avança para a próxima — independente de quantas filas entrou. Cole <b className="text-white/50">0</b> para desativar.
+        </p>
+      </Section>
+
       <Section title="Categorias permitidas">
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
           {ALL_CATEGORIES.map((c) => {
@@ -988,26 +1008,6 @@ export function ConfigForm({
         />
         <p className="text-xs text-slate-500 mt-2">
           Um nome por linha. Quando a fila exibir o nome de um jogador que esteja nessa lista, o bot pula a fila automaticamente (sem clicar Entrar). Funciona apenas para filas que mostram nomes — filas que só exibem IDs são ignoradas.
-        </p>
-      </Section>
-
-      <Section title="Rate limit por org (cliques)">
-        <div className="flex items-center gap-3">
-          <input
-            className="input w-24"
-            type="number"
-            min={0}
-            step={1}
-            placeholder="10"
-            value={clicksPerOrg}
-            onChange={(e) => setClicksPerOrg(Math.max(0, Number(e.target.value)))}
-          />
-          <span className="text-slate-400 text-sm">
-            {clicksPerOrg === 0 ? "Sem limite" : `${clicksPerOrg} cliques → próxima org`}
-          </span>
-        </div>
-        <p className="text-xs text-slate-500 mt-2">
-          Após esse número de entradas em uma org, o bot avança automaticamente para a próxima — independente de quantas filas entrou. Cole <b className="text-white/50">0</b> para desativar.
         </p>
       </Section>
 
