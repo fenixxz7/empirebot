@@ -14,6 +14,17 @@ interface Summary {
   by_mode: { mode: string; n: number }[];
 }
 
+interface TimePoint {
+  label: string;
+  entradas: number;
+  partidas: number;
+}
+
+interface Timeseries {
+  granularity: "hour" | "day";
+  points: TimePoint[];
+}
+
 const PERIODS: { value: Period; label: string }[] = [
   { value: "today", label: "Hoje" },
   { value: "week", label: "7 dias" },
@@ -28,11 +39,138 @@ function medal(i: number) {
   return `#${i + 1}`;
 }
 
+function BarChart({ points, height = 160 }: { points: TimePoint[]; height?: number }) {
+  if (points.length === 0) {
+    return (
+      <div className="flex items-center justify-center text-white/20 text-sm" style={{ height }}>
+        Sem dados para o período
+      </div>
+    );
+  }
+
+  const maxEntradas = Math.max(...points.map((p) => p.entradas), 1);
+  const maxPartidas = Math.max(...points.map((p) => p.partidas), 1);
+  const maxVal = Math.max(maxEntradas, maxPartidas, 1);
+
+  const barW = Math.max(6, Math.min(28, Math.floor(560 / points.length) - 4));
+  const gap = Math.max(2, Math.floor(560 / points.length) - barW);
+  const totalW = points.length * (barW + gap) - gap;
+  const chartH = height - 28;
+
+  return (
+    <div className="overflow-x-auto">
+      <div style={{ minWidth: totalW + 32 }}>
+        <svg width={totalW + 32} height={height} className="block">
+          {/* Gridlines */}
+          {[0.25, 0.5, 0.75, 1].map((f) => (
+            <line
+              key={f}
+              x1={16}
+              y1={chartH - f * chartH}
+              x2={totalW + 16}
+              y2={chartH - f * chartH}
+              stroke="rgba(255,255,255,0.06)"
+              strokeWidth={1}
+            />
+          ))}
+
+          {points.map((p, i) => {
+            const x = 16 + i * (barW + gap);
+            const hE = Math.max(2, (p.entradas / maxVal) * chartH);
+            const hP = Math.max(p.partidas > 0 ? 2 : 0, (p.partidas / maxVal) * chartH);
+            const bW2 = barW >= 12 ? Math.floor(barW / 2) - 1 : barW;
+
+            return (
+              <g key={i}>
+                {barW >= 12 ? (
+                  <>
+                    {/* Entradas bar (left half) */}
+                    <rect
+                      x={x}
+                      y={chartH - hE}
+                      width={bW2}
+                      height={hE}
+                      rx={2}
+                      fill="rgba(34,211,238,0.75)"
+                    />
+                    {/* Partidas bar (right half) */}
+                    {p.partidas > 0 && (
+                      <rect
+                        x={x + bW2 + 1}
+                        y={chartH - hP}
+                        width={bW2}
+                        height={hP}
+                        rx={2}
+                        fill="rgba(244,114,182,0.75)"
+                      />
+                    )}
+                  </>
+                ) : (
+                  /* narrow: single bar, entradas only */
+                  <rect
+                    x={x}
+                    y={chartH - hE}
+                    width={barW}
+                    height={hE}
+                    rx={1}
+                    fill="rgba(34,211,238,0.75)"
+                  />
+                )}
+
+                {/* Label — every Nth to avoid overlap */}
+                {(points.length <= 12 || i % Math.ceil(points.length / 12) === 0) && (
+                  <text
+                    x={x + barW / 2}
+                    y={chartH + 14}
+                    textAnchor="middle"
+                    fontSize={9}
+                    fill="rgba(255,255,255,0.3)"
+                    fontFamily="monospace"
+                  >
+                    {p.label}
+                  </text>
+                )}
+
+                {/* Value on top (only if bar wide enough) */}
+                {barW >= 20 && p.entradas > 0 && (
+                  <text
+                    x={x + bW2 / 2}
+                    y={chartH - hE - 3}
+                    textAnchor="middle"
+                    fontSize={8}
+                    fill="rgba(34,211,238,0.8)"
+                    fontFamily="monospace"
+                  >
+                    {p.entradas}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+
+        {/* Legend */}
+        <div className="flex gap-4 mt-1 px-4">
+          <div className="flex items-center gap-1.5 text-xs text-white/40">
+            <span className="inline-block w-3 h-2 rounded-sm bg-cyan-400/75" />
+            Entradas
+          </div>
+          <div className="flex items-center gap-1.5 text-xs text-white/40">
+            <span className="inline-block w-3 h-2 rounded-sm bg-pink-400/75" />
+            Partidas
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Stats() {
-  const [period, setPeriod] = useState<Period>("week");
+  const [period, setPeriod] = useState<Period>("today");
   const [sortBy, setSortBy] = useState<"entradas" | "partidas">("entradas");
   const [orgs, setOrgs] = useState<OrgStat[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [timeseries, setTimeseries] = useState<Timeseries | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [resetting, setResetting] = useState(false);
@@ -41,12 +179,15 @@ export default function Stats() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [orgRes, sumRes] = await Promise.all([
+      const tsParam = period === "all" ? "week" : period;
+      const [orgRes, sumRes, tsRes] = await Promise.all([
         fetch(`/api/stats/orgs?period=${period}`),
         fetch(`/api/stats/summary?period=${period}`),
+        fetch(`/api/stats/timeseries?period=${tsParam}`),
       ]);
       if (orgRes.ok) setOrgs(await orgRes.json());
       if (sumRes.ok) setSummary(await sumRes.json());
+      if (tsRes.ok) setTimeseries(await tsRes.json());
       setLastUpdated(new Date());
     } finally {
       setLoading(false);
@@ -72,6 +213,9 @@ export default function Stats() {
 
   const sorted = [...orgs].sort((a, b) => b[sortBy] - a[sortBy]);
   const maxVal = sorted[0]?.[sortBy] ?? 1;
+
+  const totalEntradas = timeseries?.points.reduce((s, p) => s + p.entradas, 0) ?? 0;
+  const peakPoint = timeseries?.points.reduce((best, p) => (p.entradas > (best?.entradas ?? 0) ? p : best), null as TimePoint | null);
 
   return (
     <div className="min-h-screen bg-[#0a0a0f] text-white font-sans">
@@ -119,7 +263,7 @@ export default function Stats() {
       </div>
 
       <div className="max-w-5xl mx-auto px-6 py-8 space-y-6">
-        {/* Controls */}
+        {/* Period controls */}
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex rounded-xl border border-white/10 overflow-hidden">
             {PERIODS.map((p) => (
@@ -190,17 +334,52 @@ export default function Stats() {
           </div>
         )}
 
+        {/* Chart */}
+        {period !== "all" && (
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
+            <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+              <div>
+                <div className="text-sm font-semibold text-white/80">
+                  {period === "today" ? "Entradas por hora (últimas 24h)" : period === "week" ? "Entradas por dia (7 dias)" : "Entradas por dia (30 dias)"}
+                </div>
+                {timeseries && timeseries.points.length > 0 && (
+                  <div className="text-xs text-white/30 mt-0.5">
+                    {totalEntradas.toLocaleString("pt-BR")} entradas no período
+                    {peakPoint && ` · pico ${peakPoint.entradas} às ${peakPoint.label}`}
+                  </div>
+                )}
+              </div>
+              {lastUpdated && (
+                <div className="text-xs text-white/20">
+                  {lastUpdated.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                </div>
+              )}
+            </div>
+            {loading && !timeseries ? (
+              <div className="flex items-center justify-center text-white/20 text-sm" style={{ height: 160 }}>
+                Carregando…
+              </div>
+            ) : (
+              <BarChart points={timeseries?.points ?? []} height={160} />
+            )}
+          </div>
+        )}
+
         {/* Mode breakdown */}
         {summary && summary.by_mode.length > 0 && (
           <div className="bg-white/5 border border-white/10 rounded-2xl p-4">
             <div className="text-xs text-white/40 uppercase tracking-wider mb-3">Entradas por modo</div>
             <div className="flex flex-wrap gap-2">
-              {summary.by_mode.map((m) => (
-                <div key={m.mode} className="flex items-center gap-2 bg-white/5 rounded-xl px-3 py-1.5">
-                  <span className="text-xs font-mono text-white/60">{m.mode}</span>
-                  <span className="text-sm font-bold text-white">{m.n.toLocaleString("pt-BR")}</span>
-                </div>
-              ))}
+              {summary.by_mode.map((m) => {
+                const pct = summary.entradas > 0 ? ((m.n / summary.entradas) * 100).toFixed(0) : "0";
+                return (
+                  <div key={m.mode} className="flex items-center gap-2 bg-white/5 rounded-xl px-3 py-1.5">
+                    <span className="text-xs font-mono text-white/60">{m.mode}</span>
+                    <span className="text-sm font-bold text-white">{m.n.toLocaleString("pt-BR")}</span>
+                    <span className="text-xs text-white/30">{pct}%</span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

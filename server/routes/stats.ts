@@ -72,6 +72,78 @@ statsRouter.get("/orgs", async (req, res) => {
   }
 });
 
+statsRouter.get("/timeseries", async (req, res) => {
+  try {
+    const period = String(req.query.period ?? "today");
+    const instanceId = req.query.instance_id ? Number(req.query.instance_id) : null;
+    const instanceFilter = instanceId ? `AND instance_id = ${instanceId}` : "";
+
+    if (period === "today") {
+      // Entradas por hora nas últimas 24h
+      const rows = await query<{ hour: string; entradas: string; partidas: string }>(
+        `SELECT
+           date_trunc('hour', joined_at AT TIME ZONE 'America/Sao_Paulo') AS hour,
+           COUNT(*)::text AS entradas
+         FROM queue_joins
+         WHERE joined_at >= NOW() - INTERVAL '24 hours' ${instanceFilter}
+         GROUP BY 1
+         ORDER BY 1 ASC`,
+        [],
+      );
+      const matchRows = await query<{ hour: string; partidas: string }>(
+        `SELECT
+           date_trunc('hour', detected_at AT TIME ZONE 'America/Sao_Paulo') AS hour,
+           COUNT(*)::text AS partidas
+         FROM matches
+         WHERE msg_sent = TRUE AND detected_at >= NOW() - INTERVAL '24 hours' ${instanceFilter}
+         GROUP BY 1 ORDER BY 1 ASC`,
+        [],
+      );
+      const matchMap = new Map(matchRows.map((r) => [r.hour, Number(r.partidas)]));
+      res.json({
+        granularity: "hour",
+        points: rows.map((r) => ({
+          label: new Date(r.hour).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" }),
+          entradas: Number(r.entradas),
+          partidas: matchMap.get(r.hour) ?? 0,
+        })),
+      });
+    } else {
+      // Entradas por dia
+      const days = period === "month" ? 30 : 7;
+      const rows = await query<{ day: string; entradas: string }>(
+        `SELECT
+           date_trunc('day', joined_at AT TIME ZONE 'America/Sao_Paulo') AS day,
+           COUNT(*)::text AS entradas
+         FROM queue_joins
+         WHERE joined_at >= NOW() - INTERVAL '${days} days' ${instanceFilter}
+         GROUP BY 1 ORDER BY 1 ASC`,
+        [],
+      );
+      const matchRows = await query<{ day: string; partidas: string }>(
+        `SELECT
+           date_trunc('day', detected_at AT TIME ZONE 'America/Sao_Paulo') AS day,
+           COUNT(*)::text AS partidas
+         FROM matches
+         WHERE msg_sent = TRUE AND detected_at >= NOW() - INTERVAL '${days} days' ${instanceFilter}
+         GROUP BY 1 ORDER BY 1 ASC`,
+        [],
+      );
+      const matchMap = new Map(matchRows.map((r) => [r.day, Number(r.partidas)]));
+      res.json({
+        granularity: "day",
+        points: rows.map((r) => ({
+          label: new Date(r.day).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", timeZone: "America/Sao_Paulo" }),
+          entradas: Number(r.entradas),
+          partidas: matchMap.get(r.day) ?? 0,
+        })),
+      });
+    }
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 statsRouter.delete("/reset", async (req, res) => {
   try {
     const instanceId = req.query.instance_id ? Number(req.query.instance_id) : null;

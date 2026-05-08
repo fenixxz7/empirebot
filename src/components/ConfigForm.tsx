@@ -717,7 +717,7 @@ export function ConfigForm({
               </div>
             </div>
             <div>
-              <p className="mb-1">Pausa após lote de 14 (s)</p>
+              <p className="mb-1">Pausa após lote de 24 (s)</p>
               <div className="flex gap-2 items-center">
                 <input type="text" inputMode="decimal" className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
                   defaultValue={msToS(timing.pauseMin)} key={`pauseMin-${timingPreset}`}

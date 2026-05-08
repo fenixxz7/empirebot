@@ -66,10 +66,10 @@ const PLAYER_CACHE_403_MS = 10 * 60_000;
 const MAX_FRESH_FETCH_PER_TICK = 6;
 import { ACTIVE_QUEUE_TTL_MS } from "../lib/timings.js";
 
-// === RATE WINDOW (14 filas / minuto, depois pausa) ===
+// === RATE WINDOW (24 filas / minuto, depois pausa) ===
 const RATE_WINDOW_MS = 60_000;             // janela de 60s
-const RATE_MAX_WITH_PLAYERS = 8;           // até 8 filas com players
-const RATE_MAX_WITHOUT_PLAYERS = 6;        // até 6 filas vazias
+const RATE_MAX_WITH_PLAYERS = 15;          // até 15 filas com players
+const RATE_MAX_WITHOUT_PLAYERS = 9;        // até 9 filas vazias
 // Pausa e cooldown agora são carregados da DB (timing_*_ms em instance_configs)
 
 // Backoff extra após rate limit (429)
@@ -274,7 +274,7 @@ export class QueueRunner {
         this.instanceId,
         "INFO",
         "engine",
-        `Lote de 14 entradas (${wp} com players + ${np} vazias) — pausando ${Math.round(pause / 1000)}s.`,
+        `Lote de 24 entradas (${wp} com players + ${np} vazias) — pausando ${Math.round(pause / 1000)}s.`,
       );
       return;
     }
@@ -482,9 +482,12 @@ export class QueueRunner {
         }
       }
 
-      // Se a org está bloqueada pra vazia e não tem nenhum candidato com player,
-      // pula pra próxima org (não usa overflow nessa org).
-      if (!pick && emptyBlocked) {
+      // Se a org está bloqueada pra vazia mas existem candidatos com player,
+      // pula (não desperdiça slots com vazia quando tem com-player disponível).
+      // MAS se NÃO há nenhum candidato com player nesta org, libera entrada em
+      // vazia mesmo bloqueada — melhor usar o slot do que deixar a org parada.
+      const hasAnyWithPlayers = ranked.candidates.some((r) => r.players > 0);
+      if (!pick && emptyBlocked && hasAnyWithPlayers) {
         this.orgCursor = (this.orgCursor + 1) % totalOrgs;
         attempts++;
         continue;
@@ -632,7 +635,7 @@ export class QueueRunner {
           this.instanceId,
           "INFO",
           "engine",
-          `Lote de 14 entradas (${wp} com players + ${np} vazias) — pausando ${Math.round(pause / 1000)}s.`,
+          `Lote de 24 entradas (${wp} com players + ${np} vazias) — pausando ${Math.round(pause / 1000)}s.`,
         );
         return;
       }
