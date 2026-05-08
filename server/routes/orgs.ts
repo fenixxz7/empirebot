@@ -40,6 +40,7 @@ orgsRouter.get("/", asyncHandler(async (req, res) => {
               COALESCE(c.cnt, 0)::int AS channels_count,
               c.last_scanned_at
        FROM orgs o
+       INNER JOIN instance_orgs io ON io.org_id = o.id AND io.instance_id = $1
        LEFT JOIN (
          SELECT org_id,
                 COUNT(*)::int AS cnt,
@@ -47,7 +48,6 @@ orgsRouter.get("/", asyncHandler(async (req, res) => {
          FROM org_channels
          GROUP BY org_id
        ) c ON c.org_id = o.id
-       WHERE o.instance_id = $1
        ORDER BY o.name ASC`,
       [instanceId],
     );

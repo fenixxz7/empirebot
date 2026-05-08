@@ -60,6 +60,7 @@ const ImportConfigBody = z.object({
       org_id: z.coerce.number().int(),
       org_name: z.string().optional(),
       guild_id: z.string().nullable().optional(),
+      priority: z.coerce.number().int().optional(),
     }))
     .optional()
     .catch(undefined),
@@ -351,8 +352,8 @@ configRouter.get("/:instanceId/export", asyncHandler(async (req, res) => {
     [id],
   );
 
-  const orgs = await query<{ org_id: number; org_name: string; guild_id: string | null }>(
-    `SELECT io.org_id, o.name AS org_name, o.guild_id
+  const orgs = await query<{ org_id: number; org_name: string; guild_id: string | null; priority: number }>(
+    `SELECT io.org_id, o.name AS org_name, o.guild_id, o.priority
      FROM instance_orgs io JOIN orgs o ON o.id = io.org_id
      WHERE io.instance_id = $1`,
     [id],
@@ -401,12 +402,12 @@ configRouter.post("/:instanceId/import", validate({ body: ImportConfigBody }), a
       const guildId = o.guild_id?.trim() || null;
       await query(
         `INSERT INTO orgs (id, name, guild_id, category, max_queues, enabled, priority, instance_id)
-         VALUES ($1, $2, $3, 'Mobile', 5, TRUE, 0, $4)
+         VALUES ($1, $2, $3, 'Mobile', 5, TRUE, $4, $5)
          ON CONFLICT (id) DO UPDATE
-           SET guild_id    = EXCLUDED.guild_id,
-               name        = EXCLUDED.name,
-               instance_id = EXCLUDED.instance_id`,
-        [o.org_id, name, guildId, id],
+           SET guild_id = EXCLUDED.guild_id,
+               name     = EXCLUDED.name,
+               priority = EXCLUDED.priority`,
+        [o.org_id, name, guildId, o.priority ?? 0, id],
       );
     }
     // Garante que a sequência não conflite com IDs inseridos explicitamente
