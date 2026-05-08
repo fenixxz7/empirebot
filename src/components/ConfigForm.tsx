@@ -135,6 +135,7 @@ export function ConfigForm({
   const [busyOrgs, setBusyOrgs] = useState(false);
   const [newOrgName, setNewOrgName] = useState("");
   const [newOrgGuild, setNewOrgGuild] = useState("");
+  const [newOrgPriority, setNewOrgPriority] = useState(1);
   const importRef = useRef<HTMLInputElement>(null);
 
   async function reload() {
@@ -209,6 +210,7 @@ export function ConfigForm({
     setDeleteSet(new Set());
     setNewOrgName("");
     setNewOrgGuild("");
+    setNewOrgPriority(1);
   }
 
   function toggleDelete(id: number) {
@@ -262,6 +264,7 @@ export function ConfigForm({
           name,
           category: "Mobile",
           guild_id: newOrgGuild.trim() || null,
+          priority: newOrgPriority,
           instance_id: instanceId,
         }),
       });
@@ -819,21 +822,35 @@ export function ConfigForm({
 
         {orgsMode === "add" && (
           <div className="mt-3 rounded-xl border border-accent/30 bg-accent/5 p-3 space-y-2">
-            <div className="grid sm:grid-cols-2 gap-2">
+            <div className="flex gap-2">
               <input
-                className="input"
+                className="input flex-1"
                 placeholder="Nome da org (ex: Surf)"
                 value={newOrgName}
                 onChange={(e) => setNewOrgName(e.target.value)}
                 autoFocus
               />
               <input
-                className="input font-mono text-xs"
+                className="input flex-1 font-mono text-xs"
                 placeholder="guild_id (opcional)"
                 value={newOrgGuild}
                 onChange={(e) => setNewOrgGuild(e.target.value)}
               />
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[10px] text-slate-500 px-0.5">Prioridade</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={99}
+                  className="input text-center w-16"
+                  value={newOrgPriority}
+                  onChange={(e) => setNewOrgPriority(Number(e.target.value))}
+                />
+              </div>
             </div>
+            <p className="text-xs text-slate-600">
+              Maior prioridade = visitada primeiro. Orgs com o mesmo valor são tratadas igualmente.
+            </p>
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
