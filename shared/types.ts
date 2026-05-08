@@ -63,6 +63,7 @@ export interface InstanceConfig {
   timing_pause_max_ms: number;
   timing_click_min_ms: number;
   timing_click_max_ms: number;
+  clicks_per_org: number;
 }
 
 export interface Token {

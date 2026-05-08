@@ -118,6 +118,7 @@ export function ConfigForm({
   const [imageUrl, setImageUrl] = useState("");
   const [blockedNames, setBlockedNames] = useState("");
   const [maxValor, setMaxValor] = useState(0);
+  const [clicksPerOrg, setClicksPerOrg] = useState(10);
   const [tokenStrategy, setTokenStrategy] = useState("single");
   const [tokenStrategyN, setTokenStrategyN] = useState(5);
   const [selectedOrgIds, setSelectedOrgIds] = useState<Set<number>>(new Set());
@@ -158,6 +159,7 @@ export function ConfigForm({
       setImageUrl(cfg.config.image_url ?? "");
       setBlockedNames(cfg.config.blocked_names ?? "");
       setMaxValor(Number(cfg.config.max_valor ?? 0));
+      setClicksPerOrg(Number(cfg.config.clicks_per_org ?? 10));
       setTokenStrategy(cfg.config.token_strategy ?? "single");
       setTokenStrategyN(Number(cfg.config.token_strategy_n ?? 5));
       const tv: TimingValues = {
@@ -398,6 +400,7 @@ export function ConfigForm({
           image_url: imageUrl.trim() || null,
           blocked_names: blockedNames,
           max_valor: maxValor,
+          clicks_per_org: clicksPerOrg,
           token_strategy: tokenStrategy,
           token_strategy_n: tokenStrategyN,
           selected_token_ids: Array.from(selectedTokenIds),
@@ -985,6 +988,26 @@ export function ConfigForm({
         />
         <p className="text-xs text-slate-500 mt-2">
           Um nome por linha. Quando a fila exibir o nome de um jogador que esteja nessa lista, o bot pula a fila automaticamente (sem clicar Entrar). Funciona apenas para filas que mostram nomes — filas que só exibem IDs são ignoradas.
+        </p>
+      </Section>
+
+      <Section title="Rate limit por org (cliques)">
+        <div className="flex items-center gap-3">
+          <input
+            className="input w-24"
+            type="number"
+            min={0}
+            step={1}
+            placeholder="10"
+            value={clicksPerOrg}
+            onChange={(e) => setClicksPerOrg(Math.max(0, Number(e.target.value)))}
+          />
+          <span className="text-slate-400 text-sm">
+            {clicksPerOrg === 0 ? "Sem limite" : `${clicksPerOrg} cliques → próxima org`}
+          </span>
+        </div>
+        <p className="text-xs text-slate-500 mt-2">
+          Após esse número de entradas em uma org, o bot avança automaticamente para a próxima — independente de quantas filas entrou. Cole <b className="text-white/50">0</b> para desativar.
         </p>
       </Section>
 

@@ -41,6 +41,7 @@ const SaveConfigBody = z.object({
   timing_pause_max_ms: z.coerce.number().int().min(1000).optional().default(35000),
   timing_click_min_ms: z.coerce.number().int().min(100).optional().default(1000),
   timing_click_max_ms: z.coerce.number().int().min(100).optional().default(2000),
+  clicks_per_org: z.coerce.number().int().min(0).optional().default(10),
 });
 
 // Body do POST /:instanceId/import — formato JSON exportado.
@@ -84,13 +85,15 @@ configRouter.get("/:instanceId", asyncHandler(async (req, res) => {
     timing_intra_min_ms: number; timing_intra_max_ms: number;
     timing_pause_min_ms: number; timing_pause_max_ms: number;
     timing_click_min_ms: number; timing_click_max_ms: number;
+    clicks_per_org: number;
   }>(
     `SELECT category, allowed_categories, delay_seconds, rotation_minutes,
             allowed_modes, message_main, message_per_org, image_url, blocked_names,
             max_valor, token_strategy, token_strategy_n,
             timing_intra_min_ms, timing_intra_max_ms,
             timing_pause_min_ms, timing_pause_max_ms,
-            timing_click_min_ms, timing_click_max_ms
+            timing_click_min_ms, timing_click_max_ms,
+            clicks_per_org
      FROM instance_configs WHERE instance_id = $1`,
     [id]
   );
@@ -157,6 +160,7 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
     timing_intra_min_ms, timing_intra_max_ms,
     timing_pause_min_ms, timing_pause_max_ms,
     timing_click_min_ms, timing_click_max_ms,
+    clicks_per_org,
   } = req.body;
 
   // allowed_categories pode chegar como array (UI) ou string CSV (terminal/api)
@@ -195,6 +199,7 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
          timing_intra_min_ms = $14, timing_intra_max_ms = $15,
          timing_pause_min_ms = $16, timing_pause_max_ms = $17,
          timing_click_min_ms = $18, timing_click_max_ms = $19,
+         clicks_per_org = $20,
          updated_at = NOW()
      WHERE instance_id = $1`,
     [id, primaryCategory, allowedCategoriesStr,
@@ -204,7 +209,8 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
      Number(max_valor ?? 0), safeStrategy, Math.max(1, Number(token_strategy_n ?? 5)),
      timing_intra_min_ms ?? 4000, timing_intra_max_ms ?? 7000,
      timing_pause_min_ms ?? 25000, timing_pause_max_ms ?? 35000,
-     timing_click_min_ms ?? 1000, timing_click_max_ms ?? 2000]
+     timing_click_min_ms ?? 1000, timing_click_max_ms ?? 2000,
+     Math.max(0, Number(clicks_per_org ?? 10))]
   );
 
   // Tokens: novo sistema — seleção por pool ID

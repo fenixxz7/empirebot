@@ -340,6 +340,11 @@ export async function initDatabase(): Promise<void> {
   // Remove constraint UNIQUE global de guild_id (permite mesmo guild em instâncias distintas)
   await pool.query(`ALTER TABLE orgs DROP CONSTRAINT IF EXISTS orgs_guild_id_key`);
 
+  // Rate limit por org: após N cliques, avança para próxima org
+  await pool.query(
+    `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS clicks_per_org INTEGER NOT NULL DEFAULT 10`,
+  );
+
   // Garante que ninguém ficou com fila "fantasma" entre boots
   await pool.query(`DELETE FROM active_queues`);
 

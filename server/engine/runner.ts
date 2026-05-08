@@ -53,6 +53,7 @@ interface CycleConfig {
   timingPauseMaxMs: number;
   timingClickMinMs: number;
   timingClickMaxMs: number;
+  clicksPerOrg: number;
 }
 
 const STARTUP_GRACE_MS = 5000;
@@ -100,6 +101,8 @@ export class QueueRunner {
   // token_id → Set<org_id>: orgs inválidas por token (ban / acesso negado)
   private tokenOrgBlacklist = new Map<number, Set<number>>();
   private blacklistLoaded = false;
+  // Contador de cliques por org (rate limit por org)
+  private orgClickCounts = new Map<number, number>();
 
   constructor(
     private readonly instanceId: number,
@@ -113,6 +116,7 @@ export class QueueRunner {
     this.joinsOnCurrentToken = 0;
     this.tokenOrgBlacklist.clear();
     this.blacklistLoaded = false;
+    this.orgClickCounts.clear();
     this.timer = setTimeout(() => this.tick(), STARTUP_GRACE_MS);
   }
 
@@ -199,12 +203,14 @@ export class QueueRunner {
       timing_pause_max_ms: number;
       timing_click_min_ms: number;
       timing_click_max_ms: number;
+      clicks_per_org: number;
     }>(
       `SELECT delay_seconds, allowed_modes, allowed_categories, blocked_names,
               max_valor, token_strategy, token_strategy_n,
               timing_intra_min_ms, timing_intra_max_ms,
               timing_pause_min_ms, timing_pause_max_ms,
-              timing_click_min_ms, timing_click_max_ms
+              timing_click_min_ms, timing_click_max_ms,
+              clicks_per_org
        FROM instance_configs
        WHERE instance_id = $1`,
       [this.instanceId],
@@ -233,6 +239,7 @@ export class QueueRunner {
       timingPauseMaxMs: r?.timing_pause_max_ms ?? 35000,
       timingClickMinMs: r?.timing_click_min_ms ?? 1000,
       timingClickMaxMs: r?.timing_click_max_ms ?? 2000,
+      clicksPerOrg: r?.clicks_per_org ?? 10,
     };
   }
 
@@ -549,6 +556,26 @@ export class QueueRunner {
         this.joinedWithPlayers++;
       } else {
         this.joinedWithoutPlayers++;
+      }
+
+      // Rate limit por org: após N cliques na org atual, avança para próxima
+      if (cfg.clicksPerOrg > 0) {
+        const orgId = candidate.org_id;
+        const count = (this.orgClickCounts.get(orgId) ?? 0) + 1;
+        this.orgClickCounts.set(orgId, count);
+        if (count >= cfg.clicksPerOrg) {
+          this.orgClickCounts.set(orgId, 0);
+          const orgIdx = cfg.selected_org_ids.indexOf(orgId);
+          if (orgIdx >= 0) {
+            this.orgCursor = (orgIdx + 1) % totalOrgs;
+          }
+          await this.manager.log(
+            this.instanceId,
+            "INFO",
+            "engine",
+            `Rate limit por org: ${count} cliques em "${candidate.org_name}" — avançando para próxima org.`,
+          );
+        }
       }
 
       // per_n_orgs: conta entradas no token atual; ao atingir N, rotaciona
