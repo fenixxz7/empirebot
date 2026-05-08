@@ -139,6 +139,7 @@ export function ConfigForm({
   const [orgsMode, setOrgsMode] = useState<"normal" | "delete" | "add">("normal");
   const [deleteSet, setDeleteSet] = useState<Set<number>>(new Set());
   const [busyOrgs, setBusyOrgs] = useState(false);
+  const [rediscovering, setRediscovering] = useState(false);
   const [newOrgName, setNewOrgName] = useState("");
   const [newOrgGuild, setNewOrgGuild] = useState("");
   const [newOrgPriority, setNewOrgPriority] = useState(1);
@@ -253,6 +254,31 @@ export function ConfigForm({
       setFeedback(e instanceof Error ? e.message : "Erro ao apagar org");
     } finally {
       setBusyOrgs(false);
+    }
+  }
+
+  async function forceRediscover() {
+    setRediscovering(true);
+    setFeedback("Forçando redescoberta de canais…");
+    try {
+      const r = await api<{ ok: boolean; results: { ok: boolean; channels_found?: number; queues_saved?: number; error?: string }[] }>(
+        `/api/discovery/${instanceId}`,
+        { method: "POST", body: JSON.stringify({}) },
+      );
+      await reloadOrgs();
+      const totalCh = (r.results ?? []).reduce((s, x) => s + (x.channels_found ?? 0), 0);
+      const totalQ = (r.results ?? []).reduce((s, x) => s + (x.queues_saved ?? 0), 0);
+      const n = r.results?.length ?? 0;
+      if (n === 0) {
+        setFeedback("Nenhuma org com guild_id configurado para descobrir.");
+      } else {
+        setFeedback(`Redescoberta concluída: ${totalCh} canal(is) em ${n} org(s), ${totalQ} fila(s) cadastrada(s).`);
+      }
+      setTimeout(() => setFeedback(null), 6000);
+    } catch (e) {
+      setFeedback(e instanceof Error ? e.message : "Erro ao redescobrir");
+    } finally {
+      setRediscovering(false);
     }
   }
 
@@ -872,6 +898,16 @@ export function ConfigForm({
                 </button>
               )
             )}
+            <button
+              type="button"
+              onClick={forceRediscover}
+              disabled={rediscovering || orgs.length === 0}
+              title="Varre novamente todos os canais das orgs selecionadas, mesmo que já tenham sido descobertos antes"
+              className="btn-secondary text-sky-300 ring-sky-400/30 hover:ring-sky-400/60 disabled:opacity-40"
+            >
+              <RefreshIcon className={`w-4 h-4 ${rediscovering ? "animate-spin" : ""}`} />
+              {rediscovering ? "Redescubrindo…" : "Forçar redescoberta"}
+            </button>
             <span className="text-xs text-slate-500 ml-1">
               {selectedOrgIds.size > 0 ? `${selectedOrgIds.size}/${orgs.length} selecionada(s)` : "Os canais são descobertos automaticamente ao salvar."}
             </span>
@@ -1414,6 +1450,14 @@ function SpinnerIcon({ className = "" }) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden>
       <path d="M12 2a10 10 0 0 1 10 10" />
+    </svg>
+  );
+}
+function RefreshIcon({ className = "" }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M1 4v6h6M23 20v-6h-6" />
+      <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10M23 14l-4.64 4.36A9 9 0 0 1 3.51 15" />
     </svg>
   );
 }

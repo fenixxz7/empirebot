@@ -61,12 +61,25 @@ discoveryRouter.post("/:instanceId", asyncHandler(async (req, res) => {
     `Iniciando descoberta de ${orgs.length} org(s)…`,
   );
 
+  // Reseta last_discovered_at das orgs que serão varridas para forçar re-descoberta
+  // automática no próximo boot, caso os canais sejam perdidos novamente.
+  if (orgs.length > 0) {
+    await query(
+      `UPDATE orgs SET last_discovered_at = NULL WHERE id = ANY($1::int[])`,
+      [orgs.map((o) => o.id)],
+    );
+  }
+
   const results: DiscoveryResult[] = [];
   for (const o of orgs) {
     try {
       const r = await discoverOrg(token, o.id, o.guild_id!);
       results.push(r);
       if (r.ok) {
+        await query(
+          `UPDATE orgs SET last_discovered_at = NOW() WHERE id = $1`,
+          [o.id],
+        );
         await log(
           instanceId,
           "INFO",
