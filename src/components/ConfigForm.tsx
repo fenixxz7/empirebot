@@ -34,6 +34,17 @@ const TIMING_PRESETS: Record<Exclude<TimingPreset, "personalizado">, TimingValue
   agressivo:     { intraMin: 2000,  intraMax: 4000,  pauseMin: 12000, pauseMax: 20000, clickMin: 500,  clickMax: 1000 },
 };
 
+function msToS(ms: number): string {
+  const s = ms / 1000;
+  return Number.isInteger(s) ? String(s) : String(s).replace('.', ',');
+}
+
+function parseS(raw: string): number | null {
+  const n = parseFloat(raw.trim().replace(',', '.'));
+  if (isNaN(n) || n <= 0) return null;
+  return Math.round(n * 1000);
+}
+
 function detectPreset(v: TimingValues): TimingPreset {
   for (const [key, p] of Object.entries(TIMING_PRESETS) as [Exclude<TimingPreset,"personalizado">, TimingValues][]) {
     if (v.intraMin === p.intraMin && v.intraMax === p.intraMax &&
@@ -632,33 +643,39 @@ export function ConfigForm({
           </div>
           <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-slate-400">
             <div>
-              <p className="mb-1">Delay entre entradas (ms)</p>
+              <p className="mb-1">Delay entre entradas (s)</p>
               <div className="flex gap-2 items-center">
-                <input type="number" min={200} step={100} className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
-                  value={timing.intraMin} onChange={(e) => setTiming(t => ({ ...t, intraMin: Number(e.target.value) }))} />
+                <input type="text" inputMode="decimal" className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
+                  defaultValue={msToS(timing.intraMin)} key={`intraMin-${timingPreset}`}
+                  onBlur={(e) => { const v = parseS(e.target.value); if (v) setTiming(t => ({ ...t, intraMin: v })); else e.target.value = msToS(timing.intraMin); }} />
                 <span className="text-slate-500">–</span>
-                <input type="number" min={200} step={100} className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
-                  value={timing.intraMax} onChange={(e) => setTiming(t => ({ ...t, intraMax: Number(e.target.value) }))} />
+                <input type="text" inputMode="decimal" className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
+                  defaultValue={msToS(timing.intraMax)} key={`intraMax-${timingPreset}`}
+                  onBlur={(e) => { const v = parseS(e.target.value); if (v) setTiming(t => ({ ...t, intraMax: v })); else e.target.value = msToS(timing.intraMax); }} />
               </div>
             </div>
             <div>
-              <p className="mb-1">Pausa após lote de 10 (ms)</p>
+              <p className="mb-1">Pausa após lote de 10 (s)</p>
               <div className="flex gap-2 items-center">
-                <input type="number" min={1000} step={1000} className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
-                  value={timing.pauseMin} onChange={(e) => setTiming(t => ({ ...t, pauseMin: Number(e.target.value) }))} />
+                <input type="text" inputMode="decimal" className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
+                  defaultValue={msToS(timing.pauseMin)} key={`pauseMin-${timingPreset}`}
+                  onBlur={(e) => { const v = parseS(e.target.value); if (v) setTiming(t => ({ ...t, pauseMin: v })); else e.target.value = msToS(timing.pauseMin); }} />
                 <span className="text-slate-500">–</span>
-                <input type="number" min={1000} step={1000} className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
-                  value={timing.pauseMax} onChange={(e) => setTiming(t => ({ ...t, pauseMax: Number(e.target.value) }))} />
+                <input type="text" inputMode="decimal" className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
+                  defaultValue={msToS(timing.pauseMax)} key={`pauseMax-${timingPreset}`}
+                  onBlur={(e) => { const v = parseS(e.target.value); if (v) setTiming(t => ({ ...t, pauseMax: v })); else e.target.value = msToS(timing.pauseMax); }} />
               </div>
             </div>
             <div className="col-span-2">
-              <p className="mb-1">Delay antes do clique (ms)</p>
+              <p className="mb-1">Delay antes do clique (s)</p>
               <div className="flex gap-2 items-center max-w-xs">
-                <input type="number" min={100} step={100} className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
-                  value={timing.clickMin} onChange={(e) => setTiming(t => ({ ...t, clickMin: Number(e.target.value) }))} />
+                <input type="text" inputMode="decimal" className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
+                  defaultValue={msToS(timing.clickMin)} key={`clickMin-${timingPreset}`}
+                  onBlur={(e) => { const v = parseS(e.target.value); if (v) setTiming(t => ({ ...t, clickMin: v })); else e.target.value = msToS(timing.clickMin); }} />
                 <span className="text-slate-500">–</span>
-                <input type="number" min={100} step={100} className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
-                  value={timing.clickMax} onChange={(e) => setTiming(t => ({ ...t, clickMax: Number(e.target.value) }))} />
+                <input type="text" inputMode="decimal" className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
+                  defaultValue={msToS(timing.clickMax)} key={`clickMax-${timingPreset}`}
+                  onBlur={(e) => { const v = parseS(e.target.value); if (v) setTiming(t => ({ ...t, clickMax: v })); else e.target.value = msToS(timing.clickMax); }} />
               </div>
             </div>
           </div>
