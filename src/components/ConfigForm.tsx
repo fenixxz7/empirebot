@@ -898,16 +898,18 @@ export function ConfigForm({
                 </button>
               )
             )}
-            <button
-              type="button"
-              onClick={forceRediscover}
-              disabled={rediscovering || orgs.length === 0}
-              title="Varre novamente todos os canais das orgs selecionadas, mesmo que já tenham sido descobertos antes"
-              className="btn-secondary text-sky-300 ring-sky-400/30 hover:ring-sky-400/60 disabled:opacity-40"
-            >
-              <RefreshIcon className={`w-4 h-4 ${rediscovering ? "animate-spin" : ""}`} />
-              {rediscovering ? "Redescubrindo…" : "Forçar redescoberta"}
-            </button>
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={forceRediscover}
+                disabled={rediscovering || orgs.length === 0}
+                title="Varre novamente todos os canais das orgs selecionadas, mesmo que já tenham sido descobertos antes"
+                className="btn-secondary text-sky-300 ring-sky-400/30 hover:ring-sky-400/60 disabled:opacity-40"
+              >
+                <RefreshIcon className={`w-4 h-4 ${rediscovering ? "animate-spin" : ""}`} />
+                {rediscovering ? "Redescubrindo…" : "Forçar redescoberta"}
+              </button>
+            )}
             <span className="text-xs text-slate-500 ml-1">
               {selectedOrgIds.size > 0 ? `${selectedOrgIds.size}/${orgs.length} selecionada(s)` : "Os canais são descobertos automaticamente ao salvar."}
             </span>
