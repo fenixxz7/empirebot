@@ -118,10 +118,11 @@ class Manager {
 
   private async runAutoDiscovery(
     instanceId: number,
+    tokenId: number,
     token: string,
   ): Promise<void> {
     try {
-      const r = await runAutoDiscoveryForInstance(instanceId, token);
+      const r = await runAutoDiscoveryForInstance(instanceId, tokenId, token);
       if (r.length > 0) {
         const totalQ = r.reduce((acc, x) => acc + (x.queues_saved ?? 0), 0);
         const totalCh = r.reduce((acc, x) => acc + (x.channels_found ?? 0), 0);
@@ -198,7 +199,7 @@ class Manager {
         );
         if (!this.discoveryRan.has(instanceId)) {
           this.discoveryRan.add(instanceId);
-          this.runAutoDiscovery(instanceId, t.value).catch((err) =>
+          this.runAutoDiscovery(instanceId, t.id, t.value).catch((err) =>
             console.error("[autoDiscovery]", err),
           );
         }

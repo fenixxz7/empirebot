@@ -325,18 +325,19 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
   let discovery_skipped: string | null = null;
 
   if (Array.isArray(selected_org_ids) && selected_org_ids.length > 0) {
-    const tokensRows = await query<{ value: string }>(
-      `SELECT value FROM tokens
+    const tokensRows = await query<{ id: number; value: string }>(
+      `SELECT id, value FROM tokens
        WHERE instance_id = $1 AND status = 'connected'
        ORDER BY position ASC LIMIT 1`,
       [id],
     );
+    const tokenId = tokensRows[0]?.id;
     const token = tokensRows[0]?.value;
-    if (!token) {
+    if (!token || !tokenId) {
       discovery_skipped =
         "Sem token conectado — a descoberta vai rodar automaticamente quando o bot iniciar.";
     } else {
-      discovery = await runAutoDiscoveryForInstance(id, token);
+      discovery = await runAutoDiscoveryForInstance(id, tokenId, token);
     }
   }
 

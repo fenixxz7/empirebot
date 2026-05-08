@@ -787,6 +787,7 @@ export function ConfigForm({
                 await api(`/api/orgs/${o.id}`, { method: "PATCH", body: JSON.stringify({ priority: p }) });
                 await reloadOrgs();
               }}
+              onClearChannels={() => reloadOrgs()}
               expanded={o.id === openOrgId}
             />
           ))}
@@ -1091,6 +1092,7 @@ function OrgRow({
   onToggleDelete,
   onShowChannels,
   onPriorityChange,
+  onClearChannels,
   expanded,
 }: {
   org: Org;
@@ -1101,11 +1103,13 @@ function OrgRow({
   onToggleDelete: () => void;
   onShowChannels: () => void;
   onPriorityChange: (p: number) => void;
+  onClearChannels: () => void;
   expanded: boolean;
 }) {
   const [channels, setChannels] = useState<OrgChannel[] | null>(null);
   const [editingPriority, setEditingPriority] = useState(false);
   const [priorityDraft, setPriorityDraft] = useState(String(org.priority ?? 1));
+  const [clearing, setClearing] = useState(false);
 
   function savePriority() {
     const v = parseInt(priorityDraft, 10);
@@ -1184,13 +1188,42 @@ function OrgRow({
         )}
         <span className="ml-auto flex items-center gap-2">
           {(org.channels_count ?? 0) > 0 && (
-            <button
-              type="button"
-              onClick={onShowChannels}
-              className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-400/10 text-emerald-300 ring-1 ring-emerald-400/30 hover:bg-emerald-400/20"
-            >
-              {org.channels_count} {(org.channels_count ?? 0) === 1 ? "fila" : "filas"}
-            </button>
+            <span className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={onShowChannels}
+                className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-400/10 text-emerald-300 ring-1 ring-emerald-400/30 hover:bg-emerald-400/20"
+              >
+                {org.channels_count} {(org.channels_count ?? 0) === 1 ? "fila" : "filas"}
+              </button>
+              <button
+                type="button"
+                title="Excluir filas desta org (a próxima inicialização do bot irá re-varrer)"
+                disabled={clearing}
+                onClick={async () => {
+                  if (!confirm(`Excluir todas as ${org.channels_count} filas de "${org.name}"? O bot vai re-varrer no próximo start.`)) return;
+                  setClearing(true);
+                  try {
+                    await api(`/api/orgs/${org.id}/channels`, { method: "DELETE" });
+                    setChannels(null);
+                    onClearChannels();
+                  } finally {
+                    setClearing(false);
+                  }
+                }}
+                className="w-5 h-5 flex items-center justify-center rounded text-rose-400/70 hover:text-rose-300 hover:bg-rose-400/10 disabled:opacity-40 transition-colors"
+              >
+                {clearing ? (
+                  <svg viewBox="0 0 24 24" className="w-3 h-3 animate-spin" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" className="w-3 h-3" fill="currentColor">
+                    <path d="M9 3h6l1 1h4v2H4V4h4L9 3zM5 7h14l-1 13H6L5 7zm4 2v9h1V9H9zm4 0v9h1V9h-1z" />
+                  </svg>
+                )}
+              </button>
+            </span>
           )}
           <span className="text-[11px] text-slate-500">limite {org.max_queues}</span>
         </span>

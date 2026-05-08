@@ -252,8 +252,20 @@ function isPermanentAccessError(error: string | undefined): boolean {
   }
 }
 
+/**
+ * Roda a descoberta automática para todas as orgs selecionadas de uma instância
+ * que tenham guild_id mas ainda não tenham sido varridas (last_discovered_at IS NULL)
+ * e não estejam na blacklist do token atual.
+ *
+ * Ao término:
+ *  - Sucesso → seta last_discovered_at = NOW() na org
+ *  - Erro 50001 → insere na token_org_blacklist (per-token), não seta last_discovered_at
+ *    para que outro token possa tentar no próximo start
+ *  - Outros erros → loga, não seta last_discovered_at (retry no próximo start)
+ */
 export async function runAutoDiscoveryForInstance(
   instanceId: number,
+  tokenId: number,
   token: string,
 ): Promise<DiscoveryResult[]> {
   const toDiscover = await query<{
@@ -264,15 +276,14 @@ export async function runAutoDiscoveryForInstance(
     `SELECT o.id, o.name, o.guild_id
      FROM orgs o
      JOIN instance_orgs io ON io.org_id = o.id AND io.instance_id = $1
-     LEFT JOIN (
-       SELECT org_id, COUNT(*)::int AS cnt
-       FROM org_channels GROUP BY org_id
-     ) c ON c.org_id = o.id
      WHERE o.guild_id IS NOT NULL
        AND o.guild_id <> ''
-       AND COALESCE(c.cnt, 0) = 0
-       AND NOT COALESCE(o.discovery_blocked, FALSE)`,
-    [instanceId],
+       AND o.last_discovered_at IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM token_org_blacklist b
+         WHERE b.org_id = o.id AND b.token_id = $2
+       )`,
+    [instanceId, tokenId],
   );
 
   const results: DiscoveryResult[] = [];
@@ -282,28 +293,35 @@ export async function runAutoDiscoveryForInstance(
       results.push(r);
 
       if (!r.ok && isPermanentAccessError(r.error)) {
-        // Marca a org como permanentemente inacessível — não tenta mais automaticamente
+        // Erro permanente de acesso: entra na blacklist por token
         await query(
-          `UPDATE orgs SET discovery_blocked = TRUE WHERE id = $1`,
-          [o.id],
+          `INSERT INTO token_org_blacklist (token_id, org_id, reason)
+           VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+          [tokenId, o.id, "discovery: sem acesso (50001)"],
         );
         await query(
           `INSERT INTO logs (instance_id, level, source, message)
            VALUES ($1, 'WARN', 'discovery', $2)`,
-          [instanceId, `${o.name}: sem acesso (50001) — discovery bloqueada permanentemente`],
+          [instanceId, `${o.name}: sem acesso (50001) — adicionada à blacklist do token atual`],
         );
-      } else {
+        // NÃO seta last_discovered_at → permite retry com outro token no próximo start
+      } else if (r.ok) {
+        // Sucesso: marca a org como varrida
+        await query(
+          `UPDATE orgs SET last_discovered_at = NOW() WHERE id = $1`,
+          [o.id],
+        );
         await query(
           `INSERT INTO logs (instance_id, level, source, message)
-           VALUES ($1, $2, $3, $4)`,
-          [
-            instanceId,
-            r.ok ? "INFO" : "ERROR",
-            "discovery",
-            r.ok
-              ? `${o.name}: ${r.channels_found} ${pluralCanal(r.channels_found)} escaneado(s), ${r.queues_saved} fila(s) cadastradas`
-              : `${o.name}: falha (${r.error ?? "erro"})`,
-          ],
+           VALUES ($1, 'INFO', 'discovery', $2)`,
+          [instanceId, `${o.name}: ${r.channels_found} ${pluralCanal(r.channels_found)} escaneado(s), ${r.queues_saved} fila(s) cadastradas`],
+        );
+      } else {
+        // Erro transiente: loga mas não marca — será tentado no próximo start
+        await query(
+          `INSERT INTO logs (instance_id, level, source, message)
+           VALUES ($1, 'ERROR', 'discovery', $2)`,
+          [instanceId, `${o.name}: falha (${r.error ?? "erro"}) — tentará novamente no próximo start`],
         );
       }
     } catch (err) {

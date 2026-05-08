@@ -203,6 +203,10 @@ export async function initDatabase(): Promise<void> {
   await pool.query(
     `ALTER TABLE orgs ADD COLUMN IF NOT EXISTS discovery_blocked BOOLEAN NOT NULL DEFAULT FALSE`,
   );
+  // Timestamp da última varredura bem-sucedida de canais (NULL = nunca varrida ou explicitamente limpa)
+  await pool.query(
+    `ALTER TABLE orgs ADD COLUMN IF NOT EXISTS last_discovered_at TIMESTAMPTZ`,
+  );
 
   // Orgs inválidas por token — ban, sem acesso, timeout de guild
   await pool.query(`

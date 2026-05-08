@@ -142,3 +142,10 @@ orgsRouter.get("/:id/channels", asyncHandler(async (req, res) => {
   );
   res.json(rows);
 }));
+
+orgsRouter.delete("/:id/channels", asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  await query(`DELETE FROM org_channels WHERE org_id = $1`, [id]);
+  await query(`UPDATE orgs SET last_discovered_at = NULL WHERE id = $1`, [id]);
+  res.json({ ok: true });
+}));
