@@ -32,12 +32,14 @@ export function Header({ instance, isAdmin = false }: { instance: InstanceState 
                   </a>
                 </>
               )}
-              <a
-                href="/stats"
-                className="text-[11px] uppercase tracking-widest text-violet-400 hover:text-violet-300 transition-colors border border-violet-500/30 hover:border-violet-400/50 rounded-lg px-3 py-1"
-              >
-                📊 Statistics
-              </a>
+              {isAdmin && (
+                <a
+                  href="/stats"
+                  className="text-[11px] uppercase tracking-widest text-violet-400 hover:text-violet-300 transition-colors border border-violet-500/30 hover:border-violet-400/50 rounded-lg px-3 py-1"
+                >
+                  📊 Statistics
+                </a>
+              )}
             </div>
           </div>
           <div className="mt-2 flex flex-wrap gap-2">

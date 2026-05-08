@@ -148,6 +148,7 @@ export function App({ isAdmin = false }: { isAdmin?: boolean }) {
             instanceId={instance.id}
             running={instance.running}
             onSaved={reload}
+            isAdmin={isAdmin}
           />
         )}
         {instance && <BlacklistPanel instanceId={instance.id} />}

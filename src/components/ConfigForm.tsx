@@ -96,10 +96,12 @@ export function ConfigForm({
   instanceId,
   running,
   onSaved,
+  isAdmin = false,
 }: {
   instanceId: number;
   running: boolean;
   onSaved: () => void;
+  isAdmin?: boolean;
 }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -129,6 +131,8 @@ export function ConfigForm({
   const [busyTokens, setBusyTokens] = useState(false);
   const [newTokenValue, setNewTokenValue] = useState("");
   const [newTokenLabel, setNewTokenLabel] = useState("");
+  const [revealedTokens, setRevealedTokens] = useState<Map<number, string>>(new Map());
+  const [loadingReveal, setLoadingReveal] = useState<Set<number>>(new Set());
   const [feedback, setFeedback] = useState<string | null>(null);
   const [openOrgId, setOpenOrgId] = useState<number | null>(null);
   const [orgsMode, setOrgsMode] = useState<"normal" | "delete" | "add">("normal");
@@ -325,6 +329,23 @@ export function ConfigForm({
       if (n.has(id)) n.delete(id); else n.add(id);
       return n;
     });
+  }
+
+  async function toggleRevealToken(id: number) {
+    if (revealedTokens.has(id)) {
+      setRevealedTokens((prev) => { const n = new Map(prev); n.delete(id); return n; });
+      return;
+    }
+    setLoadingReveal((prev) => new Set(prev).add(id));
+    try {
+      const data = await api<{ value: string }>(`/api/tokens/${id}/value`);
+      setRevealedTokens((prev) => new Map(prev).set(id, data.value));
+    } catch {
+      setFeedback("Erro ao revelar token.");
+      setTimeout(() => setFeedback(null), 3000);
+    } finally {
+      setLoadingReveal((prev) => { const n = new Set(prev); n.delete(id); return n; });
+    }
   }
 
   async function confirmTokenDelete() {
@@ -535,8 +556,25 @@ export function ConfigForm({
                     <span className="text-sm text-slate-200 font-medium">{t.label}</span>
                   )}
                   <span className="font-mono text-xs text-slate-400 flex-1 truncate">
-                    {t.value_preview}
+                    {revealedTokens.has(t.id) ? revealedTokens.get(t.id) : t.value_preview}
                   </span>
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      title={revealedTokens.has(t.id) ? "Esconder token" : "Revelar token"}
+                      onClick={() => toggleRevealToken(t.id)}
+                      disabled={loadingReveal.has(t.id)}
+                      className="shrink-0 text-slate-500 hover:text-slate-300 transition-colors disabled:opacity-40"
+                    >
+                      {loadingReveal.has(t.id) ? (
+                        <SpinnerIcon className="w-4 h-4 animate-spin" />
+                      ) : revealedTokens.has(t.id) ? (
+                        <EyeOffIcon className="w-4 h-4" />
+                      ) : (
+                        <EyeIcon className="w-4 h-4" />
+                      )}
+                    </button>
+                  )}
                   {t.username && (
                     <span className="text-sm text-slate-200 truncate max-w-[160px]">{t.username}</span>
                   )}
@@ -1351,4 +1389,28 @@ function ExportIcon({ className = "" }) {
 }
 function ImportIcon({ className = "" }) {
   return (<svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden><path d="M11 3v8H8l4 5 4-5h-3V3h-2zm-7 16h16v2H4v-2z"/></svg>);
+}
+function EyeIcon({ className = "" }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+function EyeOffIcon({ className = "" }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+      <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+      <line x1="1" y1="1" x2="23" y2="23" />
+    </svg>
+  );
+}
+function SpinnerIcon({ className = "" }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden>
+      <path d="M12 2a10 10 0 0 1 10 10" />
+    </svg>
+  );
 }
