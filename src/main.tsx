@@ -50,16 +50,20 @@ function Root() {
     }} />;
   }
 
+  function handleLogout() {
+    setAuth({ status: "unauthenticated" });
+  }
+
   const path = window.location.pathname;
   if (path.startsWith("/stats")) return <Stats />;
   if (path.startsWith("/messages")) return <Messages />;
   if (path.startsWith("/acessos")) {
-    return auth.isAdmin ? <AccessKeys /> : <App isAdmin={false} />;
+    return auth.isAdmin ? <AccessKeys /> : <App isAdmin={false} onLogout={handleLogout} />;
   }
   if (path.startsWith("/auditoria")) {
-    return auth.isAdmin ? <AuditLog /> : <App isAdmin={false} />;
+    return auth.isAdmin ? <AuditLog /> : <App isAdmin={false} onLogout={handleLogout} />;
   }
-  return <App isAdmin={auth.isAdmin} />;
+  return <App isAdmin={auth.isAdmin} onLogout={handleLogout} />;
 }
 
 createRoot(document.getElementById("root")!).render(

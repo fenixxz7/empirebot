@@ -1,8 +1,28 @@
+import { useState } from "react";
 import type { InstanceState } from "@shared/types";
 
-export function Header({ instance, isAdmin = false }: { instance: InstanceState | null; isAdmin?: boolean }) {
+export function Header({
+  instance,
+  isAdmin = false,
+  onLogout,
+}: {
+  instance: InstanceState | null;
+  isAdmin?: boolean;
+  onLogout?: () => void;
+}) {
+  const [loggingOut, setLoggingOut] = useState(false);
   const connected = !!instance?.connected;
   const running = !!instance?.running;
+
+  async function handleLogout() {
+    setLoggingOut(true);
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } finally {
+      onLogout?.();
+    }
+  }
+
   return (
     <div className="card p-5 sm:p-6">
       <div className="flex items-center gap-4">
@@ -15,7 +35,7 @@ export function Header({ instance, isAdmin = false }: { instance: InstanceState 
             <span className="text-[11px] uppercase tracking-[0.3em] text-slate-400">
               Painel de Controle
             </span>
-            <div className="ml-auto flex gap-2">
+            <div className="ml-auto flex items-center gap-2">
               {isAdmin && (
                 <>
                   <a
@@ -40,6 +60,14 @@ export function Header({ instance, isAdmin = false }: { instance: InstanceState 
                   📊 Statistics
                 </a>
               )}
+              <button
+                onClick={handleLogout}
+                disabled={loggingOut}
+                title="Sair"
+                className="text-[11px] uppercase tracking-widest text-rose-400 hover:text-rose-300 transition-colors border border-rose-500/30 hover:border-rose-400/50 rounded-lg px-3 py-1 disabled:opacity-50"
+              >
+                ⏻ Sair
+              </button>
             </div>
           </div>
           <div className="mt-2 flex flex-wrap gap-2">

@@ -10,7 +10,7 @@ import { BlacklistPanel } from "@/components/BlacklistPanel";
 import { SendErrorsPanel } from "@/components/SendErrorsPanel";
 import { MessageOverridesPanel } from "@/components/MessageOverridesPanel";
 
-export function App({ isAdmin = false }: { isAdmin?: boolean }) {
+export function App({ isAdmin = false, onLogout }: { isAdmin?: boolean; onLogout?: () => void }) {
   const [instances, setInstances] = useState<InstanceState[]>([]);
   const [activeIdx, setActiveIdx] = useState(0);
   const wsRefs = useRef<Map<number, WebSocket>>(new Map());
@@ -136,7 +136,7 @@ export function App({ isAdmin = false }: { isAdmin?: boolean }) {
           </div>
         )}
 
-        <Header instance={instance} isAdmin={isAdmin} />
+        <Header instance={instance} isAdmin={isAdmin} onLogout={onLogout} />
 
         <div className="grid lg:grid-cols-2 gap-6">
           <ControlPanel instance={instance} onToggle={toggle} />
