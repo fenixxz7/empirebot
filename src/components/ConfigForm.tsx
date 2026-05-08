@@ -135,7 +135,6 @@ export function ConfigForm({
   const [busyOrgs, setBusyOrgs] = useState(false);
   const [newOrgName, setNewOrgName] = useState("");
   const [newOrgGuild, setNewOrgGuild] = useState("");
-  const [newOrgCategory, setNewOrgCategory] = useState<Category>("Mobile");
   const importRef = useRef<HTMLInputElement>(null);
 
   async function reload() {
@@ -261,7 +260,7 @@ export function ConfigForm({
         method: "POST",
         body: JSON.stringify({
           name,
-          category: newOrgCategory,
+          category: "Mobile",
           guild_id: newOrgGuild.trim() || null,
           instance_id: instanceId,
         }),
@@ -820,35 +819,20 @@ export function ConfigForm({
 
         {orgsMode === "add" && (
           <div className="mt-3 rounded-xl border border-accent/30 bg-accent/5 p-3 space-y-2">
-            <div className="text-xs text-slate-400">
-              Adicionar nova org. A categoria abaixo é apenas metadado — o bot
-              filtra os canais pelo sufixo do nome.
-            </div>
-            <div className="grid sm:grid-cols-3 gap-2">
+            <div className="grid sm:grid-cols-2 gap-2">
               <input
-                className="input sm:col-span-1"
+                className="input"
                 placeholder="Nome da org (ex: Surf)"
                 value={newOrgName}
                 onChange={(e) => setNewOrgName(e.target.value)}
                 autoFocus
               />
               <input
-                className="input font-mono text-xs sm:col-span-1"
+                className="input font-mono text-xs"
                 placeholder="guild_id (opcional)"
                 value={newOrgGuild}
                 onChange={(e) => setNewOrgGuild(e.target.value)}
               />
-              <select
-                className="input sm:col-span-1"
-                value={newOrgCategory}
-                onChange={(e) => setNewOrgCategory(e.target.value as Category)}
-              >
-                {ALL_CATEGORIES.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <button
