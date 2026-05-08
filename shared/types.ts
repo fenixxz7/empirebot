@@ -64,6 +64,7 @@ export interface InstanceConfig {
   timing_click_min_ms: number;
   timing_click_max_ms: number;
   clicks_per_org: number;
+  match_msg_delay_ms: number;
 }
 
 export interface Token {

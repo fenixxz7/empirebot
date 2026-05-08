@@ -159,6 +159,9 @@ export async function initDatabase(): Promise<void> {
   await pool.query(
     `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS blocked_names TEXT NOT NULL DEFAULT ''`,
   );
+  await pool.query(
+    `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS match_msg_delay_ms INTEGER NOT NULL DEFAULT 0`,
+  );
   // Valor máximo de entrada (R$0 = sem limite)
   await pool.query(
     `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS max_valor NUMERIC(10,2) NOT NULL DEFAULT 0`,

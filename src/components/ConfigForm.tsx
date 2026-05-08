@@ -75,6 +75,8 @@ type ConfigPayload = {
     timing_pause_max_ms: number;
     timing_click_min_ms: number;
     timing_click_max_ms: number;
+    clicks_per_org: number;
+    match_msg_delay_ms: number;
   } | null;
   token_pool: TokenPoolEntry[];
   selected_token_ids: number[];
@@ -122,6 +124,7 @@ export function ConfigForm({
   const [blockedNames, setBlockedNames] = useState("");
   const [maxValor, setMaxValor] = useState(0);
   const [clicksPerOrg, setClicksPerOrg] = useState(10);
+  const [matchMsgDelayMs, setMatchMsgDelayMs] = useState(0);
   const [tokenStrategy, setTokenStrategy] = useState("single");
   const [tokenStrategyN, setTokenStrategyN] = useState(5);
   const [selectedOrgIds, setSelectedOrgIds] = useState<Set<number>>(new Set());
@@ -166,6 +169,7 @@ export function ConfigForm({
       setBlockedNames(cfg.config.blocked_names ?? "");
       setMaxValor(Number(cfg.config.max_valor ?? 0));
       setClicksPerOrg(Number(cfg.config.clicks_per_org ?? 10));
+      setMatchMsgDelayMs(Number(cfg.config.match_msg_delay_ms ?? 0));
       setTokenStrategy(cfg.config.token_strategy ?? "single");
       setTokenStrategyN(Number(cfg.config.token_strategy_n ?? 5));
       const tv: TimingValues = {
@@ -459,6 +463,7 @@ export function ConfigForm({
           timing_pause_max_ms: timing.pauseMax,
           timing_click_min_ms: timing.clickMin,
           timing_click_max_ms: timing.clickMax,
+          match_msg_delay_ms: matchMsgDelayMs,
         }),
       });
       await reload();
@@ -776,6 +781,26 @@ export function ConfigForm({
           </p>
         </Section>
       </div>
+
+      <Section title="Delay antes da mensagem de partida (seg)">
+        <div className="flex items-center gap-3">
+          <input
+            className="input w-24"
+            type="number"
+            min={0}
+            step={1}
+            placeholder="0"
+            value={Math.round(matchMsgDelayMs / 1000)}
+            onChange={(e) => setMatchMsgDelayMs(Math.max(0, Number(e.target.value)) * 1000)}
+          />
+          <span className="text-slate-400 text-sm">
+            {matchMsgDelayMs === 0 ? "Envio imediato" : `${Math.round(matchMsgDelayMs / 1000)}s de espera antes de enviar`}
+          </span>
+        </div>
+        <p className="text-xs text-slate-500 mt-2">
+          Tempo de espera após detectar uma partida antes de enviar a mensagem. O envio roda em paralelo com os cliques — não bloqueia nenhum dos dois.
+        </p>
+      </Section>
 
       <Section title="Cliques por org antes de avançar">
         <div className="flex items-center gap-3">

@@ -580,8 +580,9 @@ export class MatchHandler {
       message_main: string;
       message_per_org: string;
       image_url: string | null;
+      match_msg_delay_ms: number;
     }>(
-      `SELECT message_main, message_per_org, image_url
+      `SELECT message_main, message_per_org, image_url, match_msg_delay_ms
        FROM instance_configs WHERE instance_id = $1`,
       [this.instanceId],
     );
@@ -637,9 +638,18 @@ export class MatchHandler {
 
     const content = humanize(resolveTemplate(template, vars));
 
+    // Delay configurável antes de enviar (independente dos cliques do runner)
+    const extraDelay = config.match_msg_delay_ms ?? 0;
+    if (extraDelay > 0) {
+      await this.host.log(this.instanceId, "INFO", "match",
+        `Aguardando ${extraDelay / 1000}s antes de enviar mensagem em #${event.name}…`);
+      await sleep(extraDelay);
+    }
+
     // Envia mensagem (com imagem opcional, se configurada no painel)
     // Antes do POST: dispara "está digitando…" e espera um tempo
     // proporcional ao tamanho da mensagem para parecer humano (sem exagero).
+    // O envio roda de forma assíncrona independente do loop de cliques do runner.
     const rest = new DiscordRest(sender.token);
     await rest.triggerTyping(event.id).catch((e) => console.warn("[match_handler]", e instanceof Error ? e.message : e));
     const typingMs = Math.min(

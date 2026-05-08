@@ -42,6 +42,7 @@ const SaveConfigBody = z.object({
   timing_click_min_ms: z.coerce.number().int().min(100).optional().default(1000),
   timing_click_max_ms: z.coerce.number().int().min(100).optional().default(2000),
   clicks_per_org: z.coerce.number().int().min(0).optional().default(10),
+  match_msg_delay_ms: z.coerce.number().int().min(0).optional().default(0),
 });
 
 // Body do POST /:instanceId/import — formato JSON exportado.
@@ -86,6 +87,7 @@ configRouter.get("/:instanceId", asyncHandler(async (req, res) => {
     timing_pause_min_ms: number; timing_pause_max_ms: number;
     timing_click_min_ms: number; timing_click_max_ms: number;
     clicks_per_org: number;
+    match_msg_delay_ms: number;
   }>(
     `SELECT category, allowed_categories, delay_seconds, rotation_minutes,
             allowed_modes, message_main, message_per_org, image_url, blocked_names,
@@ -93,7 +95,7 @@ configRouter.get("/:instanceId", asyncHandler(async (req, res) => {
             timing_intra_min_ms, timing_intra_max_ms,
             timing_pause_min_ms, timing_pause_max_ms,
             timing_click_min_ms, timing_click_max_ms,
-            clicks_per_org
+            clicks_per_org, match_msg_delay_ms
      FROM instance_configs WHERE instance_id = $1`,
     [id]
   );
@@ -161,6 +163,7 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
     timing_pause_min_ms, timing_pause_max_ms,
     timing_click_min_ms, timing_click_max_ms,
     clicks_per_org,
+    match_msg_delay_ms,
   } = req.body;
 
   // allowed_categories pode chegar como array (UI) ou string CSV (terminal/api)
@@ -199,7 +202,7 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
          timing_intra_min_ms = $14, timing_intra_max_ms = $15,
          timing_pause_min_ms = $16, timing_pause_max_ms = $17,
          timing_click_min_ms = $18, timing_click_max_ms = $19,
-         clicks_per_org = $20,
+         clicks_per_org = $20, match_msg_delay_ms = $21,
          updated_at = NOW()
      WHERE instance_id = $1`,
     [id, primaryCategory, allowedCategoriesStr,
@@ -210,7 +213,8 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
      timing_intra_min_ms ?? 4000, timing_intra_max_ms ?? 7000,
      timing_pause_min_ms ?? 25000, timing_pause_max_ms ?? 35000,
      timing_click_min_ms ?? 1000, timing_click_max_ms ?? 2000,
-     Math.max(0, Number(clicks_per_org ?? 10))]
+     Math.max(0, Number(clicks_per_org ?? 10)),
+     Math.max(0, Number(match_msg_delay_ms ?? 0))]
   );
 
   // Tokens: novo sistema — seleção por pool ID
