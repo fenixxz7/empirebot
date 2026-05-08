@@ -932,49 +932,6 @@ export function ConfigForm({
         </p>
       </Section>
 
-      <Section title="Imagem na mensagem (URL)">
-        <input
-          className="input"
-          type="url"
-          placeholder="https://… (deixe vazio para enviar só texto)"
-          value={imageUrl}
-          onChange={(e) => setImageUrl(e.target.value)}
-        />
-        <p className="text-xs text-slate-500 mt-2">
-          Cole a URL pública de uma imagem (PNG/JPG/GIF). Ela vai junto com a
-          mensagem dentro da partida, em todas as orgs.
-        </p>
-        {imageUrl.trim() && (
-          <div className="mt-3">
-            <img
-              src={imageUrl.trim()}
-              alt="preview"
-              className="max-h-32 rounded-lg border border-white/10 bg-navy-950/40"
-              onError={(e) => {
-                (e.currentTarget as HTMLImageElement).style.display = "none";
-              }}
-            />
-          </div>
-        )}
-      </Section>
-
-      <Section title="Valor máximo por fila (R$)">
-        <div className="flex items-center gap-3">
-          <input
-            className="input w-32"
-            type="number"
-            min={0}
-            step={0.5}
-            placeholder="0"
-            value={maxValor}
-            onChange={(e) => setMaxValor(Number(e.target.value))}
-          />
-          <span className="text-slate-400 text-sm">{maxValor > 0 ? `Máximo: R$${maxValor.toFixed(2)}` : "Sem limite"}</span>
-        </div>
-        <p className="text-xs text-slate-500 mt-2">
-          Filas com valor acima do limite são ignoradas automaticamente. Cole <b className="text-white/50">0</b> para entrar em qualquer fila.
-        </p>
-      </Section>
 
       <Section title="Rotação de Tokens">
         <div className="flex flex-col gap-3">
