@@ -11,8 +11,10 @@ import { tokensRouter } from "./tokens.js";
 import { blacklistRouter } from "./blacklist.js";
 import { sendErrorsRouter } from "./send-errors.js";
 import { messageOverridesRouter } from "./message-overrides.js";
-import { pool } from "../db/pool.js";
+import { pool, query as dbQuery } from "../db/pool.js";
 import { query } from "../db/pool.js";
+import { requireAdmin } from "./auth.js";
+import { asyncHandler } from "../lib/asyncHandler.js";
 
 function requireAuth(req: Request, res: Response, next: NextFunction) {
   const session = req.session as any;
@@ -56,6 +58,14 @@ export function mountApi(app: Express): void {
       res.status(503).json({ ok: false, db: "error", ts: new Date().toISOString() });
     }
   });
+
+  // Rota de revelar token — registrada diretamente antes do router genérico
+  app.get("/api/tokens/:id/value", requireAuth, requireAdmin, asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const rows = await dbQuery<{ value: string }>(`SELECT value FROM token_pool WHERE id = $1`, [id]);
+    if (!rows[0]) { res.status(404).json({ error: "Token não encontrado." }); return; }
+    res.json({ value: rows[0].value });
+  }));
 
   // Todas as rotas abaixo exigem autenticação
   app.use("/api/instances", requireAuth, instancesRouter);

@@ -1,7 +1,6 @@
 import { Router } from "express";
 import { query } from "../db/pool.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
-import { requireAdmin } from "./auth.js";
 
 export const tokensRouter = Router();
 
@@ -68,13 +67,6 @@ tokensRouter.post("/", asyncHandler(async (req, res) => {
   }
 
   res.json({ ok: true, id: tokenId });
-}));
-
-tokensRouter.get("/:id/value", requireAdmin, asyncHandler(async (req, res) => {
-  const id = Number(req.params.id);
-  const rows = await query<{ value: string }>(`SELECT value FROM token_pool WHERE id = $1`, [id]);
-  if (!rows[0]) { res.status(404).json({ error: "Token não encontrado." }); return; }
-  res.json({ value: rows[0].value });
 }));
 
 tokensRouter.delete("/:id", asyncHandler(async (req, res) => {
