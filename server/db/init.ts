@@ -103,7 +103,20 @@ export async function initDatabase(): Promise<void> {
   );
   if (Number(wipeNeeded.rows[0]?.n ?? "0") > 0) {
     await pool.query(`DELETE FROM org_channels`);
+    // Reseta last_discovered_at para forçar rediscovery após o wipe
+    await pool.query(`UPDATE orgs SET last_discovered_at = NULL`);
   }
+
+  // Garante que orgs sem nenhum canal cadastrado sejam redescobertos no próximo start.
+  // Isso corrige o caso em que o servidor reinicia (VPS/Replit), org_channels é perdida
+  // mas last_discovered_at ainda está preenchido — bloqueando a descoberta automática.
+  await pool.query(`
+    UPDATE orgs SET last_discovered_at = NULL
+    WHERE last_discovered_at IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM org_channels oc WHERE oc.org_id = orgs.id
+      )
+  `);
 
   // Migração: tabela de partidas detectadas (Fase 9/10)
   await pool.query(`
