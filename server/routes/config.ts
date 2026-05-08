@@ -400,12 +400,13 @@ configRouter.post("/:instanceId/import", validate({ body: ImportConfigBody }), a
       const name = o.org_name?.trim() || `org_${o.org_id}`;
       const guildId = o.guild_id?.trim() || null;
       await query(
-        `INSERT INTO orgs (id, name, guild_id, category, max_queues, enabled, priority)
-         VALUES ($1, $2, $3, 'Mobile', 5, TRUE, 0)
+        `INSERT INTO orgs (id, name, guild_id, category, max_queues, enabled, priority, instance_id)
+         VALUES ($1, $2, $3, 'Mobile', 5, TRUE, 0, $4)
          ON CONFLICT (id) DO UPDATE
-           SET guild_id = EXCLUDED.guild_id,
-               name     = EXCLUDED.name`,
-        [o.org_id, name, guildId],
+           SET guild_id    = EXCLUDED.guild_id,
+               name        = EXCLUDED.name,
+               instance_id = EXCLUDED.instance_id`,
+        [o.org_id, name, guildId, id],
       );
     }
     // Garante que a sequência não conflite com IDs inseridos explicitamente
