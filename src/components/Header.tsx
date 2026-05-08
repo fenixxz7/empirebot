@@ -28,48 +28,47 @@ export function Header({
       <div className="flex items-center gap-4">
         <EmpireLogo />
         <div className="flex-1">
-          {/* Top row: title + nav links + Sair */}
-          <div className="flex items-center gap-3 flex-wrap">
+          {/* Row 1: title + Sair */}
+          <div className="flex items-center gap-3">
             <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight bg-gradient-to-r from-amber-300 via-yellow-200 to-amber-400 bg-clip-text text-transparent">
               EMPIRE
             </h1>
             <span className="text-[11px] uppercase tracking-[0.3em] text-slate-400">
               Painel de Controle
             </span>
-            <div className="ml-auto flex items-center gap-2">
-              {isAdmin && (
-                <>
-                  <a
-                    href="/acessos"
-                    className="text-[11px] uppercase tracking-widest text-amber-400 hover:text-amber-300 transition-colors border border-amber-500/30 hover:border-amber-400/50 rounded-lg px-3 py-1"
-                  >
-                    🔑 Acessos
-                  </a>
-                  <a
-                    href="/auditoria"
-                    className="text-[11px] uppercase tracking-widest text-violet-400 hover:text-violet-300 transition-colors border border-violet-500/30 hover:border-violet-400/50 rounded-lg px-3 py-1"
-                  >
-                    📋 Auditoria
-                  </a>
-                  <a
-                    href="/stats"
-                    className="text-[11px] uppercase tracking-widest text-violet-400 hover:text-violet-300 transition-colors border border-violet-500/30 hover:border-violet-400/50 rounded-lg px-3 py-1"
-                  >
-                    📊 Statistics
-                  </a>
-                </>
-              )}
-              <button
-                onClick={handleLogout}
-                disabled={loggingOut}
-                title="Sair"
-                className="text-[11px] uppercase tracking-widest text-rose-400 hover:text-rose-300 transition-colors border border-rose-500/30 hover:border-rose-400/50 rounded-lg px-3 py-1 disabled:opacity-50"
-              >
-                ⏻ Sair
-              </button>
-            </div>
+            <button
+              onClick={handleLogout}
+              disabled={loggingOut}
+              title="Sair"
+              className="ml-auto text-[11px] uppercase tracking-widest text-rose-400 hover:text-rose-300 transition-colors border border-rose-500/30 hover:border-rose-400/50 rounded-lg px-3 py-1 disabled:opacity-50"
+            >
+              ⏻ Sair
+            </button>
           </div>
-          {/* Bottom row: status pills only */}
+          {/* Row 2: nav links right-aligned (admin only) */}
+          {isAdmin && (
+            <div className="mt-1.5 flex items-center justify-end gap-2">
+              <a
+                href="/acessos"
+                className="text-[11px] uppercase tracking-widest text-amber-400 hover:text-amber-300 transition-colors border border-amber-500/30 hover:border-amber-400/50 rounded-lg px-3 py-1"
+              >
+                🔑 Acessos
+              </a>
+              <a
+                href="/auditoria"
+                className="text-[11px] uppercase tracking-widest text-violet-400 hover:text-violet-300 transition-colors border border-violet-500/30 hover:border-violet-400/50 rounded-lg px-3 py-1"
+              >
+                📋 Auditoria
+              </a>
+              <a
+                href="/stats"
+                className="text-[11px] uppercase tracking-widest text-violet-400 hover:text-violet-300 transition-colors border border-violet-500/30 hover:border-violet-400/50 rounded-lg px-3 py-1"
+              >
+                📊 Statistics
+              </a>
+            </div>
+          )}
+          {/* Row 3: status pills */}
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <span className={connected ? "pill-ok" : "pill-stop"}>
               <Dot className={connected ? "bg-ok" : "bg-danger"} />
