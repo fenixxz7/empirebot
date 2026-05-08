@@ -561,7 +561,8 @@ export class QueueRunner {
       // Rate limit por org: após N cliques na org atual, avança para próxima
       if (cfg.clicksPerOrg > 0) {
         const orgId = candidate.org_id;
-        const count = (this.orgClickCounts.get(orgId) ?? 0) + 1;
+        const prev = this.orgClickCounts.get(orgId) ?? 0;
+        const count = prev + 1;
         this.orgClickCounts.set(orgId, count);
         if (count >= cfg.clicksPerOrg) {
           this.orgClickCounts.set(orgId, 0);
@@ -573,7 +574,15 @@ export class QueueRunner {
             this.instanceId,
             "INFO",
             "engine",
-            `Rate limit por org: ${count} cliques em "${candidate.org_name}" — avançando para próxima org.`,
+            `Próxima org — clicks concluídos ${count}/${cfg.clicksPerOrg} em "${candidate.org_name}".`,
+          );
+        } else {
+          const prefix = count === 1 ? `Iniciando org "${candidate.org_name}"` : `Org "${candidate.org_name}"`;
+          await this.manager.log(
+            this.instanceId,
+            "INFO",
+            "engine",
+            `${prefix} — click ${count}/${cfg.clicksPerOrg}.`,
           );
         }
       }
