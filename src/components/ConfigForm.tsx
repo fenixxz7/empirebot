@@ -77,6 +77,8 @@ type ConfigPayload = {
     timing_click_max_ms: number;
     clicks_per_org: number;
     match_msg_delay_ms: number;
+    match_msg_delay_min_ms: number;
+    match_msg_delay_max_ms: number;
   } | null;
   token_pool: TokenPoolEntry[];
   selected_token_ids: number[];
@@ -124,7 +126,8 @@ export function ConfigForm({
   const [blockedNames, setBlockedNames] = useState("");
   const [maxValor, setMaxValor] = useState(0);
   const [clicksPerOrg, setClicksPerOrg] = useState(10);
-  const [matchMsgDelayMs, setMatchMsgDelayMs] = useState(0);
+  const [matchMsgDelayMinSec, setMatchMsgDelayMinSec] = useState(0);
+  const [matchMsgDelayMaxSec, setMatchMsgDelayMaxSec] = useState(0);
   const [tokenStrategy, setTokenStrategy] = useState("single");
   const [tokenStrategyN, setTokenStrategyN] = useState(5);
   const [selectedOrgIds, setSelectedOrgIds] = useState<Set<number>>(new Set());
@@ -169,7 +172,10 @@ export function ConfigForm({
       setBlockedNames(cfg.config.blocked_names ?? "");
       setMaxValor(Number(cfg.config.max_valor ?? 0));
       setClicksPerOrg(Number(cfg.config.clicks_per_org ?? 10));
-      setMatchMsgDelayMs(Number(cfg.config.match_msg_delay_ms ?? 0));
+      const minMs = Number(cfg.config.match_msg_delay_min_ms ?? cfg.config.match_msg_delay_ms ?? 0);
+      const maxMs = Number(cfg.config.match_msg_delay_max_ms ?? minMs);
+      setMatchMsgDelayMinSec(Math.round(minMs / 1000));
+      setMatchMsgDelayMaxSec(Math.round(maxMs / 1000));
       setTokenStrategy(cfg.config.token_strategy ?? "single");
       setTokenStrategyN(Number(cfg.config.token_strategy_n ?? 5));
       const tv: TimingValues = {
@@ -463,7 +469,9 @@ export function ConfigForm({
           timing_pause_max_ms: timing.pauseMax,
           timing_click_min_ms: timing.clickMin,
           timing_click_max_ms: timing.clickMax,
-          match_msg_delay_ms: matchMsgDelayMs,
+          match_msg_delay_ms: matchMsgDelayMinSec * 1000,
+          match_msg_delay_min_ms: matchMsgDelayMinSec * 1000,
+          match_msg_delay_max_ms: Math.max(matchMsgDelayMinSec, matchMsgDelayMaxSec) * 1000,
         }),
       });
       await reload();
@@ -783,22 +791,46 @@ export function ConfigForm({
       </div>
 
       <Section title="Delay antes da mensagem de partida (seg)">
-        <div className="flex items-center gap-3">
-          <input
-            className="input w-24"
-            type="number"
-            min={0}
-            step={1}
-            placeholder="0"
-            value={Math.round(matchMsgDelayMs / 1000)}
-            onChange={(e) => setMatchMsgDelayMs(Math.max(0, Number(e.target.value)) * 1000)}
-          />
-          <span className="text-slate-400 text-sm">
-            {matchMsgDelayMs === 0 ? "Envio imediato" : `${Math.round(matchMsgDelayMs / 1000)}s de espera antes de enviar`}
+        <div className="flex items-center gap-2">
+          <div className="flex flex-col items-center gap-1">
+            <span className="text-xs text-slate-500">Mín</span>
+            <input
+              className="input w-20 text-center"
+              type="number"
+              min={0}
+              step={1}
+              placeholder="0"
+              value={matchMsgDelayMinSec}
+              onChange={(e) => {
+                const v = Math.max(0, Number(e.target.value));
+                setMatchMsgDelayMinSec(v);
+                if (matchMsgDelayMaxSec < v) setMatchMsgDelayMaxSec(v);
+              }}
+            />
+          </div>
+          <span className="text-slate-500 mt-4">–</span>
+          <div className="flex flex-col items-center gap-1">
+            <span className="text-xs text-slate-500">Máx</span>
+            <input
+              className="input w-20 text-center"
+              type="number"
+              min={matchMsgDelayMinSec}
+              step={1}
+              placeholder="0"
+              value={matchMsgDelayMaxSec}
+              onChange={(e) => setMatchMsgDelayMaxSec(Math.max(matchMsgDelayMinSec, Number(e.target.value)))}
+            />
+          </div>
+          <span className="text-slate-400 text-sm mt-4">
+            {matchMsgDelayMinSec === 0 && matchMsgDelayMaxSec === 0
+              ? "Envio imediato"
+              : matchMsgDelayMinSec === matchMsgDelayMaxSec
+              ? `${matchMsgDelayMinSec}s fixo`
+              : `${matchMsgDelayMinSec}–${matchMsgDelayMaxSec}s aleatório`}
           </span>
         </div>
         <p className="text-xs text-slate-500 mt-2">
-          Tempo de espera após detectar uma partida antes de enviar a mensagem. O envio roda em paralelo com os cliques — não bloqueia nenhum dos dois.
+          Cada envio sorteia um valor dentro do intervalo. Se mín = máx, o delay é fixo. O envio roda em paralelo com os cliques — não bloqueia nenhum dos dois.
         </p>
       </Section>
 

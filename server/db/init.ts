@@ -192,6 +192,13 @@ export async function initDatabase(): Promise<void> {
   await pool.query(
     `ALTER TABLE stats ADD COLUMN IF NOT EXISTS msgs_enviadas INTEGER NOT NULL DEFAULT 0`,
   );
+  // Delay aleatório de mensagem de partida: intervalo [min, max]
+  await pool.query(
+    `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS match_msg_delay_min_ms INTEGER NOT NULL DEFAULT 0`,
+  );
+  await pool.query(
+    `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS match_msg_delay_max_ms INTEGER NOT NULL DEFAULT 0`,
+  );
   // match_send_errors: código de erro do Discord + última mensagem (diagnóstico)
   await pool.query(
     `ALTER TABLE match_send_errors ADD COLUMN IF NOT EXISTS last_error_code INTEGER`,

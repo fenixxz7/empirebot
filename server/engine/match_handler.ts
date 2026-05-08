@@ -615,8 +615,11 @@ export class MatchHandler {
       message_per_org: string;
       image_url: string | null;
       match_msg_delay_ms: number;
+      match_msg_delay_min_ms: number;
+      match_msg_delay_max_ms: number;
     }>(
-      `SELECT message_main, message_per_org, image_url, match_msg_delay_ms
+      `SELECT message_main, message_per_org, image_url,
+              match_msg_delay_ms, match_msg_delay_min_ms, match_msg_delay_max_ms
        FROM instance_configs WHERE instance_id = $1`,
       [this.instanceId],
     );
@@ -672,11 +675,19 @@ export class MatchHandler {
 
     const content = humanize(resolveTemplate(template, vars));
 
-    // Delay configurável antes de enviar (independente dos cliques do runner)
-    const extraDelay = config.match_msg_delay_ms ?? 0;
+    // Delay aleatório antes de enviar — mais humano que um valor fixo.
+    // Usa [min, max] se configurado; fallback para match_msg_delay_ms legado.
+    const delayMin = Math.max(0, config.match_msg_delay_min_ms ?? config.match_msg_delay_ms ?? 0);
+    const delayMax = Math.max(delayMin, config.match_msg_delay_max_ms ?? delayMin);
+    const extraDelay = delayMax > delayMin
+      ? Math.floor(delayMin + Math.random() * (delayMax - delayMin))
+      : delayMin;
     if (extraDelay > 0) {
+      const rangeLabel = delayMax > delayMin
+        ? `${(delayMin / 1000).toFixed(1)}–${(delayMax / 1000).toFixed(1)}s → sorteado ${(extraDelay / 1000).toFixed(1)}s`
+        : `${(extraDelay / 1000).toFixed(1)}s (fixo)`;
       await this.host.log(this.instanceId, "INFO", "match",
-        `Aguardando ${extraDelay / 1000}s antes de enviar mensagem em #${event.name}…`);
+        `Aguardando ${rangeLabel} antes de enviar mensagem em #${event.name}…`);
       await sleep(extraDelay);
     }
 
@@ -690,46 +701,21 @@ export class MatchHandler {
     // O envio roda de forma assíncrona independente do loop de cliques do runner.
     const rest = new DiscordRest(sender.token);
 
-    // Retry de acesso: threads privadas às vezes chegam via CHANNEL_CREATE antes
-    // de o Discord processar o membership do token. Aguarda até 6s fazendo
-    // triggerTyping para confirmar acesso antes de enviar a mensagem de fato.
-    // CADA chamada tem timeout de 10s via AbortSignal — não pende mais.
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      await this.host.log(this.instanceId, "INFO", "match",
-        `[diag] triggerTyping tentativa ${attempt}/3 em #${event.name}…`);
-      const typingRes = await rest.triggerTyping(event.id);
-      const typingStatus = typingRes.status;
-      await this.host.log(this.instanceId, "INFO", "match",
-        `[diag] triggerTyping → HTTP ${typingStatus}${typingRes.error ? ` | erro: ${typingRes.error.slice(0, 120)}` : ""}`);
-
-      if (typingStatus >= 200 && typingStatus < 300) break; // acesso OK
-      if (typingStatus === 429) {
-        await this.host.log(this.instanceId, "WARN", "match",
-          `#${event.name} — rate limit no triggerTyping, aguardando 3s…`);
-        await sleep(3000);
-        continue;
-      }
-      if (typingStatus === 403 || typingStatus === 404) {
-        if (attempt < 3) {
-          await this.host.log(this.instanceId, "WARN", "match",
-            `#${event.name} — sem acesso ainda (HTTP ${typingStatus}), aguardando 2s (tentativa ${attempt}/3)…`);
-          await sleep(2000);
-        } else {
-          await this.host.log(this.instanceId, "WARN", "match",
-            `#${event.name} — sem acesso ao canal após 3 tentativas (HTTP ${typingStatus}), tentando envio mesmo assim…`);
+    // triggerTyping: best-effort, apenas 20% dos envios, 1 tentativa, nunca bloqueia.
+    // O endpoint /typing era responsável por muitos 429 — uso esporádico reduz esse risco.
+    if (Math.random() < 0.20) {
+      rest.triggerTyping(event.id).then((typingRes) => {
+        if (typingRes.status !== 204 && typingRes.status !== 200) {
+          this.host.log(this.instanceId, "INFO", "match",
+            `[diag] triggerTyping → HTTP ${typingRes.status}${typingRes.error ? ` | ${typingRes.error.slice(0, 80)}` : ""}`
+          ).catch(() => {});
         }
-      } else {
-        break; // outro código HTTP — segue normalmente
-      }
+      }).catch((e) => {
+        console.warn("[match_handler] triggerTyping:", e instanceof Error ? e.message : e);
+      });
+      // Pequena pausa humanizadora sem bloquear o envio na fila de typing
+      await sleep(Math.floor(300 + Math.random() * 400));
     }
-
-    const typingMs = Math.min(
-      2500,
-      800 + content.length * (12 + Math.random() * 18),
-    );
-    await this.host.log(this.instanceId, "INFO", "match",
-      `[diag] aguardando ${typingMs}ms (simulação de digitação)…`);
-    await sleep(typingMs);
 
     await this.host.log(this.instanceId, "INFO", "match",
       `[diag] POST /channels/${event.id}/messages iniciado (content.length=${content.length}, image=${config.image_url ? "sim" : "não"})…`);
