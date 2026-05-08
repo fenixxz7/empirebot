@@ -469,6 +469,23 @@ export function ConfigForm({
     }
   }
 
+  async function handleImportFromBot1() {
+    try {
+      setFeedback(null);
+      const json = await api<object>(`/api/config/1/export`);
+      await api(`/api/config/${instanceId}/import`, {
+        method: "POST",
+        body: JSON.stringify(json),
+      });
+      await reload();
+      await reloadOrgs();
+      setFeedback("Configuração importada com sucesso.");
+      setTimeout(() => setFeedback(null), 4000);
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : "Erro ao importar do BOT1");
+    }
+  }
+
   if (loading) {
     return (
       <div className="card p-6 text-slate-400 text-sm">Carregando configuração…</div>
@@ -1036,7 +1053,17 @@ export function ConfigForm({
             </span>
           )}
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          {instanceId !== 1 && (
+            <button
+              onClick={handleImportFromBot1}
+              className="btn-secondary"
+              title="Copia toda a configuração do BOT1 para este bot (sem tokens)"
+            >
+              <ImportIcon className="w-3.5 h-3.5" />
+              Importar config do BOT1
+            </button>
+          )}
           <button
             onClick={exportConfig}
             className="btn-secondary"
