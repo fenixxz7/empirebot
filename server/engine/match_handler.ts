@@ -399,7 +399,28 @@ export class MatchHandler {
     if (!isMatchChannel(event.name)) return;
 
     const key = `${this.instanceId}:${event.id}`;
-    if (this.processing.has(key)) return;
+
+    // Se já está processando esse canal, aguarda até 12s para o primeiro
+    // processamento terminar e depois verifica se precisa reenviar.
+    // Antes retornava silenciosamente — isso causava perda do envio quando
+    // CHANNEL_CREATE e MESSAGE_CREATE chegavam quase simultâneos.
+    if (this.processing.has(key)) {
+      const waited = await this._waitForProcessing(key, 12_000);
+      if (!waited) return; // ainda bloqueado após timeout — descarta
+
+      // Verifica se o primeiro processamento enviou a mensagem
+      const existing = await query<{ msg_sent: boolean }>(
+        `SELECT msg_sent FROM matches WHERE instance_id = $1 AND channel_id = $2`,
+        [this.instanceId, event.id],
+      ).catch(() => [] as Array<{ msg_sent: boolean }>);
+      if (existing[0]?.msg_sent) return; // já enviado — nada a fazer
+
+      // Não foi enviado — tenta novamente com os tokens desta chamada
+      await this.host.log(this.instanceId, "INFO", "match",
+        `#${event.name} — reprocessando após primeiro ciclo (msg_sent=false)`);
+    }
+
+    if (this.processing.has(key)) return; // dupla checagem após await
     this.processing.add(key);
 
     try {
@@ -414,6 +435,19 @@ export class MatchHandler {
     } finally {
       this.processing.delete(key);
     }
+  }
+
+  /** Aguarda até `maxMs` para a chave sair do processing. Retorna true se saiu. */
+  private _waitForProcessing(key: string, maxMs: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const start = Date.now();
+      const tick = () => {
+        if (!this.processing.has(key)) return resolve(true);
+        if (Date.now() - start >= maxMs) return resolve(false);
+        setTimeout(tick, 300);
+      };
+      tick();
+    });
   }
 
   private async handleMatch(
@@ -646,12 +680,37 @@ export class MatchHandler {
       await sleep(extraDelay);
     }
 
+    // Log diagnóstico: confirma que o envio vai ser tentado
+    await this.host.log(this.instanceId, "INFO", "match",
+      `Enviando mensagem em #${event.name} via token #${sender.position}${adversaryId ? ` → <@${adversaryId}>` : " (sem adversário identificado)"}…`);
+
     // Envia mensagem (com imagem opcional, se configurada no painel)
     // Antes do POST: dispara "está digitando…" e espera um tempo
     // proporcional ao tamanho da mensagem para parecer humano (sem exagero).
     // O envio roda de forma assíncrona independente do loop de cliques do runner.
     const rest = new DiscordRest(sender.token);
-    await rest.triggerTyping(event.id).catch((e) => console.warn("[match_handler]", e instanceof Error ? e.message : e));
+
+    // Retry de acesso: threads privadas às vezes chegam via CHANNEL_CREATE antes
+    // de o Discord processar o membership do token. Aguarda até 6s fazendo
+    // triggerTyping para confirmar acesso antes de enviar a mensagem de fato.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const typingRes = await rest.triggerTyping(event.id);
+      const typingStatus = typingRes.status;
+      if (typingStatus >= 200 && typingStatus < 300) break; // acesso OK
+      if (typingStatus === 403 || typingStatus === 404) {
+        if (attempt < 3) {
+          await this.host.log(this.instanceId, "WARN", "match",
+            `#${event.name} — sem acesso ainda (HTTP ${typingStatus}), aguardando 2s (tentativa ${attempt}/3)…`);
+          await sleep(2000);
+        } else {
+          await this.host.log(this.instanceId, "WARN", "match",
+            `#${event.name} — sem acesso ao canal após 3 tentativas (HTTP ${typingStatus}), tentando envio mesmo assim…`);
+        }
+      } else {
+        break; // outro código — segue normalmente
+      }
+    }
+
     const typingMs = Math.min(
       2500,
       800 + content.length * (12 + Math.random() * 18),
