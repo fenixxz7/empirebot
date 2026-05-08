@@ -47,7 +47,7 @@ export function Header({
           </div>
           {/* Row 2: nav links right-aligned (admin only) */}
           {isAdmin && (
-            <div className="mt-1.5 flex items-center justify-end gap-2">
+            <div className="mt-1.5 flex items-center gap-2">
               <a
                 href="/acessos"
                 className="text-[11px] uppercase tracking-widest text-amber-400 hover:text-amber-300 transition-colors border border-amber-500/30 hover:border-amber-400/50 rounded-lg px-3 py-1"
