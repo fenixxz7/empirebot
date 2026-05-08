@@ -1197,6 +1197,11 @@ function OrgRow({
     setEditingPriority(false);
   }
 
+  // Invalida o cache sempre que o servidor reportar uma contagem diferente
+  useEffect(() => {
+    setChannels(null);
+  }, [org.channels_count]);
+
   useEffect(() => {
     if (expanded && channels === null) {
       api<OrgChannel[]>(`/api/orgs/${org.id}/channels`)
