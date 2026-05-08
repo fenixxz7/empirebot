@@ -743,6 +743,10 @@ export function ConfigForm({
               onToggle={() => toggleOrg(o.id)}
               onToggleDelete={() => toggleDelete(o.id)}
               onShowChannels={() => setOpenOrgId(o.id === openOrgId ? null : o.id)}
+              onPriorityChange={async (p) => {
+                await api(`/api/orgs/${o.id}`, { method: "PATCH", body: JSON.stringify({ priority: p }) });
+                await reloadOrgs();
+              }}
               expanded={o.id === openOrgId}
             />
           ))}
@@ -1079,6 +1083,7 @@ function OrgRow({
   onToggle,
   onToggleDelete,
   onShowChannels,
+  onPriorityChange,
   expanded,
 }: {
   org: Org;
@@ -1088,9 +1093,19 @@ function OrgRow({
   onToggle: () => void;
   onToggleDelete: () => void;
   onShowChannels: () => void;
+  onPriorityChange: (p: number) => void;
   expanded: boolean;
 }) {
   const [channels, setChannels] = useState<OrgChannel[] | null>(null);
+  const [editingPriority, setEditingPriority] = useState(false);
+  const [priorityDraft, setPriorityDraft] = useState(String(org.priority ?? 1));
+
+  function savePriority() {
+    const v = parseInt(priorityDraft, 10);
+    if (!isNaN(v) && v > 0) onPriorityChange(v);
+    else setPriorityDraft(String(org.priority ?? 1));
+    setEditingPriority(false);
+  }
 
   useEffect(() => {
     if (expanded && channels === null) {
@@ -1133,6 +1148,32 @@ function OrgRow({
           <span className="text-[10px] text-rose-400/80 uppercase tracking-wider">
             sem guild_id
           </span>
+        )}
+        {mode === "normal" && (
+          editingPriority ? (
+            <input
+              type="number"
+              min={1}
+              max={99}
+              autoFocus
+              className="w-10 rounded px-1 py-0.5 text-center text-xs outline-none"
+              style={{ background: "#0f172a", border: "1px solid rgba(251,146,60,0.5)", color: "#e2e8f0" }}
+              value={priorityDraft}
+              onChange={(e) => setPriorityDraft(e.target.value)}
+              onBlur={savePriority}
+              onKeyDown={(e) => { if (e.key === "Enter") savePriority(); if (e.key === "Escape") { setPriorityDraft(String(org.priority ?? 1)); setEditingPriority(false); } }}
+            />
+          ) : (
+            <button
+              type="button"
+              title="Clique para editar prioridade"
+              onClick={() => { setPriorityDraft(String(org.priority ?? 1)); setEditingPriority(true); }}
+              className="text-[10px] px-1.5 py-0.5 rounded font-mono tabular-nums"
+              style={{ background: "rgba(255,255,255,0.05)", color: "#64748b", border: "1px solid rgba(255,255,255,0.08)" }}
+            >
+              P{org.priority ?? 1}
+            </button>
+          )
         )}
         <span className="ml-auto flex items-center gap-2">
           {(org.channels_count ?? 0) > 0 && (
