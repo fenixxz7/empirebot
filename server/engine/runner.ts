@@ -84,6 +84,7 @@ interface PlayerInfo {
 export class QueueRunner {
   private timer: NodeJS.Timeout | null = null;
   private stopped = false;
+  private paused = false;
   private orgCursor = 0;
   private lastNoTokenLog = 0;
   private lastNoWorkLog = 0;
@@ -128,11 +129,22 @@ export class QueueRunner {
     }
   }
 
+  /** Suspende o clique em filas sem parar o timer. Útil durante redescoberta. */
+  pause(): void {
+    this.paused = true;
+  }
+
+  /** Retoma o clique em filas após uma pausa. */
+  resume(): void {
+    this.paused = false;
+  }
+
   private async tick(): Promise<void> {
     if (this.stopped) return;
     try {
       // Sweep de filas fantasmas a cada 30s (idempotente) — roda independente do cooldown de fila
       await this.sweepGhostQueues();
+      if (this.paused) return; // descobre canais primeiro, clica depois
       const cfg = await this.loadConfig();
       await this.iterate(cfg);
     } catch (err) {

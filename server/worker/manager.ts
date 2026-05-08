@@ -818,6 +818,16 @@ class Manager {
     this.broadcastStats(instanceId).catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
   };
 
+  /** Pausa cliques enquanto a redescoberta roda (não para o timer). */
+  pauseRunner(instanceId: number): void {
+    this.runners.get(instanceId)?.pause();
+  }
+
+  /** Retoma cliques após a redescoberta. */
+  resumeRunner(instanceId: number): void {
+    this.runners.get(instanceId)?.resume();
+  }
+
   blacklistOrgForToken = async (
     instanceId: number,
     tokenId: number,
