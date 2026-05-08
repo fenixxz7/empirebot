@@ -60,12 +60,15 @@ export class DiscordRest {
   ): Promise<DiscordResponse<T>> {
     const url = `${base}${path}`;
     let attempts = 0;
+    let rateLimitRetries = 0;
     while (true) {
       attempts += 1;
       let res: Response;
       try {
         res = await fetch(url, {
           method,
+          // Timeout de 10s por tentativa — evita promise pendurada
+          signal: AbortSignal.timeout(10_000),
           headers: {
             authorization: this.token,
             "content-type": "application/json",
@@ -74,6 +77,15 @@ export class DiscordRest {
           body: body !== undefined ? JSON.stringify(body) : undefined,
         });
       } catch (err) {
+        const name = (err as Error).name;
+        // TimeoutError / AbortError — não retentar, retorna imediatamente
+        if (name === "TimeoutError" || name === "AbortError") {
+          return {
+            status: 0,
+            data: null,
+            error: `fetch_timeout:${method}:${path}`,
+          };
+        }
         if (attempts >= 3) {
           return {
             status: 0,
@@ -86,8 +98,18 @@ export class DiscordRest {
       }
 
       if (res.status === 429) {
+        // Limita retries de rate-limit: máx 3 vezes, espera máx 8s por vez.
+        // Antes não tinha limite → loop infinito travando a promise.
+        if (rateLimitRetries >= 3) {
+          return {
+            status: 429,
+            data: null,
+            error: `rate_limited_after_${rateLimitRetries}_retries:${method}:${path}`,
+          };
+        }
+        rateLimitRetries += 1;
         const j = (await res.json().catch(() => ({}))) as { retry_after?: number };
-        const wait = Math.min(15_000, Math.max(500, (j.retry_after ?? 1) * 1000));
+        const wait = Math.min(8_000, Math.max(500, (j.retry_after ?? 1) * 1000));
         await sleep(wait + 200);
         continue;
       }

@@ -221,3 +221,62 @@ messagesRouter.post("/:instanceId/scan-now", asyncHandler(async (req, res) => {
   const snapshot = await responder.getSnapshot();
   res.json({ ok: true, drained, snapshot });
 }));
+
+// POST /api/messages/:instanceId/test-send
+// Testa envio manual de mensagem num canal usando um token da instância.
+// Útil para diagnosticar se o problema é no token, no canal ou na lógica.
+// Body: { channelId, content, tokenPosition? }
+messagesRouter.post("/:instanceId/test-send", asyncHandler(async (req, res) => {
+  const id = Number(req.params.instanceId);
+  const { channelId, content, tokenPosition } = req.body as {
+    channelId?: string;
+    content?: string;
+    tokenPosition?: number;
+  };
+
+  if (!channelId || !content) {
+    res.status(400).json({ error: "channelId e content são obrigatórios" });
+    return;
+  }
+
+  // Busca tokens da instância
+  const tokens = await query<{ id: number; value: string; username: string | null; position: number }>(
+    `SELECT id, value, username, position FROM tokens
+     WHERE instance_id = $1 AND status = 'connected'
+     ORDER BY position ASC`,
+    [id]
+  );
+
+  if (tokens.length === 0) {
+    res.status(404).json({ error: "Nenhum token conectado para esta instância" });
+    return;
+  }
+
+  // Usa o token solicitado ou o primeiro disponível
+  const tok = tokenPosition != null
+    ? (tokens.find(t => t.position === tokenPosition) ?? tokens[0]!)
+    : tokens[0]!;
+
+  const rest = new DiscordRest(tok.value);
+
+  // 1. triggerTyping diagnóstico
+  const t0 = Date.now();
+  const typingRes = await rest.triggerTyping(channelId);
+  const typingMs = Date.now() - t0;
+
+  // 2. sendMessage diagnóstico
+  const t1 = Date.now();
+  const sendRes = await rest.sendMessage(channelId, content, null);
+  const sendMs = Date.now() - t1;
+
+  res.json({
+    token: { position: tok.position, username: tok.username },
+    triggerTyping: { status: typingRes.status, error: typingRes.error ?? null, ms: typingMs },
+    sendMessage: {
+      status: sendRes.status,
+      error: sendRes.error ?? null,
+      data: sendRes.data,
+      ms: sendMs,
+    },
+  });
+}));

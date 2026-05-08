@@ -693,10 +693,22 @@ export class MatchHandler {
     // Retry de acesso: threads privadas às vezes chegam via CHANNEL_CREATE antes
     // de o Discord processar o membership do token. Aguarda até 6s fazendo
     // triggerTyping para confirmar acesso antes de enviar a mensagem de fato.
+    // CADA chamada tem timeout de 10s via AbortSignal — não pende mais.
     for (let attempt = 1; attempt <= 3; attempt++) {
+      await this.host.log(this.instanceId, "INFO", "match",
+        `[diag] triggerTyping tentativa ${attempt}/3 em #${event.name}…`);
       const typingRes = await rest.triggerTyping(event.id);
       const typingStatus = typingRes.status;
+      await this.host.log(this.instanceId, "INFO", "match",
+        `[diag] triggerTyping → HTTP ${typingStatus}${typingRes.error ? ` | erro: ${typingRes.error.slice(0, 120)}` : ""}`);
+
       if (typingStatus >= 200 && typingStatus < 300) break; // acesso OK
+      if (typingStatus === 429) {
+        await this.host.log(this.instanceId, "WARN", "match",
+          `#${event.name} — rate limit no triggerTyping, aguardando 3s…`);
+        await sleep(3000);
+        continue;
+      }
       if (typingStatus === 403 || typingStatus === 404) {
         if (attempt < 3) {
           await this.host.log(this.instanceId, "WARN", "match",
@@ -707,7 +719,7 @@ export class MatchHandler {
             `#${event.name} — sem acesso ao canal após 3 tentativas (HTTP ${typingStatus}), tentando envio mesmo assim…`);
         }
       } else {
-        break; // outro código — segue normalmente
+        break; // outro código HTTP — segue normalmente
       }
     }
 
@@ -715,8 +727,15 @@ export class MatchHandler {
       2500,
       800 + content.length * (12 + Math.random() * 18),
     );
+    await this.host.log(this.instanceId, "INFO", "match",
+      `[diag] aguardando ${typingMs}ms (simulação de digitação)…`);
     await sleep(typingMs);
+
+    await this.host.log(this.instanceId, "INFO", "match",
+      `[diag] POST /channels/${event.id}/messages iniciado (content.length=${content.length}, image=${config.image_url ? "sim" : "não"})…`);
     let result = await rest.sendMessage(event.id, content, config.image_url);
+    await this.host.log(this.instanceId, "INFO", "match",
+      `[diag] sendMessage → HTTP ${result.status}${result.error ? ` | erro: ${result.error.slice(0, 200)}` : ""}${result.data ? " | ok" : ""}`);
 
     // Selfbots não suportam embeds — 400 com imagem: tenta novamente sem ela
     if (result.status === 400 && config.image_url) {
