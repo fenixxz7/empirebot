@@ -61,15 +61,15 @@ const STARTUP_GRACE_MS = 5000;
 const TICK_INTERVAL_MS = 2500;
 const NO_TOKEN_LOG_INTERVAL_MS = 30_000;
 const NO_WORK_LOG_INTERVAL_MS = 60_000;
-const PLAYER_CACHE_MS = 45_000;
+const PLAYER_CACHE_MS = 30_000;
 const PLAYER_CACHE_403_MS = 10 * 60_000;
-const MAX_FRESH_FETCH_PER_TICK = 4;
+const MAX_FRESH_FETCH_PER_TICK = 6;
 import { ACTIVE_QUEUE_TTL_MS } from "../lib/timings.js";
 
-// === RATE WINDOW (10 filas / minuto, depois pausa) ===
+// === RATE WINDOW (14 filas / minuto, depois pausa) ===
 const RATE_WINDOW_MS = 60_000;             // janela de 60s
-const RATE_MAX_WITH_PLAYERS = 6;           // até 6 filas com players
-const RATE_MAX_WITHOUT_PLAYERS = 4;        // até 4 filas vazias
+const RATE_MAX_WITH_PLAYERS = 8;           // até 8 filas com players
+const RATE_MAX_WITHOUT_PLAYERS = 6;        // até 6 filas vazias
 // Pausa e cooldown agora são carregados da DB (timing_*_ms em instance_configs)
 
 // Backoff extra após rate limit (429)
@@ -274,7 +274,7 @@ export class QueueRunner {
         this.instanceId,
         "INFO",
         "engine",
-        `Lote de 10 entradas (${wp} com players + ${np} vazias) — pausando ${Math.round(pause / 1000)}s.`,
+        `Lote de 14 entradas (${wp} com players + ${np} vazias) — pausando ${Math.round(pause / 1000)}s.`,
       );
       return;
     }
@@ -471,8 +471,8 @@ export class QueueRunner {
       // Preferência 70/30: filas vazias só são selecionadas aqui 30% das vezes;
       // nos outros 70% cai no Passo 3 (overflow) que prefere com-player se houver.
       const emptiesForOrg = emptiesPerOrg.get(currentOrgId) ?? 0;
-      const emptyBlocked = emptiesForOrg * 2 >= maxForOrg;
-      if (!pick && noPlayersSlotPreferred && !emptyBlocked && Math.random() < 0.30) {
+      const emptyBlocked = emptiesForOrg * 4 >= maxForOrg * 3;
+      if (!pick && noPlayersSlotPreferred && !emptyBlocked && Math.random() < 0.60) {
         for (let i = 0; i < orderedModes.length; i++) {
           const m = orderedModes[i]!;
           const hit = ranked.candidates.find(
@@ -632,7 +632,7 @@ export class QueueRunner {
           this.instanceId,
           "INFO",
           "engine",
-          `Lote de 10 entradas (${wp} com players + ${np} vazias) — pausando ${Math.round(pause / 1000)}s.`,
+          `Lote de 14 entradas (${wp} com players + ${np} vazias) — pausando ${Math.round(pause / 1000)}s.`,
         );
         return;
       }
@@ -738,7 +738,7 @@ export class QueueRunner {
 
     for (const c of stale) {
       if (!c.message_id) continue;
-      await sleep(900 + Math.floor(Math.random() * 1300));
+      await sleep(350 + Math.floor(Math.random() * 650));
       const r = await rest.fetchMessage(c.channel_id, c.message_id);
       if (r.status === 200 && r.data) {
         const blocked = blockedNames.length > 0 && hasBlockedName(r.data, blockedNames);

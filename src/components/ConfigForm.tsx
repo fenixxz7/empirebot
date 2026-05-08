@@ -20,7 +20,7 @@ type TokenPoolEntry = {
   username: string | null;
 };
 
-type TimingPreset = "seguro" | "intermediario" | "agressivo" | "personalizado";
+type TimingPreset = "seguro" | "intermediario" | "agressivo" | "ultra" | "personalizado";
 
 interface TimingValues {
   intraMin: number; intraMax: number;
@@ -32,6 +32,7 @@ const TIMING_PRESETS: Record<Exclude<TimingPreset, "personalizado">, TimingValue
   seguro:        { intraMin: 7000,  intraMax: 12000, pauseMin: 45000, pauseMax: 60000, clickMin: 1500, clickMax: 3000 },
   intermediario: { intraMin: 4000,  intraMax: 7000,  pauseMin: 25000, pauseMax: 35000, clickMin: 1000, clickMax: 2000 },
   agressivo:     { intraMin: 2000,  intraMax: 4000,  pauseMin: 12000, pauseMax: 20000, clickMin: 500,  clickMax: 1000 },
+  ultra:         { intraMin: 800,   intraMax: 1800,  pauseMin: 6000,  pauseMax: 10000, clickMin: 200,  clickMax: 600  },
 };
 
 function msToS(ms: number): string {
@@ -679,7 +680,7 @@ export function ConfigForm({
         </Section>
         <Section title="Velocidade de entrada">
           <div className="flex gap-2 flex-wrap mb-3">
-            {(["seguro", "intermediario", "agressivo", "personalizado"] as TimingPreset[]).map((p) => (
+            {(["seguro", "intermediario", "agressivo", "ultra", "personalizado"] as TimingPreset[]).map((p) => (
               <button
                 key={p}
                 type="button"
@@ -688,16 +689,17 @@ export function ConfigForm({
                   if (p !== "personalizado") setTiming(TIMING_PRESETS[p]);
                 }}
                 className={
-                  "px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors capitalize " +
+                  "px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors " +
                   (timingPreset === p
                     ? p === "seguro" ? "bg-emerald-600/20 border-emerald-500/60 text-emerald-300"
                       : p === "intermediario" ? "bg-accent/20 border-accent/60 text-accent"
                       : p === "agressivo" ? "bg-red-600/20 border-red-500/60 text-red-300"
+                      : p === "ultra" ? "bg-orange-600/20 border-orange-500/60 text-orange-300"
                       : "bg-purple-600/20 border-purple-500/60 text-purple-300"
                     : "bg-navy-950/60 border-white/10 text-slate-400 hover:border-white/30")
                 }
               >
-                {p === "seguro" ? "Seguro" : p === "intermediario" ? "Intermediário" : p === "agressivo" ? "Agressivo" : "Personalizado"}
+                {p === "seguro" ? "Seguro" : p === "intermediario" ? "Intermediário" : p === "agressivo" ? "Agressivo" : p === "ultra" ? "⚡ Ultra" : "Personalizado"}
               </button>
             ))}
           </div>
@@ -715,7 +717,7 @@ export function ConfigForm({
               </div>
             </div>
             <div>
-              <p className="mb-1">Pausa após lote de 10 (s)</p>
+              <p className="mb-1">Pausa após lote de 14 (s)</p>
               <div className="flex gap-2 items-center">
                 <input type="text" inputMode="decimal" className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
                   defaultValue={msToS(timing.pauseMin)} key={`pauseMin-${timingPreset}`}
@@ -743,6 +745,7 @@ export function ConfigForm({
             {timingPreset === "seguro" && "Pausas longas, menos detecção — recomendado para contas novas."}
             {timingPreset === "intermediario" && "Equilíbrio entre velocidade e segurança (padrão)."}
             {timingPreset === "agressivo" && "Entradas rápidas — maior risco de detecção/ban."}
+            {timingPreset === "ultra" && "⚡ Máxima velocidade — use apenas com contas antigas e em baixa concorrência. Alto risco de ban."}
             {timingPreset === "personalizado" && "Valores personalizados. Edite os campos acima."}
           </p>
         </Section>
