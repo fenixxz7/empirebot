@@ -47,6 +47,12 @@ interface CycleConfig {
   maxValor: number;
   tokenStrategy: TokenStrategy;
   tokenStrategyN: number;
+  timingIntraMinMs: number;
+  timingIntraMaxMs: number;
+  timingPauseMinMs: number;
+  timingPauseMaxMs: number;
+  timingClickMinMs: number;
+  timingClickMaxMs: number;
 }
 
 const STARTUP_GRACE_MS = 5000;
@@ -63,11 +69,7 @@ import { ACTIVE_QUEUE_TTL_MS } from "../lib/timings.js";
 const RATE_WINDOW_MS = 60_000;             // janela de 60s
 const RATE_MAX_WITH_PLAYERS = 6;           // até 6 filas com players
 const RATE_MAX_WITHOUT_PLAYERS = 4;        // até 4 filas vazias
-const RATE_PAUSE_MS_MIN = 25_000;          // pausa após 10 entradas
-const RATE_PAUSE_MS_MAX = 35_000;
-// Cooldown curto entre entradas dentro da janela (jitter humano)
-const INTRA_WINDOW_COOLDOWN_MIN_MS = 4_000;
-const INTRA_WINDOW_COOLDOWN_MAX_MS = 7_000;
+// Pausa e cooldown agora são carregados da DB (timing_*_ms em instance_configs)
 
 // Backoff extra após rate limit (429)
 const RATE_LIMIT_BACKOFF_MIN_MS = 120_000;
@@ -191,9 +193,18 @@ export class QueueRunner {
       max_valor: number;
       token_strategy: string;
       token_strategy_n: number;
+      timing_intra_min_ms: number;
+      timing_intra_max_ms: number;
+      timing_pause_min_ms: number;
+      timing_pause_max_ms: number;
+      timing_click_min_ms: number;
+      timing_click_max_ms: number;
     }>(
       `SELECT delay_seconds, allowed_modes, allowed_categories, blocked_names,
-              max_valor, token_strategy, token_strategy_n
+              max_valor, token_strategy, token_strategy_n,
+              timing_intra_min_ms, timing_intra_max_ms,
+              timing_pause_min_ms, timing_pause_max_ms,
+              timing_click_min_ms, timing_click_max_ms
        FROM instance_configs
        WHERE instance_id = $1`,
       [this.instanceId],
@@ -206,15 +217,22 @@ export class QueueRunner {
        ORDER BY o.priority DESC, o.id ASC`,
       [this.instanceId],
     );
+    const r = cfgRows[0];
     return {
-      delay_seconds: cfgRows[0]?.delay_seconds ?? 18,
-      allowed_modes: parseList(cfgRows[0]?.allowed_modes ?? "").map(normalizeMode).filter((m): m is string => m !== null),
-      allowed_categories: parseList(cfgRows[0]?.allowed_categories ?? ""),
-      selected_org_ids: orgRows.map((r) => r.org_id),
-      blockedNames: parseList(cfgRows[0]?.blocked_names ?? "").map((n) => n.toLowerCase()),
-      maxValor: Number(cfgRows[0]?.max_valor ?? 0),
-      tokenStrategy: (cfgRows[0]?.token_strategy ?? "single") as TokenStrategy,
-      tokenStrategyN: Math.max(1, cfgRows[0]?.token_strategy_n ?? 5),
+      delay_seconds: r?.delay_seconds ?? 18,
+      allowed_modes: parseList(r?.allowed_modes ?? "").map(normalizeMode).filter((m): m is string => m !== null),
+      allowed_categories: parseList(r?.allowed_categories ?? ""),
+      selected_org_ids: orgRows.map((row) => row.org_id),
+      blockedNames: parseList(r?.blocked_names ?? "").map((n) => n.toLowerCase()),
+      maxValor: Number(r?.max_valor ?? 0),
+      tokenStrategy: (r?.token_strategy ?? "single") as TokenStrategy,
+      tokenStrategyN: Math.max(1, r?.token_strategy_n ?? 5),
+      timingIntraMinMs: r?.timing_intra_min_ms ?? 4000,
+      timingIntraMaxMs: r?.timing_intra_max_ms ?? 7000,
+      timingPauseMinMs: r?.timing_pause_min_ms ?? 25000,
+      timingPauseMaxMs: r?.timing_pause_max_ms ?? 35000,
+      timingClickMinMs: r?.timing_click_min_ms ?? 1000,
+      timingClickMaxMs: r?.timing_click_max_ms ?? 2000,
     };
   }
 
@@ -237,8 +255,8 @@ export class QueueRunner {
     const noPlayersSlotPreferred = this.joinedWithoutPlayers < RATE_MAX_WITHOUT_PLAYERS;
 
     if (totalJoined >= RATE_MAX_TOTAL) {
-      // Bateu 10 entradas — pausa de 25-35s
-      const pause = randInt(RATE_PAUSE_MS_MIN, RATE_PAUSE_MS_MAX);
+      // Bateu 10 entradas — pausa configurável
+      const pause = randInt(cfg.timingPauseMinMs, cfg.timingPauseMaxMs);
       this.nextJoinAt = now + pause;
       this.windowStart = 0;
       const wp = this.joinedWithPlayers;
@@ -520,8 +538,8 @@ export class QueueRunner {
     const tokenIdx = cfg.tokenStrategy === "single" ? 0 : this.tokenCursor % tokens.length;
     const token = tokens[tokenIdx]!;
 
-    // Pausa humanizada curta antes de clicar (1-2s)
-    await sleep(1000 + Math.floor(Math.random() * 1000));
+    // Pausa humanizada curta antes de clicar (configurável)
+    await sleep(randInt(cfg.timingClickMinMs, cfg.timingClickMaxMs));
 
     const joined = await this.joinQueue(candidate, token, activeRows.length, candidatePlayers);
 
@@ -552,7 +570,7 @@ export class QueueRunner {
       const totalNow = this.joinedWithPlayers + this.joinedWithoutPlayers;
       const RATE_MAX_TOTAL = RATE_MAX_WITH_PLAYERS + RATE_MAX_WITHOUT_PLAYERS;
       if (totalNow >= RATE_MAX_TOTAL) {
-        const pause = randInt(RATE_PAUSE_MS_MIN, RATE_PAUSE_MS_MAX);
+        const pause = randInt(cfg.timingPauseMinMs, cfg.timingPauseMaxMs);
         const wp = this.joinedWithPlayers;
         const np = this.joinedWithoutPlayers;
         this.joinedWithPlayers = 0;
@@ -574,8 +592,8 @@ export class QueueRunner {
       }
     }
 
-    // Cooldown curto entre entradas dentro da janela (4-7s)
-    let cooldown = randInt(INTRA_WINDOW_COOLDOWN_MIN_MS, INTRA_WINDOW_COOLDOWN_MAX_MS);
+    // Cooldown curto entre entradas dentro da janela (configurável)
+    let cooldown = randInt(cfg.timingIntraMinMs, cfg.timingIntraMaxMs);
     if (this.extraDelayMs > 0) {
       cooldown += this.extraDelayMs;
       this.extraDelayMs = 0;

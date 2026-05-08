@@ -35,6 +35,12 @@ const SaveConfigBody = z.object({
   max_valor: z.coerce.number().default(0),
   token_strategy: z.string().optional().default("single"),
   token_strategy_n: z.coerce.number().int().min(1).optional().default(5),
+  timing_intra_min_ms: z.coerce.number().int().min(500).optional().default(4000),
+  timing_intra_max_ms: z.coerce.number().int().min(500).optional().default(7000),
+  timing_pause_min_ms: z.coerce.number().int().min(1000).optional().default(25000),
+  timing_pause_max_ms: z.coerce.number().int().min(1000).optional().default(35000),
+  timing_click_min_ms: z.coerce.number().int().min(100).optional().default(1000),
+  timing_click_max_ms: z.coerce.number().int().min(100).optional().default(2000),
 });
 
 // Body do POST /:instanceId/import — formato JSON exportado.
@@ -74,10 +80,16 @@ configRouter.get("/:instanceId", asyncHandler(async (req, res) => {
     allowed_modes: string; message_main: string; message_per_org: string;
     image_url: string | null; blocked_names: string;
     max_valor: number; token_strategy: string; token_strategy_n: number;
+    timing_intra_min_ms: number; timing_intra_max_ms: number;
+    timing_pause_min_ms: number; timing_pause_max_ms: number;
+    timing_click_min_ms: number; timing_click_max_ms: number;
   }>(
     `SELECT category, allowed_categories, delay_seconds, rotation_minutes,
             allowed_modes, message_main, message_per_org, image_url, blocked_names,
-            max_valor, token_strategy, token_strategy_n
+            max_valor, token_strategy, token_strategy_n,
+            timing_intra_min_ms, timing_intra_max_ms,
+            timing_pause_min_ms, timing_pause_max_ms,
+            timing_click_min_ms, timing_click_max_ms
      FROM instance_configs WHERE instance_id = $1`,
     [id]
   );
@@ -141,6 +153,9 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
     tokens_raw, selected_org_ids, blocked_names,
     max_valor, token_strategy, token_strategy_n,
     selected_token_ids,
+    timing_intra_min_ms, timing_intra_max_ms,
+    timing_pause_min_ms, timing_pause_max_ms,
+    timing_click_min_ms, timing_click_max_ms,
   } = req.body;
 
   // allowed_categories pode chegar como array (UI) ou string CSV (terminal/api)
@@ -176,13 +191,19 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
          allowed_modes = $6, message_main = $7, message_per_org = $8,
          image_url = $9, blocked_names = $10,
          max_valor = $11, token_strategy = $12, token_strategy_n = $13,
+         timing_intra_min_ms = $14, timing_intra_max_ms = $15,
+         timing_pause_min_ms = $16, timing_pause_max_ms = $17,
+         timing_click_min_ms = $18, timing_click_max_ms = $19,
          updated_at = NOW()
      WHERE instance_id = $1`,
     [id, primaryCategory, allowedCategoriesStr,
      delay_seconds, rotation_minutes, allowed_modes,
      message_main, message_per_org, image_url ?? null,
      blocked_names ?? "",
-     Number(max_valor ?? 0), safeStrategy, Math.max(1, Number(token_strategy_n ?? 5))]
+     Number(max_valor ?? 0), safeStrategy, Math.max(1, Number(token_strategy_n ?? 5)),
+     timing_intra_min_ms ?? 4000, timing_intra_max_ms ?? 7000,
+     timing_pause_min_ms ?? 25000, timing_pause_max_ms ?? 35000,
+     timing_click_min_ms ?? 1000, timing_click_max_ms ?? 2000]
   );
 
   // Tokens: novo sistema — seleção por pool ID

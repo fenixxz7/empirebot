@@ -57,6 +57,12 @@ export interface InstanceConfig {
   max_valor: number;
   token_strategy: TokenStrategy;
   token_strategy_n: number;
+  timing_intra_min_ms: number;
+  timing_intra_max_ms: number;
+  timing_pause_min_ms: number;
+  timing_pause_max_ms: number;
+  timing_click_min_ms: number;
+  timing_click_max_ms: number;
 }
 
 export interface Token {

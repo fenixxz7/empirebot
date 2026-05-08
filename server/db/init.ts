@@ -27,6 +27,13 @@ export async function initDatabase(): Promise<void> {
     `ALTER TABLE instance_configs
      ADD COLUMN IF NOT EXISTS allowed_categories TEXT NOT NULL DEFAULT 'Mobile'`,
   );
+  // Timing configurável (substitui constantes hardcoded do engine)
+  await pool.query(`ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS timing_intra_min_ms INTEGER NOT NULL DEFAULT 4000`);
+  await pool.query(`ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS timing_intra_max_ms INTEGER NOT NULL DEFAULT 7000`);
+  await pool.query(`ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS timing_pause_min_ms INTEGER NOT NULL DEFAULT 25000`);
+  await pool.query(`ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS timing_pause_max_ms INTEGER NOT NULL DEFAULT 35000`);
+  await pool.query(`ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS timing_click_min_ms INTEGER NOT NULL DEFAULT 1000`);
+  await pool.query(`ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS timing_click_max_ms INTEGER NOT NULL DEFAULT 2000`);
   // Categoria por canal e título do embed (pra distinguir múltiplas filas no log)
   await pool.query(
     `ALTER TABLE org_channels ADD COLUMN IF NOT EXISTS category TEXT`,

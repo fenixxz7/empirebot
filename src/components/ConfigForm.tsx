@@ -20,6 +20,29 @@ type TokenPoolEntry = {
   username: string | null;
 };
 
+type TimingPreset = "seguro" | "intermediario" | "agressivo" | "personalizado";
+
+interface TimingValues {
+  intraMin: number; intraMax: number;
+  pauseMin: number; pauseMax: number;
+  clickMin: number; clickMax: number;
+}
+
+const TIMING_PRESETS: Record<Exclude<TimingPreset, "personalizado">, TimingValues> = {
+  seguro:        { intraMin: 7000,  intraMax: 12000, pauseMin: 45000, pauseMax: 60000, clickMin: 1500, clickMax: 3000 },
+  intermediario: { intraMin: 4000,  intraMax: 7000,  pauseMin: 25000, pauseMax: 35000, clickMin: 1000, clickMax: 2000 },
+  agressivo:     { intraMin: 2000,  intraMax: 4000,  pauseMin: 12000, pauseMax: 20000, clickMin: 500,  clickMax: 1000 },
+};
+
+function detectPreset(v: TimingValues): TimingPreset {
+  for (const [key, p] of Object.entries(TIMING_PRESETS) as [Exclude<TimingPreset,"personalizado">, TimingValues][]) {
+    if (v.intraMin === p.intraMin && v.intraMax === p.intraMax &&
+        v.pauseMin === p.pauseMin && v.pauseMax === p.pauseMax &&
+        v.clickMin === p.clickMin && v.clickMax === p.clickMax) return key;
+  }
+  return "personalizado";
+}
+
 type ConfigPayload = {
   config: {
     category: Category;
@@ -34,6 +57,12 @@ type ConfigPayload = {
     max_valor: number;
     token_strategy: string;
     token_strategy_n: number;
+    timing_intra_min_ms: number;
+    timing_intra_max_ms: number;
+    timing_pause_min_ms: number;
+    timing_pause_max_ms: number;
+    timing_click_min_ms: number;
+    timing_click_max_ms: number;
   } | null;
   token_pool: TokenPoolEntry[];
   selected_token_ids: number[];
@@ -70,6 +99,8 @@ export function ConfigForm({
   );
   const [delay, setDelay] = useState(12);
   const [rotation, setRotation] = useState(90);
+  const [timing, setTiming] = useState<TimingValues>(TIMING_PRESETS.intermediario);
+  const [timingPreset, setTimingPreset] = useState<TimingPreset>("intermediario");
   const [allowedModes, setAllowedModes] = useState("1x1\n3x3");
   const [messageMain, setMessageMain] = useState("");
   const [messagePerOrg, setMessagePerOrg] = useState("");
@@ -118,6 +149,16 @@ export function ConfigForm({
       setMaxValor(Number(cfg.config.max_valor ?? 0));
       setTokenStrategy(cfg.config.token_strategy ?? "single");
       setTokenStrategyN(Number(cfg.config.token_strategy_n ?? 5));
+      const tv: TimingValues = {
+        intraMin: cfg.config.timing_intra_min_ms ?? 4000,
+        intraMax: cfg.config.timing_intra_max_ms ?? 7000,
+        pauseMin: cfg.config.timing_pause_min_ms ?? 25000,
+        pauseMax: cfg.config.timing_pause_max_ms ?? 35000,
+        clickMin: cfg.config.timing_click_min_ms ?? 1000,
+        clickMax: cfg.config.timing_click_max_ms ?? 2000,
+      };
+      setTiming(tv);
+      setTimingPreset(detectPreset(tv));
     }
     setSelectedOrgIds(new Set(cfg.selected_org_ids));
     setSelectedTokenIds(new Set(cfg.selected_token_ids ?? []));
@@ -348,6 +389,12 @@ export function ConfigForm({
           token_strategy_n: tokenStrategyN,
           selected_token_ids: Array.from(selectedTokenIds),
           selected_org_ids: Array.from(selectedOrgIds),
+          timing_intra_min_ms: timing.intraMin,
+          timing_intra_max_ms: timing.intraMax,
+          timing_pause_min_ms: timing.pauseMin,
+          timing_pause_max_ms: timing.pauseMax,
+          timing_click_min_ms: timing.clickMin,
+          timing_click_max_ms: timing.clickMax,
         }),
       });
       await reload();
@@ -559,11 +606,68 @@ export function ConfigForm({
             Tokens ativos: <b className="text-slate-300">{tokensActive}/{tokensCount}</b>
           </p>
         </Section>
-        <Section title="Delay (segundos)">
-          <input
-            type="number" min={1} className="input"
-            value={delay} onChange={(e) => setDelay(Number(e.target.value))}
-          />
+        <Section title="Velocidade de entrada">
+          <div className="flex gap-2 flex-wrap mb-3">
+            {(["seguro", "intermediario", "agressivo", "personalizado"] as TimingPreset[]).map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => {
+                  setTimingPreset(p);
+                  if (p !== "personalizado") setTiming(TIMING_PRESETS[p]);
+                }}
+                className={
+                  "px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors capitalize " +
+                  (timingPreset === p
+                    ? p === "seguro" ? "bg-emerald-600/20 border-emerald-500/60 text-emerald-300"
+                      : p === "intermediario" ? "bg-accent/20 border-accent/60 text-accent"
+                      : p === "agressivo" ? "bg-red-600/20 border-red-500/60 text-red-300"
+                      : "bg-purple-600/20 border-purple-500/60 text-purple-300"
+                    : "bg-navy-950/60 border-white/10 text-slate-400 hover:border-white/30")
+                }
+              >
+                {p === "seguro" ? "Seguro" : p === "intermediario" ? "Intermediário" : p === "agressivo" ? "Agressivo" : "Personalizado"}
+              </button>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-slate-400">
+            <div>
+              <p className="mb-1">Delay entre entradas (ms)</p>
+              <div className="flex gap-2 items-center">
+                <input type="number" min={200} step={100} className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
+                  value={timing.intraMin} onChange={(e) => setTiming(t => ({ ...t, intraMin: Number(e.target.value) }))} />
+                <span className="text-slate-500">–</span>
+                <input type="number" min={200} step={100} className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
+                  value={timing.intraMax} onChange={(e) => setTiming(t => ({ ...t, intraMax: Number(e.target.value) }))} />
+              </div>
+            </div>
+            <div>
+              <p className="mb-1">Pausa após lote de 10 (ms)</p>
+              <div className="flex gap-2 items-center">
+                <input type="number" min={1000} step={1000} className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
+                  value={timing.pauseMin} onChange={(e) => setTiming(t => ({ ...t, pauseMin: Number(e.target.value) }))} />
+                <span className="text-slate-500">–</span>
+                <input type="number" min={1000} step={1000} className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
+                  value={timing.pauseMax} onChange={(e) => setTiming(t => ({ ...t, pauseMax: Number(e.target.value) }))} />
+              </div>
+            </div>
+            <div className="col-span-2">
+              <p className="mb-1">Delay antes do clique (ms)</p>
+              <div className="flex gap-2 items-center max-w-xs">
+                <input type="number" min={100} step={100} className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
+                  value={timing.clickMin} onChange={(e) => setTiming(t => ({ ...t, clickMin: Number(e.target.value) }))} />
+                <span className="text-slate-500">–</span>
+                <input type="number" min={100} step={100} className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
+                  value={timing.clickMax} onChange={(e) => setTiming(t => ({ ...t, clickMax: Number(e.target.value) }))} />
+              </div>
+            </div>
+          </div>
+          <p className="text-xs text-slate-500 mt-2">
+            {timingPreset === "seguro" && "Pausas longas, menos detecção — recomendado para contas novas."}
+            {timingPreset === "intermediario" && "Equilíbrio entre velocidade e segurança (padrão)."}
+            {timingPreset === "agressivo" && "Entradas rápidas — maior risco de detecção/ban."}
+            {timingPreset === "personalizado" && "Valores personalizados. Edite os campos acima."}
+          </p>
         </Section>
       </div>
 
