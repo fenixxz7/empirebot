@@ -904,7 +904,11 @@ export function ConfigForm({
             <input
               type="number" min={0} max={200} className="input text-center"
               value={entryCapWithPlayers}
-              onChange={(e) => setEntryCapWithPlayers(Math.min(200, Math.max(0, Number(e.target.value))))}
+              onChange={(e) => {
+                const v = Math.min(200, Math.max(0, Number(e.target.value)));
+                setEntryCapWithPlayers(v);
+                setEntryCapTotal(v + entryCapEmpty);
+              }}
             />
           </div>
           <div>
@@ -912,15 +916,20 @@ export function ConfigForm({
             <input
               type="number" min={0} max={200} className="input text-center"
               value={entryCapEmpty}
-              onChange={(e) => setEntryCapEmpty(Math.min(200, Math.max(0, Number(e.target.value))))}
+              onChange={(e) => {
+                const v = Math.min(200, Math.max(0, Number(e.target.value)));
+                setEntryCapEmpty(v);
+                setEntryCapTotal(entryCapWithPlayers + v);
+              }}
             />
           </div>
           <div>
             <p className="text-xs text-slate-500 mb-1">Total / 60s</p>
             <input
-              type="number" min={0} max={200} className="input text-center"
+              type="number" className="input text-center opacity-50 cursor-not-allowed"
               value={entryCapTotal}
-              onChange={(e) => setEntryCapTotal(Math.min(200, Math.max(0, Number(e.target.value))))}
+              readOnly
+              tabIndex={-1}
             />
           </div>
         </div>
