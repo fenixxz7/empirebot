@@ -9,7 +9,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export async function initDatabase(): Promise<void> {
   const sql = readFileSync(path.join(__dirname, "schema.sql"), "utf8");
-  await pool.query(sql);
+  // Split and run each statement individually so IF NOT EXISTS works correctly
+  // on Replit's PostgreSQL (running the whole file at once causes type conflicts)
+  const statements = sql
+    .split(/;/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  for (const stmt of statements) {
+    await pool.query(stmt);
+  }
 
   // Garante colunas de orgs necessárias antes de qualquer query que as use
   await pool.query(
