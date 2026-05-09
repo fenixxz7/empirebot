@@ -719,7 +719,7 @@ export function ConfigForm({
         )}
       </Section>
 
-      <div className="grid sm:grid-cols-2 gap-4">
+      <div className="grid sm:grid-cols-3 gap-4">
         <Section title="Rotação de token (minutos)">
           <input
             type="number" min={1} className="input"
@@ -727,6 +727,15 @@ export function ConfigForm({
           />
           <p className="text-xs text-slate-500 mt-2">
             Tokens ativos: <b className="text-slate-300">{tokensActive}/{tokensCount}</b>
+          </p>
+        </Section>
+        <Section title="Intervalo do ciclo (s)">
+          <input
+            type="number" min={1} max={300} className="input"
+            value={delay} onChange={(e) => setDelay(Math.max(1, Number(e.target.value)))}
+          />
+          <p className="text-xs text-slate-500 mt-2">
+            Pausa entre uma rodada completa e a próxima (±30% jitter).
           </p>
         </Section>
         <Section title="Velocidade de entrada">
