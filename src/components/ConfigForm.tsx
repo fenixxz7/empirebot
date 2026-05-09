@@ -84,6 +84,9 @@ type ConfigPayload = {
     entry_cap_empty_per_60s: number;
     entry_cap_total_per_60s: number;
     refusal_check_delay_ms: number;
+    enable_60rpm_mode?: boolean;
+    active_queue_soft_limit?: number;
+    active_queue_hard_limit?: number;
   } | null;
   token_pool: TokenPoolEntry[];
   selected_token_ids: number[];
@@ -138,6 +141,9 @@ export function ConfigForm({
   const [entryCapEmpty, setEntryCapEmpty] = useState(18);
   const [entryCapTotal, setEntryCapTotal] = useState(48);
   const [refusalCheckDelayMs, setRefusalCheckDelayMs] = useState(800);
+  const [enable60RpmMode, setEnable60RpmMode] = useState(false);
+  const [aqSoftLimit, setAqSoftLimit] = useState(120);
+  const [aqHardLimit, setAqHardLimit] = useState(180);
   const [tokenStrategy, setTokenStrategy] = useState("single");
   const [tokenStrategyN, setTokenStrategyN] = useState(5);
   const [selectedOrgIds, setSelectedOrgIds] = useState<Set<number>>(new Set());
@@ -191,6 +197,9 @@ export function ConfigForm({
       setEntryCapEmpty(Number(cfg.config.entry_cap_empty_per_60s ?? 18));
       setEntryCapTotal(Number(cfg.config.entry_cap_total_per_60s ?? 48));
       setRefusalCheckDelayMs(Number(cfg.config.refusal_check_delay_ms ?? 800));
+      setEnable60RpmMode(Boolean(cfg.config.enable_60rpm_mode ?? false));
+      setAqSoftLimit(Number(cfg.config.active_queue_soft_limit ?? 120));
+      setAqHardLimit(Number(cfg.config.active_queue_hard_limit ?? 180));
       setTokenStrategy(cfg.config.token_strategy ?? "single");
       setTokenStrategyN(Number(cfg.config.token_strategy_n ?? 5));
       const tv: TimingValues = {
@@ -492,6 +501,9 @@ export function ConfigForm({
           entry_cap_empty_per_60s: entryCapEmpty,
           entry_cap_total_per_60s: entryCapTotal,
           refusal_check_delay_ms: refusalCheckDelayMs,
+          enable_60rpm_mode: enable60RpmMode,
+          active_queue_soft_limit: aqSoftLimit,
+          active_queue_hard_limit: aqHardLimit,
         }),
       });
       await reload();
@@ -1017,6 +1029,55 @@ export function ConfigForm({
         <p className="text-xs text-slate-500 mt-2">
           Controla quantas entradas em fila o bot pode fazer a cada janela de 60 segundos. Valores maiores aumentam agressividade e podem aumentar rate limit.
         </p>
+      </Section>
+      )}
+
+      {isAdmin && (
+      <Section title="Modo Experimental 60/min">
+        <div className="space-y-4">
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setEnable60RpmMode((v) => !v)}
+              className={`relative w-12 h-6 rounded-full transition-colors flex-shrink-0 ${enable60RpmMode ? "bg-accent" : "bg-white/10"}`}
+            >
+              <span className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white shadow transition-transform ${enable60RpmMode ? "translate-x-6" : "translate-x-0"}`} />
+            </button>
+            <span className={`text-sm font-medium ${enable60RpmMode ? "text-accent" : "text-slate-400"}`}>
+              {enable60RpmMode ? "Ativo — throughput máximo habilitado" : "Desativado (modo conservador padrão)"}
+            </span>
+          </div>
+          {enable60RpmMode && (
+            <div className="rounded-xl border border-amber-400/30 bg-amber-500/5 p-3 space-y-3">
+              <p className="text-xs text-amber-300/80">
+                Ativa: cache de active_queues (3s), limites globais de filas, pending_checks ampliado (15), skip de verificação acima de 8 pendentes, modo seguro automático (2min após spike de erros) e log de diagnóstico a cada 30s.
+              </p>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-xs text-slate-400 mb-1">Soft limit (≥ só aceita com players)</p>
+                  <input
+                    type="number" min={10} max={500} step={10}
+                    className="input text-center"
+                    value={aqSoftLimit}
+                    onChange={(e) => setAqSoftLimit(Math.max(10, Math.min(500, Number(e.target.value))))}
+                  />
+                </div>
+                <div>
+                  <p className="text-xs text-slate-400 mb-1">Hard limit (≥ pausa total)</p>
+                  <input
+                    type="number" min={10} max={500} step={10}
+                    className="input text-center"
+                    value={aqHardLimit}
+                    onChange={(e) => setAqHardLimit(Math.max(10, Math.min(500, Number(e.target.value))))}
+                  />
+                </div>
+              </div>
+              <p className="text-xs text-slate-500">
+                Soft={aqSoftLimit}: acima disso só entra em filas com players. Hard={aqHardLimit}: acima disso pausa até liberar vagas via sweep.
+              </p>
+            </div>
+          )}
+        </div>
       </Section>
       )}
 

@@ -407,6 +407,17 @@ export async function initDatabase(): Promise<void> {
     `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS entry_cap_total_per_60s INTEGER NOT NULL DEFAULT 48`,
   );
 
+  // Modo 60rpm experimental: toggle + limites globais de active_queues
+  await pool.query(
+    `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS enable_60rpm_mode BOOLEAN NOT NULL DEFAULT FALSE`,
+  );
+  await pool.query(
+    `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS active_queue_soft_limit INTEGER NOT NULL DEFAULT 120`,
+  );
+  await pool.query(
+    `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS active_queue_hard_limit INTEGER NOT NULL DEFAULT 180`,
+  );
+
   // Garante que ninguém ficou com fila "fantasma" entre boots
   await pool.query(`DELETE FROM active_queues`);
 

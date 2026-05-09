@@ -69,6 +69,9 @@ export interface InstanceConfig {
   entry_cap_with_players_per_60s: number;
   entry_cap_empty_per_60s: number;
   entry_cap_total_per_60s: number;
+  enable_60rpm_mode: boolean;
+  active_queue_soft_limit: number;
+  active_queue_hard_limit: number;
 }
 
 export interface Token {

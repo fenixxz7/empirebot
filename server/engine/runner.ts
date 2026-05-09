@@ -59,6 +59,9 @@ interface CycleConfig {
   entryCapEmpty: number;
   entryCapTotal: number;
   refusalCheckDelayMs: number;
+  enable60RpmMode: boolean;
+  aqSoftLimit: number;
+  aqHardLimit: number;
 }
 
 const STARTUP_GRACE_MS = 5000;
@@ -86,6 +89,15 @@ const REAL_LIMIT_COOLDOWN_MS = 3 * 60_000;   // 3 min após recusa de limite rea
 const WAIT_DETECT_COOLDOWN_MS = 45_000;       // 45s para "aguarde Xs" genérico
 // Delay default da verificação pós-clique — sobrescrito por refusal_check_delay_ms na DB
 const DEFAULT_REFUSAL_CHECK_DELAY_MS = 800;
+
+// Modo 60rpm experimental
+const PENDING_CHECKS_MAX_NORMAL = 5;
+const PENDING_CHECKS_MAX_60RPM = 15;
+const PENDING_CHECKS_SKIP_THRESHOLD = 8;
+const SAFE_MODE_DURATION_MS = 2 * 60_000;
+const DIAG_INTERVAL_MS = 30_000;
+const ACTIVE_CACHE_TTL_MS = 3_000;
+const CHOOSE_WARN_STAGE_MS = 300;
 
 interface PlayerInfo {
   count: number;
@@ -139,6 +151,17 @@ export class QueueRunner {
   private bgRefreshQueue: ChannelRow[] = [];
   private bgRefreshToken: ActiveToken | null = null;
   private bgRefreshBlockedNames: string[] = [];
+  // 60rpm: cache de active_queues em memória (evita query DB a cada tick, TTL 3s)
+  private activeRowsCache: Array<{ channel_id: string; message_id: string; org_id: number; joined_with_players: boolean }> = [];
+  private activeRowsCacheTs = 0;
+  // 60rpm: janela de segurança (rastreia 429/403/recusas para modo seguro automático)
+  private safetyEvents: Array<{ ts: number; type: "ok" | "429" | "403" | "refusal" }> = [];
+  private safeModeSince = 0;
+  // 60rpm: latências de chooseQueue para cálculo de p50/p95
+  private chooseLatencies: number[] = [];
+  private lastDiagAt = 0;
+  // 60rpm: motivos de bloqueio acumulados entre logs de 30s
+  private blockedReasons = new Map<string, number>();
 
   constructor(
     private readonly instanceId: number,
@@ -167,6 +190,13 @@ export class QueueRunner {
     this.bgRefreshRunning = false;
     this.bgRefreshQueue = [];
     this.bgRefreshToken = null;
+    this.activeRowsCache = [];
+    this.activeRowsCacheTs = 0;
+    this.safetyEvents = [];
+    this.safeModeSince = 0;
+    this.chooseLatencies = [];
+    this.lastDiagAt = 0;
+    this.blockedReasons.clear();
     this.timer = setTimeout(() => this.tick(), STARTUP_GRACE_MS);
   }
 
@@ -281,6 +311,7 @@ export class QueueRunner {
       [this.instanceId, String(ACTIVE_QUEUE_TTL_MS)],
     );
     if (removed.length > 0) {
+      this.activeRowsCacheTs = 0; // invalida cache — sweep removeu entradas
       const remaining = await query<{ c: string }>(
         `SELECT COUNT(*)::text AS c FROM active_queues WHERE instance_id = $1`,
         [this.instanceId],
@@ -326,6 +357,9 @@ export class QueueRunner {
       entry_cap_empty_per_60s: number;
       entry_cap_total_per_60s: number;
       refusal_check_delay_ms: number;
+      enable_60rpm_mode: boolean;
+      active_queue_soft_limit: number;
+      active_queue_hard_limit: number;
     }>(
       `SELECT delay_seconds, allowed_modes, allowed_categories, blocked_names,
               max_valor, token_strategy, token_strategy_n,
@@ -336,7 +370,10 @@ export class QueueRunner {
               entry_cap_with_players_per_60s,
               entry_cap_empty_per_60s,
               entry_cap_total_per_60s,
-              refusal_check_delay_ms
+              refusal_check_delay_ms,
+              enable_60rpm_mode,
+              active_queue_soft_limit,
+              active_queue_hard_limit
        FROM instance_configs
        WHERE instance_id = $1`,
       [this.instanceId],
@@ -371,6 +408,9 @@ export class QueueRunner {
       entryCapEmpty: Math.max(0, Math.min(200, r?.entry_cap_empty_per_60s ?? 18)),
       entryCapTotal: Math.max(0, Math.min(200, r?.entry_cap_total_per_60s ?? 48)),
       refusalCheckDelayMs: Math.min(5000, Math.max(300, r?.refusal_check_delay_ms ?? DEFAULT_REFUSAL_CHECK_DELAY_MS)),
+      enable60RpmMode: r?.enable_60rpm_mode ?? false,
+      aqSoftLimit: Math.max(10, r?.active_queue_soft_limit ?? 120),
+      aqHardLimit: Math.max(10, r?.active_queue_hard_limit ?? 180),
     };
     this.configCache = { cfg, ts: Date.now() };
     return cfg;
@@ -401,6 +441,10 @@ export class QueueRunner {
   private async iterate(cfg: CycleConfig): Promise<void> {
     const now = Date.now();
     if (now < this.nextJoinAt) return;
+
+    // 60rpm: verifica expiração do modo seguro
+    this.exitSafeMode();
+    const inSafeMode = cfg.enable60RpmMode && this.safeModeSince > 0;
 
     // === Janela de rate: reseta se passou 60s ===
     if (now - this.windowStart > RATE_WINDOW_MS) {
@@ -467,16 +511,23 @@ export class QueueRunner {
       return;
     }
 
-    const activeRows = await query<{
-      channel_id: string;
-      message_id: string;
-      org_id: number;
-      joined_with_players: boolean;
-    }>(
-      `SELECT channel_id, message_id, org_id, joined_with_players
-       FROM active_queues WHERE instance_id = $1`,
-      [this.instanceId],
-    );
+    // 60rpm: usa cache em memória (TTL 3s) para evitar query DB a cada tick
+    const t_active = Date.now();
+    let activeRows: Array<{ channel_id: string; message_id: string; org_id: number; joined_with_players: boolean }>;
+    if (cfg.enable60RpmMode && !inSafeMode && (now - this.activeRowsCacheTs) < ACTIVE_CACHE_TTL_MS) {
+      activeRows = this.activeRowsCache;
+    } else {
+      activeRows = await query<{ channel_id: string; message_id: string; org_id: number; joined_with_players: boolean }>(
+        `SELECT channel_id, message_id, org_id, joined_with_players
+         FROM active_queues WHERE instance_id = $1`,
+        [this.instanceId],
+      );
+      if (cfg.enable60RpmMode) {
+        this.activeRowsCache = activeRows;
+        this.activeRowsCacheTs = now;
+      }
+    }
+    const t_active_ms = Date.now() - t_active;
     const activeKeys = new Set(
       activeRows.map((r) => `${r.channel_id}:${r.message_id}`),
     );
@@ -489,6 +540,25 @@ export class QueueRunner {
       }
     }
     await this.refreshNaFila(activeRows.length);
+
+    // 60rpm: hard limit global — para tudo se active_queues >= aqHardLimit
+    if (cfg.enable60RpmMode && !inSafeMode && activeRows.length >= cfg.aqHardLimit) {
+      this.maybeLog("noWork", `60rpm: hard limit (${activeRows.length}/${cfg.aqHardLimit} active_queues) — aguardando sweep/partidas.`);
+      this.nextJoinAt = now + 1_500;
+      return;
+    }
+    // 60rpm: soft limit — acima de aqSoftLimit, só aceita filas com players
+    const above60Soft = cfg.enable60RpmMode && !inSafeMode && activeRows.length >= cfg.aqSoftLimit;
+    const effectiveNoPlayersSlot = above60Soft ? false : noPlayersSlotPreferred;
+
+    // 60rpm: diagnóstico periódico de 30s
+    if (cfg.enable60RpmMode) {
+      const nowDiag = Date.now();
+      if (nowDiag - this.lastDiagAt > DIAG_INTERVAL_MS) {
+        this.lastDiagAt = nowDiag;
+        void this.emit30sDiag(cfg, activeRows.length);
+      }
+    }
 
     const orgIds = cfg.selected_org_ids;
     const totalOrgs = orgIds.length;
@@ -555,6 +625,7 @@ export class QueueRunner {
         this.orgCursor = (this.orgCursor + 1) % totalOrgs;
         attempts++;
         advancedDueToFull = true;
+        if (cfg.enable60RpmMode) this.blockedReasons.set("cooldown", (this.blockedReasons.get("cooldown") ?? 0) + 1);
         const lastLog = this.lastOrgLimitLog.get(currentOrgId) ?? 0;
         if (Date.now() - lastLog > 60_000) {
           this.lastOrgLimitLog.set(currentOrgId, Date.now());
@@ -565,8 +636,8 @@ export class QueueRunner {
         continue;
       }
 
-      // max_queues como teto de segurança opcional (0 = sem limite artificial)
-      if (maxForOrg > 0 && activeForOrg >= maxForOrg) {
+      // max_queues por org — em 60rpm usa apenas os limites globais (soft/hard)
+      if (!cfg.enable60RpmMode && maxForOrg > 0 && activeForOrg >= maxForOrg) {
         this.orgCursor = (this.orgCursor + 1) % totalOrgs;
         attempts++;
         advancedDueToFull = true;
@@ -583,6 +654,7 @@ export class QueueRunner {
       if (eligible.length === 0) {
         this.orgCursor = (this.orgCursor + 1) % totalOrgs;
         attempts++;
+        if (cfg.enable60RpmMode) this.blockedReasons.set("sem_candidatos", (this.blockedReasons.get("sem_candidatos") ?? 0) + 1);
         continue;
       }
 
@@ -645,7 +717,7 @@ export class QueueRunner {
       // nos outros 70% cai no Passo 3 (overflow) que prefere com-player se houver.
       const emptiesForOrg = emptiesPerOrg.get(currentOrgId) ?? 0;
       const emptyBlocked = maxForOrg > 0 && emptiesForOrg * 4 >= maxForOrg * 3;
-      if (!pick && noPlayersSlotPreferred && !emptyBlocked && Math.random() < 0.60) {
+      if (!pick && effectiveNoPlayersSlot && !emptyBlocked && Math.random() < 0.60) {
         for (let i = 0; i < orderedModes.length; i++) {
           const m = orderedModes[i]!;
           const hit = ranked.candidates.find(
@@ -718,9 +790,28 @@ export class QueueRunner {
 
     if (!candidate) {
       if (advancedDueToFull) {
-        // Reseta cursor pra org 0: próximo tick já começa da primeira
         this.orgCursor = 0;
-        this.maybeLog("noWork", `Todas as orgs no limite — ${activeRows.length} fila(s) ativa(s).`);
+        if (cfg.enable60RpmMode) {
+          const reasons: string[] = [];
+          for (const orgId of orgIds) {
+            const orgChs = channels.filter((c) => c.org_id === orgId);
+            if (orgChs.length === 0) continue;
+            const orgName = orgChs[0]?.org_name ?? String(orgId);
+            const active = activePerOrg.get(orgId) ?? 0;
+            const maxQ = orgChs[0]?.max_queues ?? 0;
+            const cd = this.isOrgInLimitCooldown(orgId);
+            if (cd.blocked) {
+              reasons.push(`${orgName}:cooldown(${Math.ceil(cd.remainingMs / 1000)}s)`);
+            } else if (!cfg.enable60RpmMode && maxQ > 0 && active >= maxQ) {
+              reasons.push(`${orgName}:max_queues(${active}/${maxQ})`);
+            } else {
+              reasons.push(`${orgName}:sem_candidato`);
+            }
+          }
+          this.maybeLog("noWork", `Todas as orgs no limite — ${activeRows.length} ativa(s) | ${reasons.slice(0, 8).join(", ")}`);
+        } else {
+          this.maybeLog("noWork", `Todas as orgs no limite — ${activeRows.length} fila(s) ativa(s).`);
+        }
       } else {
         this.maybeLog("noWork", `Nada novo pra entrar — ${activeRows.length} fila(s) ativa(s).`);
       }
@@ -734,7 +825,7 @@ export class QueueRunner {
     // Pausa humanizada curta antes de clicar (configurável)
     await sleep(randInt(cfg.timingClickMinMs, cfg.timingClickMaxMs));
 
-    const joined = await this.joinQueue(candidate, token, activeRows.length, candidatePlayers, cfg.refusalCheckDelayMs);
+    const joined = await this.joinQueue(candidate, token, activeRows.length, candidatePlayers, cfg.refusalCheckDelayMs, cfg.enable60RpmMode);
 
     if (joined) {
       // Registra timestamp para cálculo de throughput
@@ -778,9 +869,13 @@ export class QueueRunner {
 
       // ── Diagnóstico de ciclo ────────────────────────────────────────────
       const chooseMs = Date.now() - cycleStart;
-      if (chooseMs > 500) {
+      if (cfg.enable60RpmMode) {
+        this.chooseLatencies.push(chooseMs);
+        if (this.chooseLatencies.length > 120) this.chooseLatencies.shift();
+      }
+      if (chooseMs > (cfg.enable60RpmMode ? CHOOSE_WARN_STAGE_MS : 500)) {
         void this.manager.log(this.instanceId, "INFO", "engine",
-          `Diag — escolha de fila: ${chooseMs}ms | bg_refresh=${this.bgRefreshRunning} | pending_checks=${this.pendingRefusalChecks} | elegíveis_org=${candidateEligibleCount}`);
+          `Diag chooseQueue: total=${chooseMs}ms | active_db=${t_active_ms}ms | bg_refresh=${this.bgRefreshRunning} | pending_checks=${this.pendingRefusalChecks} | elegíveis_org=${candidateEligibleCount}`);
       }
 
       // ── Rate limit por org: após N cliques na org atual, avança ─────────
@@ -1070,6 +1165,7 @@ export class QueueRunner {
     activeCount: number,
     playersInQueue: number,
     refusalCheckDelayMs: number = DEFAULT_REFUSAL_CHECK_DELAY_MS,
+    enable60Rpm = false,
   ): Promise<boolean> {
     const btn = pickEnterButton(ch.buttons);
     if (!btn || !btn.custom_id) return false;
@@ -1110,6 +1206,16 @@ export class QueueRunner {
           playersInQueue > 0,
         ],
       );
+      this.recordSafetyEvent("ok");
+      // 60rpm: atualiza cache local imediatamente (evita double-entry no próximo tick)
+      if (enable60Rpm) {
+        this.activeRowsCache = [...this.activeRowsCache, {
+          channel_id: ch.channel_id,
+          message_id: ch.message_id,
+          org_id: ch.org_id,
+          joined_with_players: playersInQueue > 0,
+        }];
+      }
       // ── Atualizações não-críticas (fire-and-forget — não bloqueiam próximo clique) ─
       void query(
         `UPDATE stats SET entradas = entradas + 1, na_fila = $2
@@ -1132,8 +1238,10 @@ export class QueueRunner {
       );
 
       // ── Verificação de recusa em background (não bloqueia próximo clique) ─
-      // Limite de concorrência: no máximo 5 verificações simultâneas.
-      if (this.pendingRefusalChecks < 5) {
+      // 60rpm: limite ampliado (15) e skip automático acima de 8 pendentes
+      const pendingCap = enable60Rpm ? PENDING_CHECKS_MAX_60RPM : PENDING_CHECKS_MAX_NORMAL;
+      const skipRefusalCheck = enable60Rpm && this.pendingRefusalChecks >= PENDING_CHECKS_SKIP_THRESHOLD;
+      if (!skipRefusalCheck && this.pendingRefusalChecks < pendingCap) {
         this.pendingRefusalChecks++;
         void (async () => {
           try {
@@ -1153,6 +1261,8 @@ export class QueueRunner {
               // Scoring: recusa penaliza a org (-5 pts)
               this.orgRefusalCounts.set(ch.org_id, (this.orgRefusalCounts.get(ch.org_id) ?? 0) + 1);
               this.orgScores.set(ch.org_id, (this.orgScores.get(ch.org_id) ?? 0) - 5);
+              this.recordSafetyEvent("refusal");
+              this.checkEnterSafeMode(enable60Rpm);
               if (refusal.type === "wait") {
                 const waitMs = Math.min(refusal.waitMs ?? WAIT_DETECT_COOLDOWN_MS, 120_000);
                 this.setOrgLimitCooldown(ch.org_id, waitMs);
@@ -1176,6 +1286,8 @@ export class QueueRunner {
 
       return true;
     } else if (r.status === 429) {
+      this.recordSafetyEvent("429");
+      this.checkEnterSafeMode(enable60Rpm);
       // Backoff agressivo em 429 — Discord não gosta nem um pouco
       const backoff = randInt(RATE_LIMIT_BACKOFF_MIN_MS, RATE_LIMIT_BACKOFF_MAX_MS);
       this.extraDelayMs += backoff;
@@ -1187,6 +1299,8 @@ export class QueueRunner {
       );
       return false;
     } else if (r.status === 403 || isMissingAccess(r.status, r.error)) {
+      this.recordSafetyEvent("403");
+      this.checkEnterSafeMode(enable60Rpm);
       // 403 ou 400/404 com "Missing Access"/"Missing Permissions" = banido/não membro
       const rawError = r.error?.slice(0, 200) ?? "";
       await this.blacklistOrgForToken(
@@ -1355,6 +1469,82 @@ export class QueueRunner {
 
     return { type: "none", text: "" };
   }
+
+  /** Registra evento de segurança na janela deslizante (120s). */
+  private recordSafetyEvent(type: "ok" | "429" | "403" | "refusal"): void {
+    const now = Date.now();
+    this.safetyEvents.push({ ts: now, type });
+    if (this.safetyEvents.length > 300) {
+      this.safetyEvents = this.safetyEvents.filter(e => now - e.ts < 120_000);
+    }
+  }
+
+  /** Ativa modo seguro se a taxa de erros em 60s ultrapassar 5%. */
+  private checkEnterSafeMode(enable60Rpm: boolean): void {
+    if (!enable60Rpm || this.safeModeSince > 0) return;
+    const now = Date.now();
+    const recent = this.safetyEvents.filter(e => now - e.ts < 60_000);
+    if (recent.length < 10) return;
+    const bad = recent.filter(e => e.type !== "ok").length;
+    if (bad / recent.length > 0.05) {
+      this.safeModeSince = now;
+      void this.manager.log(
+        this.instanceId, "WARN", "engine",
+        `[60rpm] Modo seguro ativado por 2min — taxa de erro ${Math.round(bad / recent.length * 100)}% (${bad}/${recent.length} eventos em 60s).`,
+      );
+    }
+  }
+
+  /** Verifica se o modo seguro expirou e o cancela. */
+  private exitSafeMode(): void {
+    if (this.safeModeSince > 0 && Date.now() - this.safeModeSince >= SAFE_MODE_DURATION_MS) {
+      this.safeModeSince = 0;
+      void this.manager.log(
+        this.instanceId, "INFO", "engine",
+        "[60rpm] Modo seguro encerrado — retomando throughput máximo.",
+      );
+    }
+  }
+
+  /** Log de diagnóstico a cada 30s com todas as métricas do modo 60rpm. */
+  private emit30sDiag(cfg: CycleConfig, activeCount: number): void {
+    const now = Date.now();
+    const joinsPer60 = this.recentJoinTs.filter(t => now - t < 60_000).length;
+    const joinsPer30 = this.recentJoinTs.filter(t => now - t < 30_000).length * 2;
+
+    const sorted = [...this.chooseLatencies].sort((a, b) => a - b);
+    const p50 = sorted.length > 0 ? (sorted[Math.floor(sorted.length * 0.50)] ?? 0) : 0;
+    const p95 = sorted.length > 0 ? (sorted[Math.floor(sorted.length * 0.95)] ?? 0) : 0;
+
+    const recentEvts = this.safetyEvents.filter(e => now - e.ts < 60_000);
+    const okEvts = recentEvts.filter(e => e.type === "ok").length;
+    const sendRate = recentEvts.length > 0
+      ? `${Math.round(okEvts / recentEvts.length * 100)}%`
+      : "n/a";
+
+    const reasons = [...this.blockedReasons.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([r, n]) => `${r}:${n}`)
+      .join(", ");
+
+    const inSafe = this.safeModeSince > 0 && now - this.safeModeSince < SAFE_MODE_DURATION_MS;
+    const cooldownSec = this.nextJoinAt > now ? Math.ceil((this.nextJoinAt - now) / 1000) : 0;
+    const softStr = above60SoftLabel(activeCount, cfg.aqSoftLimit, cfg.aqHardLimit);
+
+    void this.manager.log(
+      this.instanceId, "INFO", "engine",
+      `[60rpm diag] thrpt=${joinsPer60}/min(60s) ${joinsPer30}/min(30s) | chooseQ p50=${p50}ms p95=${p95}ms | active_q=${activeCount}${softStr} | pending=${this.pendingRefusalChecks} | send_ok=${sendRate}${cooldownSec > 0 ? ` | cooldown=${cooldownSec}s` : ""}${reasons ? ` | blocked: ${reasons}` : ""}${inSafe ? " | ⚠️ SAFE_MODE" : ""}`,
+    );
+
+    this.blockedReasons.clear();
+  }
+}
+
+function above60SoftLabel(active: number, soft: number, hard: number): string {
+  if (active >= hard) return ` [HARD_LIMIT]`;
+  if (active >= soft) return ` [soft>${soft}]`;
+  return "";
 }
 
 function sleep(ms: number) {

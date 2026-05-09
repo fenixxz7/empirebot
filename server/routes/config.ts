@@ -50,6 +50,9 @@ const SaveConfigBody = z.object({
   entry_cap_empty_per_60s: z.coerce.number().int().min(0).max(200).optional().default(18),
   entry_cap_total_per_60s: z.coerce.number().int().min(0).max(200).optional().default(48),
   refusal_check_delay_ms: z.coerce.number().int().min(300).max(5000).optional().default(800),
+  enable_60rpm_mode: z.boolean().optional().default(false),
+  active_queue_soft_limit: z.coerce.number().int().min(10).max(500).optional().default(120),
+  active_queue_hard_limit: z.coerce.number().int().min(10).max(500).optional().default(180),
 });
 
 // Body do POST /:instanceId/import — formato JSON exportado.
@@ -102,6 +105,9 @@ configRouter.get("/:instanceId", asyncHandler(async (req, res) => {
     entry_cap_total_per_60s: number;
     refusal_check_delay_ms: number;
     hot_org_extra_clicks: number;
+    enable_60rpm_mode: boolean;
+    active_queue_soft_limit: number;
+    active_queue_hard_limit: number;
   }>(
     `SELECT category, allowed_categories, delay_seconds, rotation_minutes,
             allowed_modes, message_main, message_per_org, image_url, blocked_names,
@@ -112,7 +118,8 @@ configRouter.get("/:instanceId", asyncHandler(async (req, res) => {
             clicks_per_org, hot_org_extra_clicks, match_msg_delay_ms,
             match_msg_delay_min_ms, match_msg_delay_max_ms,
             entry_cap_with_players_per_60s, entry_cap_empty_per_60s,
-            entry_cap_total_per_60s, refusal_check_delay_ms
+            entry_cap_total_per_60s, refusal_check_delay_ms,
+            enable_60rpm_mode, active_queue_soft_limit, active_queue_hard_limit
      FROM instance_configs WHERE instance_id = $1`,
     [id]
   );
@@ -188,6 +195,9 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
     entry_cap_empty_per_60s,
     entry_cap_total_per_60s,
     refusal_check_delay_ms,
+    enable_60rpm_mode,
+    active_queue_soft_limit,
+    active_queue_hard_limit,
   } = req.body;
 
   // allowed_categories pode chegar como array (UI) ou string CSV (terminal/api)
@@ -233,6 +243,9 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
          entry_cap_total_per_60s = $26,
          refusal_check_delay_ms = $27,
          hot_org_extra_clicks = $28,
+         enable_60rpm_mode = $29,
+         active_queue_soft_limit = $30,
+         active_queue_hard_limit = $31,
          updated_at = NOW()
      WHERE instance_id = $1`,
     [id, primaryCategory, allowedCategoriesStr,
@@ -251,7 +264,10 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
      Math.min(200, Math.max(0, Number(entry_cap_empty_per_60s ?? 18))),
      Math.min(200, Math.max(0, Number(entry_cap_total_per_60s ?? 48))),
      Math.min(5000, Math.max(300, Number(refusal_check_delay_ms ?? 800))),
-     Math.min(50, Math.max(0, Number(hot_org_extra_clicks ?? 10)))]
+     Math.min(50, Math.max(0, Number(hot_org_extra_clicks ?? 10))),
+     Boolean(enable_60rpm_mode ?? false),
+     Math.min(500, Math.max(10, Number(active_queue_soft_limit ?? 120))),
+     Math.min(500, Math.max(10, Number(active_queue_hard_limit ?? 180)))]
   );
 
   // Tokens: novo sistema — seleção por pool ID
