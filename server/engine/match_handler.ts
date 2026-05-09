@@ -718,7 +718,7 @@ export class MatchHandler {
 
     // Log diagnóstico: confirma que o envio vai ser tentado
     await this.host.log(this.instanceId, "INFO", "match",
-      `Enviando mensagem em #${event.name} via token #${sender.position}${adversaryId ? ` → <@${adversaryId}>` : " (sem adversário identificado)"}…`);
+      `Enviando mensagem em #${event.name} · org=${orgCtx?.org_name ?? "desconhecida"} · token #${sender.position}${adversaryId ? ` → <@${adversaryId}>` : " (sem adversário identificado)"}…`);
 
     // Envia mensagem (com imagem opcional, se configurada no painel)
     // Antes do POST: dispara "está digitando…" e espera um tempo
@@ -923,7 +923,7 @@ export class MatchHandler {
         this.instanceId,
         "INFO",
         "match",
-        `Mensagem na partida enviada em #${event.name}${adversaryId ? ` para <@${adversaryId}>` : ""} · token #${sender.position}${imgTag}`,
+        `Mensagem na partida enviada em #${event.name} · org=${orgCtx?.org_name ?? "desconhecida"} · para ${adversaryId ? `<@${adversaryId}>` : "(sem adversário)"} · token #${sender.position}${imgTag}`,
       );
       return;
     }
