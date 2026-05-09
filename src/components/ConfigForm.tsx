@@ -79,6 +79,9 @@ type ConfigPayload = {
     match_msg_delay_ms: number;
     match_msg_delay_min_ms: number;
     match_msg_delay_max_ms: number;
+    entry_cap_with_players_per_60s: number;
+    entry_cap_empty_per_60s: number;
+    entry_cap_total_per_60s: number;
   } | null;
   token_pool: TokenPoolEntry[];
   selected_token_ids: number[];
@@ -128,6 +131,9 @@ export function ConfigForm({
   const [clicksPerOrg, setClicksPerOrg] = useState(10);
   const [matchMsgDelayMinSec, setMatchMsgDelayMinSec] = useState(0);
   const [matchMsgDelayMaxSec, setMatchMsgDelayMaxSec] = useState(0);
+  const [entryCapWithPlayers, setEntryCapWithPlayers] = useState(30);
+  const [entryCapEmpty, setEntryCapEmpty] = useState(18);
+  const [entryCapTotal, setEntryCapTotal] = useState(48);
   const [tokenStrategy, setTokenStrategy] = useState("single");
   const [tokenStrategyN, setTokenStrategyN] = useState(5);
   const [selectedOrgIds, setSelectedOrgIds] = useState<Set<number>>(new Set());
@@ -176,6 +182,9 @@ export function ConfigForm({
       const maxMs = Number(cfg.config.match_msg_delay_max_ms ?? minMs);
       setMatchMsgDelayMinSec(Math.round(minMs / 1000));
       setMatchMsgDelayMaxSec(Math.round(maxMs / 1000));
+      setEntryCapWithPlayers(Number(cfg.config.entry_cap_with_players_per_60s ?? 30));
+      setEntryCapEmpty(Number(cfg.config.entry_cap_empty_per_60s ?? 18));
+      setEntryCapTotal(Number(cfg.config.entry_cap_total_per_60s ?? 48));
       setTokenStrategy(cfg.config.token_strategy ?? "single");
       setTokenStrategyN(Number(cfg.config.token_strategy_n ?? 5));
       const tv: TimingValues = {
@@ -472,6 +481,9 @@ export function ConfigForm({
           match_msg_delay_ms: matchMsgDelayMinSec * 1000,
           match_msg_delay_min_ms: matchMsgDelayMinSec * 1000,
           match_msg_delay_max_ms: Math.max(matchMsgDelayMinSec, matchMsgDelayMaxSec) * 1000,
+          entry_cap_with_players_per_60s: entryCapWithPlayers,
+          entry_cap_empty_per_60s: entryCapEmpty,
+          entry_cap_total_per_60s: entryCapTotal,
         }),
       });
       await reload();
@@ -756,7 +768,7 @@ export function ConfigForm({
               </div>
             </div>
             <div>
-              <p className="mb-1">Pausa após lote de 24 (s)</p>
+              <p className="mb-1">Pausa após atingir limite (s)</p>
               <div className="flex gap-2 items-center">
                 <input type="text" inputMode="decimal" className="input py-1 text-xs w-full" disabled={timingPreset !== "personalizado"}
                   defaultValue={msToS(timing.pauseMin)} key={`pauseMin-${timingPreset}`}
@@ -851,6 +863,69 @@ export function ConfigForm({
         </div>
         <p className="text-xs text-slate-500 mt-2">
           Após esse número de entradas em uma org, o bot avança para a próxima — independente de quantas filas entrou. Cole <b className="text-white/50">0</b> para desativar.
+        </p>
+      </Section>
+
+      <Section title="Entradas por janela (60s)">
+        <div className="flex flex-wrap gap-2 mb-3">
+          {([
+            { label: "Conservador", players: 15, empty: 9, total: 24 },
+            { label: "Agressivo",   players: 30, empty: 18, total: 48 },
+          ] as const).map((p) => {
+            const active = entryCapWithPlayers === p.players && entryCapEmpty === p.empty && entryCapTotal === p.total;
+            return (
+              <button
+                key={p.label}
+                type="button"
+                onClick={() => { setEntryCapWithPlayers(p.players); setEntryCapEmpty(p.empty); setEntryCapTotal(p.total); }}
+                className={
+                  "px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors " +
+                  (active
+                    ? p.label === "Conservador"
+                      ? "bg-emerald-600/20 border-emerald-500/60 text-emerald-300"
+                      : "bg-red-600/20 border-red-500/60 text-red-300"
+                    : "bg-navy-950/60 border-white/10 text-slate-400 hover:border-white/30")
+                }
+              >
+                {p.label}
+              </button>
+            );
+          })}
+          {!(entryCapWithPlayers === 15 && entryCapEmpty === 9 && entryCapTotal === 24) &&
+           !(entryCapWithPlayers === 30 && entryCapEmpty === 18 && entryCapTotal === 48) && (
+            <span className="px-3 py-1.5 rounded-lg text-sm font-medium border bg-purple-600/20 border-purple-500/60 text-purple-300">
+              Personalizado
+            </span>
+          )}
+        </div>
+        <div className="grid grid-cols-3 gap-3">
+          <div>
+            <p className="text-xs text-slate-500 mb-1">Com players / 60s</p>
+            <input
+              type="number" min={0} max={200} className="input text-center"
+              value={entryCapWithPlayers}
+              onChange={(e) => setEntryCapWithPlayers(Math.min(200, Math.max(0, Number(e.target.value))))}
+            />
+          </div>
+          <div>
+            <p className="text-xs text-slate-500 mb-1">Vazias / 60s</p>
+            <input
+              type="number" min={0} max={200} className="input text-center"
+              value={entryCapEmpty}
+              onChange={(e) => setEntryCapEmpty(Math.min(200, Math.max(0, Number(e.target.value))))}
+            />
+          </div>
+          <div>
+            <p className="text-xs text-slate-500 mb-1">Total / 60s</p>
+            <input
+              type="number" min={0} max={200} className="input text-center"
+              value={entryCapTotal}
+              onChange={(e) => setEntryCapTotal(Math.min(200, Math.max(0, Number(e.target.value))))}
+            />
+          </div>
+        </div>
+        <p className="text-xs text-slate-500 mt-2">
+          Controla quantas entradas em fila o bot pode fazer a cada janela de 60 segundos. Valores maiores aumentam agressividade e podem aumentar rate limit.
         </p>
       </Section>
 

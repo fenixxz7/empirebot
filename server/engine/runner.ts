@@ -54,6 +54,9 @@ interface CycleConfig {
   timingClickMinMs: number;
   timingClickMaxMs: number;
   clicksPerOrg: number;
+  entryCapWithPlayers: number;
+  entryCapEmpty: number;
+  entryCapTotal: number;
 }
 
 const STARTUP_GRACE_MS = 5000;
@@ -66,10 +69,8 @@ const PLAYER_CACHE_403_MS = 10 * 60_000;
 const MAX_FRESH_FETCH_PER_TICK = 6;
 import { ACTIVE_QUEUE_TTL_MS } from "../lib/timings.js";
 
-// === RATE WINDOW (24 filas / minuto, depois pausa) ===
-const RATE_WINDOW_MS = 60_000;             // janela de 60s
-const RATE_MAX_WITH_PLAYERS = 15;          // até 15 filas com players
-const RATE_MAX_WITHOUT_PLAYERS = 9;        // até 9 filas vazias
+// === RATE WINDOW (janela de 60s — caps configuráveis via instance_configs) ===
+const RATE_WINDOW_MS = 60_000;             // janela de 60s (fixa)
 // Pausa e cooldown agora são carregados da DB (timing_*_ms em instance_configs)
 
 // Backoff extra após rate limit (429)
@@ -216,13 +217,19 @@ export class QueueRunner {
       timing_click_min_ms: number;
       timing_click_max_ms: number;
       clicks_per_org: number;
+      entry_cap_with_players_per_60s: number;
+      entry_cap_empty_per_60s: number;
+      entry_cap_total_per_60s: number;
     }>(
       `SELECT delay_seconds, allowed_modes, allowed_categories, blocked_names,
               max_valor, token_strategy, token_strategy_n,
               timing_intra_min_ms, timing_intra_max_ms,
               timing_pause_min_ms, timing_pause_max_ms,
               timing_click_min_ms, timing_click_max_ms,
-              clicks_per_org
+              clicks_per_org,
+              entry_cap_with_players_per_60s,
+              entry_cap_empty_per_60s,
+              entry_cap_total_per_60s
        FROM instance_configs
        WHERE instance_id = $1`,
       [this.instanceId],
@@ -252,6 +259,9 @@ export class QueueRunner {
       timingClickMinMs: r?.timing_click_min_ms ?? 1000,
       timingClickMaxMs: r?.timing_click_max_ms ?? 2000,
       clicksPerOrg: r?.clicks_per_org ?? 10,
+      entryCapWithPlayers: Math.max(0, Math.min(200, r?.entry_cap_with_players_per_60s ?? 30)),
+      entryCapEmpty: Math.max(0, Math.min(200, r?.entry_cap_empty_per_60s ?? 18)),
+      entryCapTotal: Math.max(0, Math.min(200, r?.entry_cap_total_per_60s ?? 48)),
     };
   }
 
@@ -264,17 +274,20 @@ export class QueueRunner {
       this.windowStart = now;
       this.joinedWithPlayers = 0;
       this.joinedWithoutPlayers = 0;
+      await this.manager.log(
+        this.instanceId,
+        "INFO",
+        "engine",
+        `Velocidade de entrada: players=${cfg.entryCapWithPlayers}/60s, vazias=${cfg.entryCapEmpty}/60s, total=${cfg.entryCapTotal}/60s`,
+      );
     }
 
-    // Quotas: total 10 por janela. Preferência: até 6 com players + até 4 sem.
-    // Se faltam candidatos com players, vazias podem encher além de 4 (até 10 total).
     const totalJoined = this.joinedWithPlayers + this.joinedWithoutPlayers;
-    const RATE_MAX_TOTAL = RATE_MAX_WITH_PLAYERS + RATE_MAX_WITHOUT_PLAYERS;
-    const playersSlot = this.joinedWithPlayers < RATE_MAX_WITH_PLAYERS;
-    const noPlayersSlotPreferred = this.joinedWithoutPlayers < RATE_MAX_WITHOUT_PLAYERS;
+    const playersSlot = this.joinedWithPlayers < cfg.entryCapWithPlayers;
+    const noPlayersSlotPreferred = this.joinedWithoutPlayers < cfg.entryCapEmpty;
 
-    if (totalJoined >= RATE_MAX_TOTAL) {
-      // Bateu 10 entradas — pausa configurável
+    if (totalJoined >= cfg.entryCapTotal) {
+      // Bateu o total — pausa configurável
       const pause = randInt(cfg.timingPauseMinMs, cfg.timingPauseMaxMs);
       this.nextJoinAt = now + pause;
       this.windowStart = 0;
@@ -286,7 +299,7 @@ export class QueueRunner {
         this.instanceId,
         "INFO",
         "engine",
-        `Lote de 24 entradas (${wp} com players + ${np} vazias) — pausando ${Math.round(pause / 1000)}s.`,
+        `Cap de entrada atingido: total usado=${wp + np}/${cfg.entryCapTotal} janela=60s — pausando ${Math.round(pause / 1000)}s.`,
       );
       return;
     }
@@ -627,10 +640,26 @@ export class QueueRunner {
         }
       }
 
-      // Se acabamos de bater 10 entradas, dispara a pausa de 25-35s já
+      // Log imediato quando cap individual é atingido
+      if (candidatePlayers > 0 && this.joinedWithPlayers === cfg.entryCapWithPlayers) {
+        await this.manager.log(
+          this.instanceId,
+          "INFO",
+          "engine",
+          `Cap de entrada atingido: tipo=players usado=${this.joinedWithPlayers}/${cfg.entryCapWithPlayers} janela=60s`,
+        );
+      } else if (candidatePlayers === 0 && this.joinedWithoutPlayers === cfg.entryCapEmpty) {
+        await this.manager.log(
+          this.instanceId,
+          "INFO",
+          "engine",
+          `Cap de entrada atingido: tipo=vazias usado=${this.joinedWithoutPlayers}/${cfg.entryCapEmpty} janela=60s`,
+        );
+      }
+
+      // Se acabamos de bater o total, dispara a pausa já
       const totalNow = this.joinedWithPlayers + this.joinedWithoutPlayers;
-      const RATE_MAX_TOTAL = RATE_MAX_WITH_PLAYERS + RATE_MAX_WITHOUT_PLAYERS;
-      if (totalNow >= RATE_MAX_TOTAL) {
+      if (totalNow >= cfg.entryCapTotal) {
         const pause = randInt(cfg.timingPauseMinMs, cfg.timingPauseMaxMs);
         const wp = this.joinedWithPlayers;
         const np = this.joinedWithoutPlayers;
@@ -647,7 +676,7 @@ export class QueueRunner {
           this.instanceId,
           "INFO",
           "engine",
-          `Lote de 24 entradas (${wp} com players + ${np} vazias) — pausando ${Math.round(pause / 1000)}s.`,
+          `Cap de entrada atingido: total usado=${wp + np}/${cfg.entryCapTotal} janela=60s — pausando ${Math.round(pause / 1000)}s.`,
         );
         return;
       }

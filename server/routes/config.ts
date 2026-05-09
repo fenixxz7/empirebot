@@ -45,6 +45,9 @@ const SaveConfigBody = z.object({
   match_msg_delay_ms: z.coerce.number().int().min(0).optional().default(0),
   match_msg_delay_min_ms: z.coerce.number().int().min(0).optional().default(0),
   match_msg_delay_max_ms: z.coerce.number().int().min(0).optional().default(0),
+  entry_cap_with_players_per_60s: z.coerce.number().int().min(0).max(200).optional().default(30),
+  entry_cap_empty_per_60s: z.coerce.number().int().min(0).max(200).optional().default(18),
+  entry_cap_total_per_60s: z.coerce.number().int().min(0).max(200).optional().default(48),
 });
 
 // Body do POST /:instanceId/import — formato JSON exportado.
@@ -92,6 +95,9 @@ configRouter.get("/:instanceId", asyncHandler(async (req, res) => {
     match_msg_delay_ms: number;
     match_msg_delay_min_ms: number;
     match_msg_delay_max_ms: number;
+    entry_cap_with_players_per_60s: number;
+    entry_cap_empty_per_60s: number;
+    entry_cap_total_per_60s: number;
   }>(
     `SELECT category, allowed_categories, delay_seconds, rotation_minutes,
             allowed_modes, message_main, message_per_org, image_url, blocked_names,
@@ -100,7 +106,9 @@ configRouter.get("/:instanceId", asyncHandler(async (req, res) => {
             timing_pause_min_ms, timing_pause_max_ms,
             timing_click_min_ms, timing_click_max_ms,
             clicks_per_org, match_msg_delay_ms,
-            match_msg_delay_min_ms, match_msg_delay_max_ms
+            match_msg_delay_min_ms, match_msg_delay_max_ms,
+            entry_cap_with_players_per_60s, entry_cap_empty_per_60s,
+            entry_cap_total_per_60s
      FROM instance_configs WHERE instance_id = $1`,
     [id]
   );
@@ -171,6 +179,9 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
     match_msg_delay_ms,
     match_msg_delay_min_ms,
     match_msg_delay_max_ms,
+    entry_cap_with_players_per_60s,
+    entry_cap_empty_per_60s,
+    entry_cap_total_per_60s,
   } = req.body;
 
   // allowed_categories pode chegar como array (UI) ou string CSV (terminal/api)
@@ -211,6 +222,9 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
          timing_click_min_ms = $18, timing_click_max_ms = $19,
          clicks_per_org = $20, match_msg_delay_ms = $21,
          match_msg_delay_min_ms = $22, match_msg_delay_max_ms = $23,
+         entry_cap_with_players_per_60s = $24,
+         entry_cap_empty_per_60s = $25,
+         entry_cap_total_per_60s = $26,
          updated_at = NOW()
      WHERE instance_id = $1`,
     [id, primaryCategory, allowedCategoriesStr,
@@ -224,7 +238,10 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
      Math.max(0, Number(clicks_per_org ?? 10)),
      Math.max(0, Number(match_msg_delay_ms ?? 0)),
      Math.max(0, Number(match_msg_delay_min_ms ?? 0)),
-     Math.max(0, Number(match_msg_delay_max_ms ?? 0))]
+     Math.max(0, Number(match_msg_delay_max_ms ?? 0)),
+     Math.min(200, Math.max(0, Number(entry_cap_with_players_per_60s ?? 30))),
+     Math.min(200, Math.max(0, Number(entry_cap_empty_per_60s ?? 18))),
+     Math.min(200, Math.max(0, Number(entry_cap_total_per_60s ?? 48)))]
   );
 
   // Tokens: novo sistema — seleção por pool ID

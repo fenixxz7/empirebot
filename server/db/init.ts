@@ -388,6 +388,17 @@ export async function initDatabase(): Promise<void> {
     `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS clicks_per_org INTEGER NOT NULL DEFAULT 10`,
   );
 
+  // Caps de entradas por janela de 60s (configuráveis pelo painel)
+  await pool.query(
+    `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS entry_cap_with_players_per_60s INTEGER NOT NULL DEFAULT 30`,
+  );
+  await pool.query(
+    `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS entry_cap_empty_per_60s INTEGER NOT NULL DEFAULT 18`,
+  );
+  await pool.query(
+    `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS entry_cap_total_per_60s INTEGER NOT NULL DEFAULT 48`,
+  );
+
   // Garante que ninguém ficou com fila "fantasma" entre boots
   await pool.query(`DELETE FROM active_queues`);
 
