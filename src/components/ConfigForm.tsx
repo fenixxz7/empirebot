@@ -904,6 +904,7 @@ export function ConfigForm({
         </p>
       </Section>
 
+      {isAdmin && (
       <Section title="Cliques extras em org quente">
         <div className="flex items-center gap-3">
           <input
@@ -924,6 +925,7 @@ export function ConfigForm({
           Quando uma org ainda tem muitas filas elegíveis e nenhuma recusa recente, o bot estende o limite de cliques por org em até esse valor — evita trocar de org prematuramente e aumenta o throughput.
         </p>
       </Section>
+      )}
 
       {isAdmin && (
       <Section title="Entradas por janela (60s)">
