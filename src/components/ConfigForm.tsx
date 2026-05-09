@@ -866,6 +866,7 @@ export function ConfigForm({
         </p>
       </Section>
 
+      {isAdmin && (
       <Section title="Entradas por janela (60s)">
         <div className="flex flex-wrap gap-2 mb-3">
           {([
@@ -937,6 +938,7 @@ export function ConfigForm({
           Controla quantas entradas em fila o bot pode fazer a cada janela de 60 segundos. Valores maiores aumentam agressividade e podem aumentar rate limit.
         </p>
       </Section>
+      )}
 
       <Section title="Categorias permitidas">
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
