@@ -138,13 +138,13 @@ statsRouter.get("/timeseries", async (req, res) => {
     // "all" — sem filtro de data
 
     const [joinRows, matchRows] = await Promise.all([
-      query<{ bucket: string; entradas: string }>(
+      query<{ bucket: Date; entradas: string }>(
         `SELECT date_trunc('${trunc}', joined_at) AS bucket,
                 COUNT(*)::text AS entradas
          FROM queue_joins ${joinWhere}
          GROUP BY 1 ORDER BY 1 ASC`, []
       ),
-      query<{ bucket: string; chats_abertos: string; mensagens_enviadas: string }>(
+      query<{ bucket: Date; chats_abertos: string; mensagens_enviadas: string }>(
         `SELECT date_trunc('${trunc}', detected_at) AS bucket,
                 COUNT(*)::text AS chats_abertos,
                 COUNT(*) FILTER (WHERE msg_sent = TRUE)::text AS mensagens_enviadas
@@ -153,26 +153,34 @@ statsRouter.get("/timeseries", async (req, res) => {
       ),
     ]);
 
+    // pg devolve colunas timestamp como Date — converter para ISO string como chave do Map
+    const toKey = (b: Date) => (b instanceof Date ? b.toISOString() : String(b));
+
     const bucketMap = new Map<string, {
+      ts: Date;
       entradas: number;
       chats_abertos: number;
       mensagens_enviadas: number;
     }>();
 
     for (const r of joinRows) {
-      bucketMap.set(r.bucket, {
+      const key = toKey(r.bucket);
+      bucketMap.set(key, {
+        ts: r.bucket instanceof Date ? r.bucket : new Date(r.bucket),
         entradas: Number(r.entradas),
         chats_abertos: 0,
         mensagens_enviadas: 0,
       });
     }
     for (const r of matchRows) {
-      const ex = bucketMap.get(r.bucket);
+      const key = toKey(r.bucket);
+      const ex = bucketMap.get(key);
       if (ex) {
         ex.chats_abertos      = Number(r.chats_abertos);
         ex.mensagens_enviadas = Number(r.mensagens_enviadas);
       } else {
-        bucketMap.set(r.bucket, {
+        bucketMap.set(key, {
+          ts: r.bucket instanceof Date ? r.bucket : new Date(r.bucket),
           entradas: 0,
           chats_abertos: Number(r.chats_abertos),
           mensagens_enviadas: Number(r.mensagens_enviadas),
@@ -181,13 +189,12 @@ statsRouter.get("/timeseries", async (req, res) => {
     }
 
     const tz = "America/Sao_Paulo";
-    const points = [...bucketMap.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([bucket, vals]) => {
-        const d = new Date(bucket);
+    const points = [...bucketMap.values()]
+      .sort((a, b) => a.ts.getTime() - b.ts.getTime())
+      .map(({ ts, ...vals }) => {
         const label = isHourly
-          ? d.toLocaleTimeString("pt-BR",  { hour: "2-digit", minute: "2-digit", timeZone: tz })
-          : d.toLocaleDateString("pt-BR",  { day: "2-digit",  month: "2-digit",  timeZone: tz });
+          ? ts.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: tz })
+          : ts.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit",  timeZone: tz });
         return { label, ...vals };
       });
 
