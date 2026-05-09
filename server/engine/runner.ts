@@ -62,8 +62,10 @@ interface CycleConfig {
 }
 
 const STARTUP_GRACE_MS = 5000;
-// Intervalo fixo do tick — rápido para não atrasar reconhecimento e sweep.
-const TICK_INTERVAL_MS = 2500;
+// Intervalo mínimo e máximo do tick dinâmico (ms).
+// O tick é agendado com base em nextJoinAt — não mais um intervalo fixo.
+const TICK_MIN_MS = 100;   // nunca mais rápido que isso (evita CPU burn)
+const TICK_MAX_MS = 2500;  // nunca mais devagar que isso (para sweeps e reconexão)
 const NO_TOKEN_LOG_INTERVAL_MS = 30_000;
 const NO_WORK_LOG_INTERVAL_MS = 60_000;
 const PLAYER_CACHE_MS = 30_000;
@@ -122,6 +124,7 @@ export class QueueRunner {
   private recentJoinTs: number[] = [];
   private lastThroughputLog = 0;
   private lastClickAt = 0;
+  private lastSchedulerLog = 0;
   // Cache de config e canais (evita queries DB a cada tick)
   private configCache: { cfg: CycleConfig; ts: number } | null = null;
   private readonly CONFIG_CACHE_MS = 8_000;
@@ -207,23 +210,56 @@ export class QueueRunner {
   private async tick(): Promise<void> {
     if (this.stopped) return;
     try {
-      // Sweep de filas fantasmas a cada 30s (idempotente) — roda independente do cooldown de fila
+      // Sweep de filas fantasmas a cada 30s (idempotente)
       await this.sweepGhostQueues();
-      if (this.paused) return; // descobre canais primeiro, clica depois
+      if (this.paused) {
+        this.scheduleNextTick(TICK_MAX_MS);
+        return;
+      }
       const cfg = await this.loadConfig();
       await this.iterate(cfg);
     } catch (err) {
-      await this.manager.log(
+      void this.manager.log(
         this.instanceId,
         "ERROR",
         "engine",
         `tick falhou: ${(err as Error).message}`,
       );
     } finally {
-      // Tick rápido e fixo — o cooldown entre entradas é gerenciado por nextJoinAt
-      if (!this.stopped) {
-        this.timer = setTimeout(() => this.tick(), TICK_INTERVAL_MS);
-      }
+      if (!this.stopped) this.scheduleNextTick();
+    }
+  }
+
+  /**
+   * Agenda o próximo tick dinamicamente com base em nextJoinAt.
+   * Se nextJoinAt já passou → 100ms (quase imediato).
+   * Se nextJoinAt está no futuro → aguarda exatamente o necessário (cap: 2500ms).
+   * Isso elimina o teto artificial de 2500ms que limitava throughput a ~24/min.
+   */
+  private scheduleNextTick(forceMs?: number): void {
+    if (this.stopped) return;
+    const now = Date.now();
+    let delay: number;
+    if (forceMs !== undefined) {
+      delay = forceMs;
+    } else if (this.nextJoinAt > now) {
+      delay = Math.min(this.nextJoinAt - now, TICK_MAX_MS);
+    } else {
+      delay = TICK_MIN_MS;
+    }
+    delay = Math.max(TICK_MIN_MS, delay);
+    this.timer = setTimeout(() => this.tick(), delay);
+
+    // Log periódico do scheduler (a cada 60s) para confirmar que o motor está respondendo
+    if (now - this.lastSchedulerLog > 60_000) {
+      this.lastSchedulerLog = now;
+      const nextAt = this.nextJoinAt > now
+        ? `+${delay}ms`
+        : "imediato";
+      void this.manager.log(
+        this.instanceId, "INFO", "engine",
+        `Scheduler: próximo tick em ${delay}ms | nextJoinAt=${nextAt} | pending_checks=${this.pendingRefusalChecks} | bg_refresh=${this.bgRefreshRunning}`,
+      );
     }
   }
 
@@ -371,10 +407,8 @@ export class QueueRunner {
       this.windowStart = now;
       this.joinedWithPlayers = 0;
       this.joinedWithoutPlayers = 0;
-      await this.manager.log(
-        this.instanceId,
-        "INFO",
-        "engine",
+      void this.manager.log(
+        this.instanceId, "INFO", "engine",
         `Velocidade de entrada: players=${cfg.entryCapWithPlayers}/60s, vazias=${cfg.entryCapEmpty}/60s, total=${cfg.entryCapTotal}/60s`,
       );
     }
@@ -392,10 +426,8 @@ export class QueueRunner {
       const np = this.joinedWithoutPlayers;
       this.joinedWithPlayers = 0;
       this.joinedWithoutPlayers = 0;
-      await this.manager.log(
-        this.instanceId,
-        "INFO",
-        "engine",
+      void this.manager.log(
+        this.instanceId, "INFO", "engine",
         `Cap de entrada atingido: total usado=${wp + np}/${cfg.entryCapTotal} janela=60s — pausando ${Math.round(pause / 1000)}s.`,
       );
       return;
@@ -774,20 +806,12 @@ export class QueueRunner {
             this.orgCursor = (orgIdx + 1) % totalOrgs;
           }
           const hotLabel = isHotOrg ? ` (modo quente +${cfg.hotOrgExtraClicks})` : "";
-          await this.manager.log(
-            this.instanceId,
-            "INFO",
-            "engine",
-            `Próxima org — clicks concluídos ${count}/${effectiveLimit}${hotLabel} em "${candidate.org_name}".`,
-          );
+          void this.manager.log(this.instanceId, "INFO", "engine",
+            `Próxima org — clicks concluídos ${count}/${effectiveLimit}${hotLabel} em "${candidate.org_name}".`);
         } else {
           const prefix = count === 1 ? `Iniciando org "${candidate.org_name}"` : `Org "${candidate.org_name}"`;
-          await this.manager.log(
-            this.instanceId,
-            "INFO",
-            "engine",
-            `${prefix} — click ${count}/${effectiveLimit}.`,
-          );
+          void this.manager.log(this.instanceId, "INFO", "engine",
+            `${prefix} — click ${count}/${effectiveLimit}.`);
         }
       }
 
@@ -797,30 +821,18 @@ export class QueueRunner {
         if (this.joinsOnCurrentToken >= cfg.tokenStrategyN) {
           this.joinsOnCurrentToken = 0;
           this.tokenCursor = (this.tokenCursor + 1) % tokens.length;
-          await this.manager.log(
-            this.instanceId,
-            "INFO",
-            "engine",
-            `Rotacionando token após ${cfg.tokenStrategyN} entrada(s) — próximo: token #${tokens[this.tokenCursor % tokens.length]?.position ?? this.tokenCursor + 1}.`,
-          );
+          void this.manager.log(this.instanceId, "INFO", "engine",
+            `Rotacionando token após ${cfg.tokenStrategyN} entrada(s) — próximo: token #${tokens[this.tokenCursor % tokens.length]?.position ?? this.tokenCursor + 1}.`);
         }
       }
 
-      // Log imediato quando cap individual é atingido
+      // Log imediato quando cap individual é atingido (fire-and-forget)
       if (candidatePlayers > 0 && this.joinedWithPlayers === cfg.entryCapWithPlayers) {
-        await this.manager.log(
-          this.instanceId,
-          "INFO",
-          "engine",
-          `Cap de entrada atingido: tipo=players usado=${this.joinedWithPlayers}/${cfg.entryCapWithPlayers} janela=60s`,
-        );
+        void this.manager.log(this.instanceId, "INFO", "engine",
+          `Cap de entrada atingido: tipo=players usado=${this.joinedWithPlayers}/${cfg.entryCapWithPlayers} janela=60s`);
       } else if (candidatePlayers === 0 && this.joinedWithoutPlayers === cfg.entryCapEmpty) {
-        await this.manager.log(
-          this.instanceId,
-          "INFO",
-          "engine",
-          `Cap de entrada atingido: tipo=vazias usado=${this.joinedWithoutPlayers}/${cfg.entryCapEmpty} janela=60s`,
-        );
+        void this.manager.log(this.instanceId, "INFO", "engine",
+          `Cap de entrada atingido: tipo=vazias usado=${this.joinedWithoutPlayers}/${cfg.entryCapEmpty} janela=60s`);
       }
 
       // Se acabamos de bater o total, dispara a pausa já
@@ -838,12 +850,8 @@ export class QueueRunner {
           this.extraDelayMs = 0;
         }
         this.nextJoinAt = Date.now() + total;
-        await this.manager.log(
-          this.instanceId,
-          "INFO",
-          "engine",
-          `Cap de entrada atingido: total usado=${wp + np}/${cfg.entryCapTotal} janela=60s — pausando ${Math.round(pause / 1000)}s.`,
-        );
+        void this.manager.log(this.instanceId, "INFO", "engine",
+          `Cap de entrada atingido: total usado=${wp + np}/${cfg.entryCapTotal} janela=60s — pausando ${Math.round(pause / 1000)}s.`);
         return;
       }
     }
@@ -1083,10 +1091,9 @@ export class QueueRunner {
       : (ch.mode ?? "?");
 
     if (success) {
-      // ── Registro otimista imediato ─────────────────────────────────────
-      // Registra a entrada ANTES de verificar a resposta da org, para que o
-      // próximo clique comece imediatamente sem esperar o delay de verificação.
-      // Se a org recusar, a tarefa em background desfaz o registro.
+      // ── Registro otimista imediato (CRÍTICO — awaited) ─────────────────
+      // Deve ser síncrono para que o próximo tick veja essa fila como ativa
+      // e não tente entrar nela de novo antes da verificação de recusa.
       await query(
         `INSERT INTO active_queues
            (instance_id, org_id, channel_id, message_id, mode, category, token_id, joined_with_players)
@@ -1103,22 +1110,23 @@ export class QueueRunner {
           playersInQueue > 0,
         ],
       );
-      await query(
+      // ── Atualizações não-críticas (fire-and-forget — não bloqueiam próximo clique) ─
+      void query(
         `UPDATE stats SET entradas = entradas + 1, na_fila = $2
          WHERE instance_id = $1`,
         [this.instanceId, activeCount + 1],
       );
-      await query(
+      void query(
         `UPDATE tokens SET last_used_at = NOW() WHERE id = $1`,
         [token.tokenId],
       );
-      await query(
+      void query(
         `INSERT INTO queue_joins (instance_id, org_id, org_name, mode, category)
          VALUES ($1, $2, $3, $4, $5)`,
         [this.instanceId, ch.org_id, ch.org_name, ch.mode, ch.category],
       );
       this.playerCache.delete(`${ch.channel_id}:${ch.message_id}`);
-      await this.manager.log(
+      void this.manager.log(
         this.instanceId, "INFO", "engine",
         `Entrou em ${ch.org_name} · ${ch.category ?? "?"} · ${modeLabel} · #${ch.channel_name ?? ch.channel_id} (${tag}) · "${btn.label}" · token #${token.position}`,
       );
