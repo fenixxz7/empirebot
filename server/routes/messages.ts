@@ -1,7 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
 import { query } from "../db/pool.js";
-import { dmResponders } from "../worker/manager.js";
 import { DiscordRest } from "../discord/rest.js";
 import { validate } from "../lib/validate.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
@@ -56,12 +55,6 @@ messagesRouter.put("/config/:instanceId", validate({ body: DmConfigBody }), asyn
          max_delay_user = EXCLUDED.max_delay_user`,
     [id, !!enabled, min_delay_msg ?? 1.5, max_delay_msg ?? 2.5, min_delay_user ?? 10, max_delay_user ?? 15]
   );
-
-  const responder = dmResponders.get(id);
-  if (responder) {
-    if (enabled) responder.start();
-    else responder.stop();
-  }
 
   res.json({ ok: true });
 }));
@@ -122,14 +115,7 @@ messagesRouter.delete("/:instanceId/:msgId", asyncHandler(async (req, res) => {
 }));
 
 messagesRouter.get("/:instanceId/queue/snapshot", asyncHandler(async (req, res) => {
-  const id = Number(req.params.instanceId);
-  const responder = dmResponders.get(id);
-  if (!responder) {
-    res.json({ enabled: false, processing: null, waiting: [], respondedToday: 0, respondedTotal: 0 });
-    return;
-  }
-  const snapshot = await responder.getSnapshot();
-  res.json(snapshot);
+  res.json({ enabled: false, processing: null, waiting: [], respondedToday: 0, respondedTotal: 0 });
 }));
 
 messagesRouter.delete("/:instanceId/responded/clear", asyncHandler(async (req, res) => {
@@ -209,17 +195,8 @@ messagesRouter.get("/:instanceId/debug/requests", asyncHandler(async (req, res) 
   res.json(results);
 }));
 
-messagesRouter.post("/:instanceId/scan-now", asyncHandler(async (req, res) => {
-  const id = Number(req.params.instanceId);
-  const responder = dmResponders.get(id);
-  if (!responder) {
-    res.status(404).json({ error: "Responder não encontrado para esta instância" });
-    return;
-  }
-  const drained = await responder.forceDrainCache();
-  await responder.tick();
-  const snapshot = await responder.getSnapshot();
-  res.json({ ok: true, drained, snapshot });
+messagesRouter.post("/:instanceId/scan-now", asyncHandler(async (_req, res) => {
+  res.status(404).json({ error: "Responder desativado" });
 }));
 
 // POST /api/messages/:instanceId/test-send
