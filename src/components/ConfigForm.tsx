@@ -729,6 +729,7 @@ export function ConfigForm({
             Tokens ativos: <b className="text-slate-300">{tokensActive}/{tokensCount}</b>
           </p>
         </Section>
+        {isAdmin && (
         <Section title="Intervalo do ciclo (s)">
           <input
             type="number" min={1} max={300} className="input"
@@ -738,6 +739,7 @@ export function ConfigForm({
             Pausa entre uma rodada completa e a próxima (±30% jitter).
           </p>
         </Section>
+        )}
         <Section title="Velocidade de entrada">
           <div className="flex gap-2 flex-wrap mb-3">
             {(["seguro", "intermediario", "agressivo", "ultra", "personalizado"] as TimingPreset[]).map((p) => (
