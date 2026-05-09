@@ -164,8 +164,11 @@ export class QueueRunner {
   private activeRowsCache: Array<{ channel_id: string; message_id: string; org_id: number; joined_with_players: boolean }> = [];
   private activeRowsCacheTs = 0;
   // 60rpm: janela de segurança (rastreia 429/403/recusas para modo seguro automático)
-  private safetyEvents: Array<{ ts: number; type: "ok" | "429" | "403" | "refusal" }> = [];
+  // "ignored" = erro de org inválida/bloqueada (10004/50001) — não conta para safe mode
+  private safetyEvents: Array<{ ts: number; type: "ok" | "429" | "403" | "refusal" | "ignored" }> = [];
   private safeModeSince = 0;
+  // Timestamp do último buffer diag (para não logar todo tick)
+  private lastBufDiagAt = 0;
   // 60rpm: latências de chooseQueue para cálculo de p50/p95
   private chooseLatencies: number[] = [];
   private lastDiagAt = 0;
@@ -215,6 +218,7 @@ export class QueueRunner {
     this.candidateBuffer.clear();
     this.discoveryBudget.resetStats();
     this.semCandidatosTotal = 0;
+    this.lastBufDiagAt = 0;
     this.timer = setTimeout(() => this.tick(), STARTUP_GRACE_MS);
   }
 
@@ -1409,10 +1413,16 @@ export class QueueRunner {
       );
       return false;
     } else if (r.status === 403 || isMissingAccess(r.status, r.error)) {
-      this.recordSafetyEvent("403");
-      this.checkEnterSafeMode(enable60Rpm);
-      // 403 ou 400/404 com "Missing Access"/"Missing Permissions" = banido/não membro
+      // Erros de org inválida/sem acesso: se for 10004 (Unknown Guild) ou 50001 (Missing Access),
+      // são erros de configuração — blacklista a org mas NÃO conta como erro crítico no safe mode.
       const rawError = r.error?.slice(0, 200) ?? "";
+      if (isIgnorableOrgError(r.status, r.error)) {
+        this.recordSafetyEvent("ignored");
+        // Não chama checkEnterSafeMode — erro de org bloqueada/inválida não é instabilidade sistêmica
+      } else {
+        this.recordSafetyEvent("403");
+        this.checkEnterSafeMode(enable60Rpm);
+      }
       await this.blacklistOrgForToken(
         token.tokenId,
         token.position,
@@ -1580,27 +1590,48 @@ export class QueueRunner {
     return { type: "none", text: "" };
   }
 
-  /** Registra evento de segurança na janela deslizante (120s). */
-  private recordSafetyEvent(type: "ok" | "429" | "403" | "refusal"): void {
+  /** Registra evento de segurança na janela deslizante (120s).
+   *  "ignored" = erros de org inválida/bloqueada que NÃO devem ativar safe mode. */
+  private recordSafetyEvent(type: "ok" | "429" | "403" | "refusal" | "ignored"): void {
     const now = Date.now();
     this.safetyEvents.push({ ts: now, type });
-    if (this.safetyEvents.length > 300) {
+    if (this.safetyEvents.length > 400) {
       this.safetyEvents = this.safetyEvents.filter(e => now - e.ts < 120_000);
     }
   }
 
-  /** Ativa modo seguro se a taxa de erros em 60s ultrapassar 5%. */
+  /**
+   * Ativa modo seguro apenas quando:
+   *  - há amostra mínima de 50 eventos na janela de 60s (evita ativação prematura)
+   *  - apenas erros CRÍTICOS contam: 429, 403, refusal
+   *  - erros "ignored" (10004/50001/blacklist) NÃO contam
+   *
+   * Loga safe_mode_check a cada chamada para auditoria.
+   */
   private checkEnterSafeMode(enable60Rpm: boolean): void {
     if (!enable60Rpm || this.safeModeSince > 0) return;
     const now = Date.now();
     const recent = this.safetyEvents.filter(e => now - e.ts < 60_000);
-    if (recent.length < 10) return;
-    const bad = recent.filter(e => e.type !== "ok").length;
-    if (bad / recent.length > 0.05) {
+    const total = recent.length;
+    const ignored = recent.filter(e => e.type === "ignored").length;
+    const critical = recent.filter(e => e.type === "429" || e.type === "403" || e.type === "refusal").length;
+    const rate = total > 0 ? critical / total : 0;
+
+    // Log de auditoria (fire-and-forget) — aparece no console para análise
+    void this.manager.log(
+      this.instanceId, "INFO", "engine",
+      `safe_mode_check: critical=${critical} total=${total} rate=${Math.round(rate * 100)}% ignored=${ignored}`,
+    );
+
+    // Amostra mínima de 50 eventos — não ativa com poucos dados
+    if (total < 50) return;
+
+    // Threshold: 8% de erros críticos (não conta "ignored")
+    if (rate > 0.08) {
       this.safeModeSince = now;
       void this.manager.log(
         this.instanceId, "WARN", "engine",
-        `[60rpm] Modo seguro ativado por 2min — taxa de erro ${Math.round(bad / recent.length * 100)}% (${bad}/${recent.length} eventos em 60s).`,
+        `[60rpm] Modo seguro ativado por 2min — erros críticos: ${Math.round(rate * 100)}% (${critical}/${total} eventos, ${ignored} ignorados) em 60s.`,
       );
     }
   }
@@ -1628,8 +1659,12 @@ export class QueueRunner {
 
     const recentEvts = this.safetyEvents.filter(e => now - e.ts < 60_000);
     const okEvts = recentEvts.filter(e => e.type === "ok").length;
-    const sendRate = recentEvts.length > 0
-      ? `${Math.round(okEvts / recentEvts.length * 100)}%`
+    const ignoredEvts = recentEvts.filter(e => e.type === "ignored").length;
+    const criticalEvts = recentEvts.filter(e => e.type === "429" || e.type === "403" || e.type === "refusal").length;
+    // send_ok exclui eventos "ignored" do denominador (org inválida não é falha de envio)
+    const countable = recentEvts.length - ignoredEvts;
+    const sendRate = countable > 0
+      ? `${Math.round(okEvts / countable * 100)}%` + (ignoredEvts > 0 ? `(ign=${ignoredEvts})` : "")
       : "n/a";
 
     const reasons = [...this.blockedReasons.entries()]
@@ -1665,11 +1700,86 @@ export class QueueRunner {
       ` | sem_cand=${semCand}` +
       ` | disc_429=${disc429} disc_cooldowns=${discCooldowns}` +
       (cooldownSec > 0 ? ` | cooldown=${cooldownSec}s` : "") +
+      (criticalEvts > 0 ? ` | critical_err=${criticalEvts}` : "") +
       (reasons ? ` | blocked: ${reasons}` : "") +
       (inSafe ? " | ⚠️ SAFE_MODE" : ""),
     );
 
     this.blockedReasons.clear();
+
+    // Buffer diag detalhado: a cada 60s (2 ciclos de 30s)
+    if (now - this.lastBufDiagAt >= 60_000) {
+      this.lastBufDiagAt = now;
+      void this.emitBufferDiag(cfg);
+    }
+  }
+
+  /**
+   * Loga diagnóstico detalhado do buffer de candidatos para ajudar a entender
+   * por que o buffer pode estar menor do que o esperado.
+   * Inclui: orgs selecionadas, blacklisted, canais por org, candidatos por categoria.
+   */
+  private async emitBufferDiag(cfg: CycleConfig): Promise<void> {
+    const now = Date.now();
+    const cached = this.channelCache?.rows ?? [];
+
+    // Orgs que estão na seleção vs quantas têm canais no cache
+    const orgIds = cfg.selected_org_ids;
+    const orgWithChannels = new Set(cached.map(c => c.org_id));
+    const orgsWithChannels = orgIds.filter(id => orgWithChannels.has(id)).length;
+    const orgsWithoutChannels = orgIds.filter(id => !orgWithChannels.has(id)).length;
+
+    // Orgs blacklistadas para qualquer token desta instância
+    let totalBlacklistedOrgs = 0;
+    for (const orgSet of this.tokenOrgBlacklist.values()) {
+      totalBlacklistedOrgs += [...orgSet].filter(id => orgIds.includes(id)).length;
+    }
+
+    // Buffer: válido vs expirado
+    const bufValid: BufferedCandidate[] = [];
+    const bufExpired: BufferedCandidate[] = [];
+    for (const bc of this.candidateBuffer.values()) {
+      if (bc.expiresAt > now) bufValid.push(bc); else bufExpired.push(bc);
+    }
+
+    // Canais por org no cache (top 5 orgs)
+    const chPerOrg = new Map<string, number>();
+    for (const c of cached) {
+      chPerOrg.set(c.org_name, (chPerOrg.get(c.org_name) ?? 0) + 1);
+    }
+    const topOrgs = [...chPerOrg.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name, n]) => `${name.slice(0, 12)}:${n}ch`)
+      .join(" ");
+
+    // Candidatos válidos do buffer por categoria
+    const catCounts = new Map<string, number>();
+    for (const bc of bufValid) {
+      const cat = bc.ch.category ?? "sem_cat";
+      catCounts.set(cat, (catCounts.get(cat) ?? 0) + 1);
+    }
+    const catStr = [...catCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([cat, n]) => `${cat}:${n}`)
+      .join(" ");
+
+    // TTL médio restante dos válidos (indica frescor do buffer)
+    let ttlAvgSec = 0;
+    if (bufValid.length > 0) {
+      const sumTtl = bufValid.reduce((s, bc) => s + (bc.expiresAt - now), 0);
+      ttlAvgSec = Math.round(sumTtl / bufValid.length / 1000);
+    }
+
+    void this.manager.log(
+      this.instanceId, "INFO", "engine",
+      `[buf diag] orgs_sel=${orgIds.length} com_ch=${orgsWithChannels} sem_ch=${orgsWithoutChannels}` +
+      ` | blacklisted_org_token_pairs=${totalBlacklistedOrgs}` +
+      ` | cache_ch=${cached.length} buf_valid=${bufValid.length} buf_exp=${bufExpired.length}` +
+      ` | ttl_avg=${ttlAvgSec}s` +
+      (catStr ? ` | por_cat: ${catStr}` : "") +
+      (topOrgs ? ` | top_orgs: ${topOrgs}` : ""),
+    );
   }
 }
 
@@ -1805,4 +1915,27 @@ function isMissingAccess(status: number, error?: string): boolean {
     (status === 400 || status === 404) &&
     (MISSING_CODES.some((c) => body.includes(c)) || MISSING_PHRASES.some((p) => body.includes(p)))
   );
+}
+
+/**
+ * Retorna true para erros de org inválida/bloqueada que NÃO devem contar como
+ * falha crítica no safe mode. São erros de configuração/estado permanente:
+ *   - 10004: Unknown Guild (token não está mais no servidor)
+ *   - 50001: Missing Access (token sem permissão estrutural)
+ *   - 40001: Unauthorized
+ * Erros 403 puros (sem código Discord = ban dinâmico) ainda são críticos.
+ */
+function isIgnorableOrgError(status: number, error?: string): boolean {
+  if (!error) return false;
+  const body = error.toLowerCase();
+  // Ignoráveis: org removida/inválida, token banido estruturalmente
+  const IGNORABLE_CODES = ["10004", "50001", "40001", "10003"];
+  const IGNORABLE_PHRASES = ["unknown guild", "servidor desconhecido"];
+  // 403 puro sem código interno = possível ban dinâmico = crítico
+  if (status === 403 && !IGNORABLE_CODES.some(c => body.includes(c)) &&
+      !IGNORABLE_PHRASES.some(p => body.includes(p))) {
+    return false;
+  }
+  return IGNORABLE_CODES.some(c => body.includes(c)) ||
+         IGNORABLE_PHRASES.some(p => body.includes(p));
 }
