@@ -54,6 +54,7 @@ interface CycleConfig {
   timingClickMinMs: number;
   timingClickMaxMs: number;
   clicksPerOrg: number;
+  hotOrgExtraClicks: number;
   entryCapWithPlayers: number;
   entryCapEmpty: number;
   entryCapTotal: number;
@@ -120,6 +121,21 @@ export class QueueRunner {
   private pendingRefusalChecks = 0;
   private recentJoinTs: number[] = [];
   private lastThroughputLog = 0;
+  private lastClickAt = 0;
+  // Cache de config e canais (evita queries DB a cada tick)
+  private configCache: { cfg: CycleConfig; ts: number } | null = null;
+  private readonly CONFIG_CACHE_MS = 8_000;
+  private channelCache: { rows: ChannelRow[]; ts: number; key: string } | null = null;
+  private readonly CHANNEL_CACHE_MS = 20_000;
+  // Org scoring dinâmico (score = joins + matches*3 - recusas*5)
+  private orgScores = new Map<number, number>();
+  private orgJoinCounts = new Map<number, number>();   // total joins por org (sessão)
+  private orgRefusalCounts = new Map<number, number>(); // total recusas por org (sessão)
+  // Background refresh de player cache (não bloqueia o tick)
+  private bgRefreshRunning = false;
+  private bgRefreshQueue: ChannelRow[] = [];
+  private bgRefreshToken: ActiveToken | null = null;
+  private bgRefreshBlockedNames: string[] = [];
 
   constructor(
     private readonly instanceId: number,
@@ -139,6 +155,15 @@ export class QueueRunner {
     this.pendingRefusalChecks = 0;
     this.recentJoinTs = [];
     this.lastThroughputLog = 0;
+    this.lastClickAt = 0;
+    this.configCache = null;
+    this.channelCache = null;
+    this.orgScores.clear();
+    this.orgJoinCounts.clear();
+    this.orgRefusalCounts.clear();
+    this.bgRefreshRunning = false;
+    this.bgRefreshQueue = [];
+    this.bgRefreshToken = null;
     this.timer = setTimeout(() => this.tick(), STARTUP_GRACE_MS);
   }
 
@@ -241,6 +266,10 @@ export class QueueRunner {
   }
 
   private async loadConfig(): Promise<CycleConfig> {
+    const now = Date.now();
+    if (this.configCache && now - this.configCache.ts < this.CONFIG_CACHE_MS) {
+      return this.configCache.cfg;
+    }
     const cfgRows = await query<{
       delay_seconds: number;
       allowed_modes: string;
@@ -256,6 +285,7 @@ export class QueueRunner {
       timing_click_min_ms: number;
       timing_click_max_ms: number;
       clicks_per_org: number;
+      hot_org_extra_clicks: number;
       entry_cap_with_players_per_60s: number;
       entry_cap_empty_per_60s: number;
       entry_cap_total_per_60s: number;
@@ -266,7 +296,7 @@ export class QueueRunner {
               timing_intra_min_ms, timing_intra_max_ms,
               timing_pause_min_ms, timing_pause_max_ms,
               timing_click_min_ms, timing_click_max_ms,
-              clicks_per_org,
+              clicks_per_org, hot_org_extra_clicks,
               entry_cap_with_players_per_60s,
               entry_cap_empty_per_60s,
               entry_cap_total_per_60s,
@@ -284,7 +314,7 @@ export class QueueRunner {
       [this.instanceId],
     );
     const r = cfgRows[0];
-    return {
+    const cfg: CycleConfig = {
       delay_seconds: r?.delay_seconds ?? 18,
       allowed_modes: parseList(r?.allowed_modes ?? "").map(normalizeMode).filter((m): m is string => m !== null),
       allowed_categories: parseList(r?.allowed_categories ?? ""),
@@ -300,11 +330,36 @@ export class QueueRunner {
       timingClickMinMs: r?.timing_click_min_ms ?? 1000,
       timingClickMaxMs: r?.timing_click_max_ms ?? 2000,
       clicksPerOrg: r?.clicks_per_org ?? 10,
+      hotOrgExtraClicks: Math.max(0, r?.hot_org_extra_clicks ?? 10),
       entryCapWithPlayers: Math.max(0, Math.min(200, r?.entry_cap_with_players_per_60s ?? 30)),
       entryCapEmpty: Math.max(0, Math.min(200, r?.entry_cap_empty_per_60s ?? 18)),
       entryCapTotal: Math.max(0, Math.min(200, r?.entry_cap_total_per_60s ?? 48)),
       refusalCheckDelayMs: Math.min(5000, Math.max(300, r?.refusal_check_delay_ms ?? DEFAULT_REFUSAL_CHECK_DELAY_MS)),
     };
+    this.configCache = { cfg, ts: Date.now() };
+    return cfg;
+  }
+
+  /** Invalida caches de config e canais (chamado quando discovery roda ou config muda). */
+  invalidateCaches(): void {
+    this.configCache = null;
+    this.channelCache = null;
+  }
+
+  private async loadChannelsCached(
+    orgIds: number[],
+    allowedModes: string[],
+    allowedCategories: string[],
+    maxValor: number,
+  ): Promise<ChannelRow[]> {
+    const key = `${orgIds.join(",")}|${allowedModes.join(",")}|${allowedCategories.join(",")}|${maxValor}`;
+    const now = Date.now();
+    if (this.channelCache && this.channelCache.key === key && now - this.channelCache.ts < this.CHANNEL_CACHE_MS) {
+      return this.channelCache.rows;
+    }
+    const rows = await this.loadChannels(orgIds, allowedModes, allowedCategories, maxValor);
+    this.channelCache = { rows, ts: Date.now(), key };
+    return rows;
   }
 
   private async iterate(cfg: CycleConfig): Promise<void> {
@@ -366,7 +421,7 @@ export class QueueRunner {
       return;
     }
 
-    const channels = await this.loadChannels(
+    const channels = await this.loadChannelsCached(
       cfg.selected_org_ids,
       cfg.allowed_modes,
       cfg.allowed_categories,
@@ -408,7 +463,9 @@ export class QueueRunner {
     let attempts = 0;
     let candidate: ChannelRow | null = null;
     let candidatePlayers = 0;
+    let candidateEligibleCount = 0; // nº de filas elegíveis na org escolhida (para hot org mode)
     let advancedDueToFull = false;
+    const cycleStart = Date.now();
 
     // ── Pre-pass: prioriza org com fila "com players" ────────────────────
     // O loop abaixo é round-robin por org e a preferência "com players"
@@ -601,6 +658,7 @@ export class QueueRunner {
       }
       candidate = pick.ch;
       candidatePlayers = pick.players;
+      candidateEligibleCount = candidatesForToken.length;
 
       // Avança o cursor de org para a próxima somente se a org já vai estar
       // cheia após esta entrada (activeForOrg + 1 >= maxForOrg).
@@ -653,16 +711,25 @@ export class QueueRunner {
       const cutoffTs = Date.now() - 120_000;
       this.recentJoinTs = this.recentJoinTs.filter(t => t > cutoffTs);
 
-      // Log periódico de throughput com diagnóstico de gargalo
+      // ── Log periódico de throughput com diagnóstico de gargalo ──────────
       const nowLog = Date.now();
       if (nowLog - this.lastThroughputLog > 60_000) {
         this.lastThroughputLog = nowLog;
         const joinsPer60 = this.recentJoinTs.filter(t => nowLog - t < 60_000).length;
+        const joinsPer30 = this.recentJoinTs.filter(t => nowLog - t < 30_000).length * 2;
         let bottleneck = "aguardando filas";
         if (this.pendingRefusalChecks > 0) bottleneck = `verificações pendentes (${this.pendingRefusalChecks})`;
         else if (this.nextJoinAt > nowLog) bottleneck = `cooldown intra (${Math.ceil((this.nextJoinAt - nowLog) / 1000)}s)`;
+        else if (this.bgRefreshRunning) bottleneck = "bg player refresh (não bloqueia)";
+        // Top 3 orgs por score
+        const topOrgs = [...this.orgScores.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 3)
+          .map(([oid, sc]) => `org${oid}:${sc}`)
+          .join(", ");
+        const totalRefusals = [...this.orgRefusalCounts.values()].reduce((a, b) => a + b, 0);
         await this.manager.log(this.instanceId, "INFO", "engine",
-          `Throughput: ${joinsPer60} entradas/min (últimos 60s), cap=${cfg.entryCapTotal}/min — gargalo: ${bottleneck}`);
+          `Throughput: ${joinsPer60}/min (60s) | ${joinsPer30}/min (30s est) | cap=${cfg.entryCapTotal}/min | recusas=${totalRefusals} | gargalo: ${bottleneck}${topOrgs ? ` | top_orgs: ${topOrgs}` : ""}`);
       }
 
       // Incrementa contador da janela conforme tipo de fila
@@ -672,23 +739,46 @@ export class QueueRunner {
         this.joinedWithoutPlayers++;
       }
 
-      // Rate limit por org: após N cliques na org atual, avança para próxima
+      // ── Org scoring: registra join ─────────────────────────────────────
+      this.orgJoinCounts.set(candidate.org_id, (this.orgJoinCounts.get(candidate.org_id) ?? 0) + 1);
+      this.orgScores.set(candidate.org_id, (this.orgScores.get(candidate.org_id) ?? 0) + 1);
+      this.lastClickAt = Date.now();
+
+      // ── Diagnóstico de ciclo ────────────────────────────────────────────
+      const chooseMs = Date.now() - cycleStart;
+      if (chooseMs > 500) {
+        void this.manager.log(this.instanceId, "INFO", "engine",
+          `Diag — escolha de fila: ${chooseMs}ms | bg_refresh=${this.bgRefreshRunning} | pending_checks=${this.pendingRefusalChecks} | elegíveis_org=${candidateEligibleCount}`);
+      }
+
+      // ── Rate limit por org: após N cliques na org atual, avança ─────────
       if (cfg.clicksPerOrg > 0) {
         const orgId = candidate.org_id;
         const prev = this.orgClickCounts.get(orgId) ?? 0;
         const count = prev + 1;
         this.orgClickCounts.set(orgId, count);
-        if (count >= cfg.clicksPerOrg) {
+
+        // Modo org quente: se ainda há muitas filas elegíveis e nenhuma recusa
+        // recente, permite cliques extras antes de avançar para a próxima org.
+        const isHotOrg = cfg.hotOrgExtraClicks > 0
+          && candidateEligibleCount >= 5
+          && !this.isOrgInLimitCooldown(orgId).blocked;
+        const effectiveLimit = isHotOrg
+          ? cfg.clicksPerOrg + cfg.hotOrgExtraClicks
+          : cfg.clicksPerOrg;
+
+        if (count >= effectiveLimit) {
           this.orgClickCounts.set(orgId, 0);
           const orgIdx = cfg.selected_org_ids.indexOf(orgId);
           if (orgIdx >= 0) {
             this.orgCursor = (orgIdx + 1) % totalOrgs;
           }
+          const hotLabel = isHotOrg ? ` (modo quente +${cfg.hotOrgExtraClicks})` : "";
           await this.manager.log(
             this.instanceId,
             "INFO",
             "engine",
-            `Próxima org — clicks concluídos ${count}/${cfg.clicksPerOrg} em "${candidate.org_name}".`,
+            `Próxima org — clicks concluídos ${count}/${effectiveLimit}${hotLabel} em "${candidate.org_name}".`,
           );
         } else {
           const prefix = count === 1 ? `Iniciando org "${candidate.org_name}"` : `Org "${candidate.org_name}"`;
@@ -696,7 +786,7 @@ export class QueueRunner {
             this.instanceId,
             "INFO",
             "engine",
-            `${prefix} — click ${count}/${cfg.clicksPerOrg}.`,
+            `${prefix} — click ${count}/${effectiveLimit}.`,
           );
         }
       }
@@ -840,15 +930,20 @@ export class QueueRunner {
     }
   }
 
+  /**
+   * Rankeia candidatos por nº de players — NÃO BLOQUEANTE.
+   * Retorna imediatamente com valores em cache; agenda refresh em background.
+   * Isso elimina o principal gargalo anterior (~4s de waits seriais por tick).
+   */
   private async rankCandidatesByPlayers(
     candidates: ChannelRow[],
     activeToken: ActiveToken,
     blockedNames: string[] = [],
   ): Promise<{ candidates: Array<{ ch: ChannelRow; players: number }> }> {
-    const rest = new DiscordRest(activeToken.token);
     const now = Date.now();
     const keyOf = (c: ChannelRow) => `${c.channel_id}:${c.message_id}`;
 
+    // Identificar entradas stale para refresh em background
     const stale = candidates
       .filter((c) => {
         const cached = this.playerCache.get(keyOf(c));
@@ -856,36 +951,15 @@ export class QueueRunner {
       })
       .slice(0, MAX_FRESH_FETCH_PER_TICK);
 
-    for (const c of stale) {
-      if (!c.message_id) continue;
-      await sleep(350 + Math.floor(Math.random() * 650));
-      const r = await rest.fetchMessage(c.channel_id, c.message_id);
-      if (r.status === 200 && r.data) {
-        const blocked = blockedNames.length > 0 && hasBlockedName(r.data, blockedNames);
-        const playerCount = blocked ? -1 : countPlayers(r.data);
-        this.playerCache.set(keyOf(c), { count: playerCount, ts: Date.now() });
-        if (blocked) {
-          await this.manager.log(
-            this.instanceId,
-            "WARN",
-            "engine",
-            `Fila bloqueada em ${c.org_name} · #${c.channel_name ?? c.channel_id} — nome na lista de bloqueio.`,
-          );
-          await query(
-            `UPDATE stats SET bloqueadas = bloqueadas + 1 WHERE instance_id = $1`,
-            [this.instanceId],
-          );
-        }
-      } else if (r.status === 403) {
-        this.playerCache.set(keyOf(c), { count: 0, ts: Date.now() - PLAYER_CACHE_MS + PLAYER_CACHE_403_MS });
-      } else if (r.status === 404) {
-        // Mensagem sumiu — re-discovery para re-cadastrar essa org
-        this.scheduleOrgRediscovery(c.org_id, c.org_name, activeToken.token, "mensagem 404 ao ler");
-        this.playerCache.set(keyOf(c), { count: 0, ts: Date.now() });
-      }
+    // Agendar refresh em background (não bloqueia o tick)
+    if (stale.length > 0 && !this.bgRefreshRunning) {
+      this.bgRefreshQueue = stale;
+      this.bgRefreshToken = activeToken;
+      this.bgRefreshBlockedNames = blockedNames;
+      void this.runBackgroundPlayerRefresh();
     }
 
-    // Filtra blocked (-1); o resto entra ranqueado por nº de players desc
+    // Retorna IMEDIATAMENTE com valores em cache (0 = sem cache = assume vazia)
     const scored = candidates
       .map((c) => {
         const cached = this.playerCache.get(keyOf(c));
@@ -895,6 +969,49 @@ export class QueueRunner {
     scored.sort((a, b) => b.players - a.players);
 
     return { candidates: scored };
+  }
+
+  /** Faz os fetches REST para atualizar o player cache em background, sem bloquear o tick. */
+  private async runBackgroundPlayerRefresh(): Promise<void> {
+    if (this.bgRefreshRunning) return;
+    this.bgRefreshRunning = true;
+    const token = this.bgRefreshToken;
+    const toRefresh = [...this.bgRefreshQueue];
+    const blockedNames = this.bgRefreshBlockedNames;
+    this.bgRefreshQueue = [];
+
+    if (!token) { this.bgRefreshRunning = false; return; }
+
+    const rest = new DiscordRest(token.token);
+    for (const c of toRefresh) {
+      if (this.stopped) break;
+      if (!c.message_id) continue;
+      await sleep(300 + Math.floor(Math.random() * 500));
+      try {
+        const r = await rest.fetchMessage(c.channel_id, c.message_id);
+        const key = `${c.channel_id}:${c.message_id}`;
+        if (r.status === 200 && r.data) {
+          const blocked = blockedNames.length > 0 && hasBlockedName(r.data, blockedNames);
+          const playerCount = blocked ? -1 : countPlayers(r.data);
+          this.playerCache.set(key, { count: playerCount, ts: Date.now() });
+          if (blocked) {
+            void this.manager.log(this.instanceId, "WARN", "engine",
+              `Fila bloqueada em ${c.org_name} · #${c.channel_name ?? c.channel_id} — nome na lista de bloqueio.`);
+            void query(`UPDATE stats SET bloqueadas = bloqueadas + 1 WHERE instance_id = $1`, [this.instanceId]);
+          }
+        } else if (r.status === 403) {
+          this.playerCache.set(`${c.channel_id}:${c.message_id}`, {
+            count: 0, ts: Date.now() - PLAYER_CACHE_MS + PLAYER_CACHE_403_MS,
+          });
+        } else if (r.status === 404) {
+          this.scheduleOrgRediscovery(c.org_id, c.org_name, token.token, "mensagem 404 ao ler (bg)");
+          this.playerCache.set(`${c.channel_id}:${c.message_id}`, { count: 0, ts: Date.now() });
+        }
+      } catch {
+        // Silencioso — refresh de background não pode travar o motor
+      }
+    }
+    this.bgRefreshRunning = false;
   }
 
   /** Re-roda a discovery de uma única org (em background, deduplicado). */
@@ -1025,6 +1142,9 @@ export class QueueRunner {
                  WHERE instance_id = $1`,
                 [this.instanceId],
               );
+              // Scoring: recusa penaliza a org (-5 pts)
+              this.orgRefusalCounts.set(ch.org_id, (this.orgRefusalCounts.get(ch.org_id) ?? 0) + 1);
+              this.orgScores.set(ch.org_id, (this.orgScores.get(ch.org_id) ?? 0) - 5);
               if (refusal.type === "wait") {
                 const waitMs = Math.min(refusal.waitMs ?? WAIT_DETECT_COOLDOWN_MS, 120_000);
                 this.setOrgLimitCooldown(ch.org_id, waitMs);

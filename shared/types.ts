@@ -64,6 +64,7 @@ export interface InstanceConfig {
   timing_click_min_ms: number;
   timing_click_max_ms: number;
   clicks_per_org: number;
+  hot_org_extra_clicks: number;
   match_msg_delay_ms: number;
   entry_cap_with_players_per_60s: number;
   entry_cap_empty_per_60s: number;

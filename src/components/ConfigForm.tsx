@@ -76,6 +76,7 @@ type ConfigPayload = {
     timing_click_min_ms: number;
     timing_click_max_ms: number;
     clicks_per_org: number;
+    hot_org_extra_clicks: number;
     match_msg_delay_ms: number;
     match_msg_delay_min_ms: number;
     match_msg_delay_max_ms: number;
@@ -130,6 +131,7 @@ export function ConfigForm({
   const [blockedNames, setBlockedNames] = useState("");
   const [maxValor, setMaxValor] = useState(0);
   const [clicksPerOrg, setClicksPerOrg] = useState(10);
+  const [hotOrgExtraClicks, setHotOrgExtraClicks] = useState(10);
   const [matchMsgDelayMinSec, setMatchMsgDelayMinSec] = useState(0);
   const [matchMsgDelayMaxSec, setMatchMsgDelayMaxSec] = useState(0);
   const [entryCapWithPlayers, setEntryCapWithPlayers] = useState(30);
@@ -180,6 +182,7 @@ export function ConfigForm({
       setBlockedNames(cfg.config.blocked_names ?? "");
       setMaxValor(Number(cfg.config.max_valor ?? 0));
       setClicksPerOrg(Number(cfg.config.clicks_per_org ?? 10));
+      setHotOrgExtraClicks(Number(cfg.config.hot_org_extra_clicks ?? 10));
       const minMs = Number(cfg.config.match_msg_delay_min_ms ?? cfg.config.match_msg_delay_ms ?? 0);
       const maxMs = Number(cfg.config.match_msg_delay_max_ms ?? minMs);
       setMatchMsgDelayMinSec(Math.round(minMs / 1000));
@@ -471,6 +474,7 @@ export function ConfigForm({
           blocked_names: blockedNames,
           max_valor: maxValor,
           clicks_per_org: clicksPerOrg,
+          hot_org_extra_clicks: hotOrgExtraClicks,
           token_strategy: tokenStrategy,
           token_strategy_n: tokenStrategyN,
           selected_token_ids: Array.from(selectedTokenIds),
@@ -897,6 +901,27 @@ export function ConfigForm({
         </div>
         <p className="text-xs text-slate-500 mt-2">
           Após esse número de entradas em uma org, o bot avança para a próxima — independente de quantas filas entrou. Cole <b className="text-white/50">0</b> para desativar.
+        </p>
+      </Section>
+
+      <Section title="Cliques extras em org quente">
+        <div className="flex items-center gap-3">
+          <input
+            className="input w-24"
+            type="number"
+            min={0}
+            max={50}
+            step={1}
+            placeholder="10"
+            value={hotOrgExtraClicks}
+            onChange={(e) => setHotOrgExtraClicks(Math.min(50, Math.max(0, Number(e.target.value))))}
+          />
+          <span className="text-slate-400 text-sm">
+            {hotOrgExtraClicks === 0 ? "Desativado" : `+${hotOrgExtraClicks} cliques quando org tem ≥5 filas livres`}
+          </span>
+        </div>
+        <p className="text-xs text-slate-500 mt-2">
+          Quando uma org ainda tem muitas filas elegíveis e nenhuma recusa recente, o bot estende o limite de cliques por org em até esse valor — evita trocar de org prematuramente e aumenta o throughput.
         </p>
       </Section>
 

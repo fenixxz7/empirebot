@@ -435,6 +435,11 @@ export async function initDatabase(): Promise<void> {
     `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS refusal_check_delay_ms INTEGER NOT NULL DEFAULT 800`,
   );
 
+  // Modo org quente: cliques extras quando a org ainda tem muitas filas elegíveis
+  await pool.query(
+    `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS hot_org_extra_clicks INTEGER NOT NULL DEFAULT 10`,
+  );
+
 }
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);
