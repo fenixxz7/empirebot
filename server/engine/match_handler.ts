@@ -612,11 +612,11 @@ export class MatchHandler {
       );
     }
 
-    // ── Cooldown por org ──────────────────────────────────────────────────
-    // Se a org está em quarentena (AutoMod ou 340013 recente), pula o
-    // envio mas o match já foi registrado e o slot da fila já foi liberado
-    // acima. Evita queimar o token batendo de novo na mesma flag enquanto
-    // ela ainda está fresca.
+    // ── Cooldown por org (apenas informativo aqui) ───────────────────────
+    // O cooldown de entrada NÃO bloqueia o envio de mensagem em partidas já
+    // abertas. Ele só deve afetar novas tentativas de entrar em filas
+    // (responsabilidade do runner/engine). Se a org está em cooldown de
+    // entrada, logamos mas continuamos o envio normalmente.
     const cooldownOrgKey =
       (orgCtx?.org_name ?? "").toLowerCase() ||
       (guildId ?? "").toLowerCase();
@@ -626,11 +626,10 @@ export class MatchHandler {
         const orgLabelCooldown = orgCtx?.org_name ?? guildId ?? event.name;
         await this.host.log(
           this.instanceId,
-          "WARN",
+          "INFO",
           "match",
-          `Org ${orgLabelCooldown} em cooldown (${formatCooldownRemaining(remaining)} restantes) — partida #${event.name} registrada mas envio pulado`,
+          `Org ${orgLabelCooldown} está em cooldown de entrada (${formatCooldownRemaining(remaining)} restantes), mas partida #${event.name} será respondida normalmente`,
         );
-        return;
       }
     }
 
