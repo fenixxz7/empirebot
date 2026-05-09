@@ -77,6 +77,11 @@ const RATE_WINDOW_MS = 60_000;             // janela de 60s (fixa)
 const RATE_LIMIT_BACKOFF_MIN_MS = 120_000;
 const RATE_LIMIT_BACKOFF_MAX_MS = 240_000;
 
+// Cooldown aplicado quando a org recusa entrada por limite real
+const REAL_LIMIT_COOLDOWN_MS = 3 * 60_000;   // 3 min após recusa de limite real
+const WAIT_DETECT_COOLDOWN_MS = 45_000;       // 45s para "aguarde Xs" genérico
+const REFUSAL_CHECK_WAIT_MS = 2_500;          // aguarda antes de ler canal após clique
+
 interface PlayerInfo {
   count: number;
   ts: number;
@@ -105,6 +110,10 @@ export class QueueRunner {
   private blacklistLoaded = false;
   // Contador de cliques por org (rate limit por org)
   private orgClickCounts = new Map<number, number>();
+  // Cooldown por limite REAL da org (recusa após clique): orgId → timestamp "bloqueado até"
+  private orgLimitCooldowns = new Map<number, number>();
+  // Throttle de log de cooldown por org (evita spam a cada tick)
+  private lastOrgLimitLog = new Map<number, number>();
 
   constructor(
     private readonly instanceId: number,
@@ -119,7 +128,28 @@ export class QueueRunner {
     this.tokenOrgBlacklist.clear();
     this.blacklistLoaded = false;
     this.orgClickCounts.clear();
+    this.orgLimitCooldowns.clear();
+    this.lastOrgLimitLog.clear();
     this.timer = setTimeout(() => this.tick(), STARTUP_GRACE_MS);
+  }
+
+  /** Verifica se a org está em cooldown de limite real. */
+  private isOrgInLimitCooldown(orgId: number): { blocked: boolean; remainingMs: number } {
+    const until = this.orgLimitCooldowns.get(orgId);
+    if (!until) return { blocked: false, remainingMs: 0 };
+    const remaining = until - Date.now();
+    if (remaining <= 0) {
+      this.orgLimitCooldowns.delete(orgId);
+      return { blocked: false, remainingMs: 0 };
+    }
+    return { blocked: true, remainingMs: remaining };
+  }
+
+  /** Define cooldown de limite real para uma org (mantém o mais longo). */
+  private setOrgLimitCooldown(orgId: number, ms: number): void {
+    const newUntil = Date.now() + ms;
+    const current = this.orgLimitCooldowns.get(orgId) ?? 0;
+    if (newUntil > current) this.orgLimitCooldowns.set(orgId, newUntil);
   }
 
   stop(): void {
@@ -390,9 +420,10 @@ export class QueueRunner {
         const orgId = orgIds[i]!;
         const orgChs = channels.filter((c) => c.org_id === orgId);
         if (orgChs.length === 0) continue;
-        const maxForOrg = orgChs[0]?.max_queues ?? 5;
+        const maxForOrg = orgChs[0]?.max_queues ?? 0;
         const activeForOrg = activePerOrg.get(orgId) ?? 0;
-        if (activeForOrg >= maxForOrg) continue;
+        if (maxForOrg > 0 && activeForOrg >= maxForOrg) continue;
+        if (this.isOrgInLimitCooldown(orgId).blocked) continue;
         let maxPlayers = 0;
         for (const c of orgChs) {
           const key = `${c.channel_id}:${c.message_id}`;
@@ -414,11 +445,27 @@ export class QueueRunner {
     while (attempts < totalOrgs) {
       const currentOrgId = orgIds[this.orgCursor % totalOrgs];
       const orgChannels = channels.filter((c) => c.org_id === currentOrgId);
-      const maxForOrg = orgChannels[0]?.max_queues ?? 5;
+      const maxForOrg = orgChannels[0]?.max_queues ?? 0;
       const activeForOrg = activePerOrg.get(currentOrgId) ?? 0;
 
-      // max_queues é limite concorrente: se já tem o máximo de filas ativas, pula
-      if (activeForOrg >= maxForOrg) {
+      // Cooldown de limite real: org foi recusada pela própria plataforma recentemente
+      const limitCd = this.isOrgInLimitCooldown(currentOrgId);
+      if (limitCd.blocked) {
+        this.orgCursor = (this.orgCursor + 1) % totalOrgs;
+        attempts++;
+        advancedDueToFull = true;
+        const lastLog = this.lastOrgLimitLog.get(currentOrgId) ?? 0;
+        if (Date.now() - lastLog > 60_000) {
+          this.lastOrgLimitLog.set(currentOrgId, Date.now());
+          const orgName = orgChannels[0]?.org_name ?? String(currentOrgId);
+          await this.manager.log(this.instanceId, "INFO", "engine",
+            `Org ${orgName} ignorada — cooldown de limite real (${Math.ceil(limitCd.remainingMs / 1000)}s restantes).`);
+        }
+        continue;
+      }
+
+      // max_queues como teto de segurança opcional (0 = sem limite artificial)
+      if (maxForOrg > 0 && activeForOrg >= maxForOrg) {
         this.orgCursor = (this.orgCursor + 1) % totalOrgs;
         attempts++;
         advancedDueToFull = true;
@@ -496,7 +543,7 @@ export class QueueRunner {
       // Preferência 70/30: filas vazias só são selecionadas aqui 30% das vezes;
       // nos outros 70% cai no Passo 3 (overflow) que prefere com-player se houver.
       const emptiesForOrg = emptiesPerOrg.get(currentOrgId) ?? 0;
-      const emptyBlocked = emptiesForOrg * 4 >= maxForOrg * 3;
+      const emptyBlocked = maxForOrg > 0 && emptiesForOrg * 4 >= maxForOrg * 3;
       if (!pick && noPlayersSlotPreferred && !emptyBlocked && Math.random() < 0.60) {
         for (let i = 0; i < orderedModes.length; i++) {
           const m = orderedModes[i]!;
@@ -545,9 +592,8 @@ export class QueueRunner {
 
       // Avança o cursor de org para a próxima somente se a org já vai estar
       // cheia após esta entrada (activeForOrg + 1 >= maxForOrg).
-      // Caso ainda haja vagas, mantém o cursor na mesma org para que o próximo
-      // tick tente entrar mais filas nela antes de passar adiante.
-      const willBeFull = (activeForOrg + 1) >= maxForOrg;
+      // Com max_queues = 0 (sem teto), nunca considera "cheia" pelo contador artificial.
+      const willBeFull = maxForOrg > 0 && (activeForOrg + 1) >= maxForOrg;
       const prevOrgCursor = this.orgCursor;
       if (willBeFull) {
         this.orgCursor = (this.orgCursor + 1) % totalOrgs;
@@ -889,6 +935,32 @@ export class QueueRunner {
       : (ch.mode ?? "?");
 
     if (success) {
+      await this.manager.log(
+        this.instanceId, "INFO", "engine",
+        `Tentativa aceita: ${ch.org_name} · ${ch.category ?? "?"} · ${modeLabel} · #${ch.channel_name ?? ch.channel_id} (${tag}) · "${btn.label}" · token #${token.position} — verificando resposta da org…`,
+      );
+
+      // ── Detecção de recusa real ────────────────────────────────────────
+      // Aguarda alguns segundos para a org processar e postar a resposta,
+      // depois lê as mensagens recentes do canal e detecta padrões de recusa.
+      const refusal = await this.detectRealLimitRefusal(ch, token, rest);
+
+      if (refusal.type !== "none") {
+        // Entrada recusada — NÃO registra nem computa estatística
+        if (refusal.type === "wait") {
+          const waitMs = Math.min(refusal.waitMs ?? WAIT_DETECT_COOLDOWN_MS, 120_000);
+          this.setOrgLimitCooldown(ch.org_id, waitMs);
+          await this.manager.log(this.instanceId, "WARN", "engine",
+            `Org ${ch.org_name} — cooldown curto detectado: "${refusal.text}" (aguardando ${Math.ceil(waitMs / 1000)}s). Entrada não contabilizada.`);
+        } else {
+          this.setOrgLimitCooldown(ch.org_id, REAL_LIMIT_COOLDOWN_MS);
+          await this.manager.log(this.instanceId, "WARN", "engine",
+            `Org ${ch.org_name} recusou entrada: limite real atingido — "${refusal.text}". Org pausada por ${REAL_LIMIT_COOLDOWN_MS / 60_000}min.`);
+        }
+        return false;
+      }
+
+      // Entrada confirmada — registra tudo
       await query(
         `INSERT INTO active_queues
            (instance_id, org_id, channel_id, message_id, mode, category, token_id, joined_with_players)
@@ -925,7 +997,7 @@ export class QueueRunner {
         this.instanceId,
         "INFO",
         "engine",
-        `Entrou em ${ch.org_name} · ${ch.category ?? "?"} · ${modeLabel} · #${ch.channel_name ?? ch.channel_id} (${tag}) · "${btn.label}" · token #${token.position}`,
+        `Entrada confirmada: ${ch.org_name} · ${ch.category ?? "?"} · ${modeLabel} · #${ch.channel_name ?? ch.channel_id} (${tag}) · token #${token.position}`,
       );
 
       return true;
@@ -1039,6 +1111,73 @@ export class QueueRunner {
       this.lastNoWorkLog = now;
     }
     void this.manager.log(this.instanceId, "INFO", "engine", message);
+  }
+
+  /**
+   * Após um clique bem-sucedido (HTTP 2xx), aguarda alguns segundos e lê
+   * as mensagens recentes do canal para detectar respostas de recusa da org.
+   *
+   * Retorna:
+   *  - { type: "none" }              → sem recusa detectada, entrada válida
+   *  - { type: "limit", text }       → limite real atingido (3 min de cooldown)
+   *  - { type: "wait", text, waitMs} → cooldown curto detectado ("aguarde Xs")
+   */
+  private async detectRealLimitRefusal(
+    ch: ChannelRow,
+    token: ActiveToken,
+    rest: DiscordRest,
+  ): Promise<{ type: "none" | "limit" | "wait"; text: string; waitMs?: number }> {
+    await sleep(REFUSAL_CHECK_WAIT_MS);
+
+    const { data: msgs } = await rest.channelMessages(ch.channel_id, 8).catch(() => ({ data: null }));
+    if (!msgs || msgs.length === 0) return { type: "none", text: "" };
+
+    // Janela de 8 segundos: mensagens postadas após o clique
+    const cutoff = Date.now() - (REFUSAL_CHECK_WAIT_MS + 5_500);
+
+    for (const msg of msgs) {
+      const ts = msg.timestamp ? new Date(msg.timestamp).getTime() : 0;
+      if (ts < cutoff) break; // mensagens em ordem decrescente — para no primeiro antigo
+
+      // Considera apenas mensagens que mencionam nosso userId OU do bot da org
+      const mentionsUs =
+        msg.content.includes(`<@${token.userId}>`) ||
+        msg.content.includes(`<@!${token.userId}>`);
+      const isOrgBot = msg.author?.bot === true || !!msg.application_id;
+      if (!mentionsUs && !isOrgBot) continue;
+
+      const embedText = (msg.embeds ?? [])
+        .map((e) =>
+          [e.title ?? "", e.description ?? "", ...(e.fields ?? []).map((f) => f.value)].join(" "),
+        )
+        .join(" ");
+      const fullText = (msg.content + " " + embedText).toLowerCase();
+
+      // ── Padrões de limite real ───────────────────────────────────────
+      if (
+        fullText.includes("atingiu o limite de filas") ||
+        fullText.includes("limite de fila") ||
+        fullText.includes("máximo de partidas possível") ||
+        fullText.includes("maximo de partidas") ||
+        fullText.includes("espere ela ser finalizada") ||
+        fullText.includes("espere ser finalizada") ||
+        fullText.includes("você está no máximo") ||
+        fullText.includes("voce esta no maximo")
+      ) {
+        const preview = (msg.content || embedText).slice(0, 120).replace(/\n/g, " ");
+        return { type: "limit", text: preview };
+      }
+
+      // ── Cooldown curto: "aguarde Xs" / "aguarde 4 segundos" ──────────
+      const waitMatch = fullText.match(/aguarde[^\d]*(\d+)\s*s(?:egundo)?/);
+      if (waitMatch) {
+        const secs = parseInt(waitMatch[1] ?? "30", 10);
+        const preview = (msg.content || embedText).slice(0, 120).replace(/\n/g, " ");
+        return { type: "wait", text: preview, waitMs: secs * 1000 + 2_000 };
+      }
+    }
+
+    return { type: "none", text: "" };
   }
 }
 
