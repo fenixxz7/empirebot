@@ -108,6 +108,10 @@ const DIAG_INTERVAL_MS = 30_000;
 const ACTIVE_CACHE_TTL_MS = 3_000;
 const CHOOSE_WARN_STAGE_MS = 300;
 
+// Rate limit por org/token: se retry_after <= esse limiar, espera localmente;
+// se > limiar, aplica cooldown só na org/token e continua o scheduler normalmente.
+const ORG_RATELIMIT_LOCAL_MAX_MS = 2_000;
+
 interface PlayerInfo {
   count: number;
   ts: number;
@@ -178,6 +182,9 @@ export class QueueRunner {
   private candidateBuffer = new Map<string, BufferedCandidate>();
   // Rate budget de discovery compartilhado entre auto-discovery e re-discovery
   readonly discoveryBudget = new DiscoveryRateBudget();
+  // Cooldowns de rate limit por org+token (chave: `${orgId}:${tokenId}`, valor: blocked_until)
+  // Isolado por org — não congela o scheduler inteiro
+  private orgRateLimitCooldowns = new Map<string, number>();
   // Contador acumulado de sem_candidatos entre diags de 30s
   private semCandidatosTotal = 0;
 
@@ -219,6 +226,7 @@ export class QueueRunner {
     this.discoveryBudget.resetStats();
     this.semCandidatosTotal = 0;
     this.lastBufDiagAt = 0;
+    this.orgRateLimitCooldowns.clear();
     this.timer = setTimeout(() => this.tick(), STARTUP_GRACE_MS);
   }
 
@@ -239,6 +247,30 @@ export class QueueRunner {
     const newUntil = Date.now() + ms;
     const current = this.orgLimitCooldowns.get(orgId) ?? 0;
     if (newUntil > current) this.orgLimitCooldowns.set(orgId, newUntil);
+  }
+
+  /**
+   * Verifica se a org está em cooldown de rate limit para um token específico.
+   * Diferente do "limite real" (recusa de entrada), este é o 429 do Discord em cliques.
+   */
+  private isOrgTokenRateLimited(orgId: number, tokenId: number): { blocked: boolean; remainingMs: number } {
+    const key = `${orgId}:${tokenId}`;
+    const until = this.orgRateLimitCooldowns.get(key);
+    if (!until) return { blocked: false, remainingMs: 0 };
+    const remaining = until - Date.now();
+    if (remaining <= 0) {
+      this.orgRateLimitCooldowns.delete(key);
+      return { blocked: false, remainingMs: 0 };
+    }
+    return { blocked: true, remainingMs: remaining };
+  }
+
+  /** Aplica cooldown de rate limit Discord para uma org+token específicos. */
+  private setOrgTokenRateLimitCooldown(orgId: number, tokenId: number, ms: number): void {
+    const key = `${orgId}:${tokenId}`;
+    const newUntil = Date.now() + ms;
+    const current = this.orgRateLimitCooldowns.get(key) ?? 0;
+    if (newUntil > current) this.orgRateLimitCooldowns.set(key, newUntil);
   }
 
   stop(): void {
@@ -745,6 +777,24 @@ export class QueueRunner {
         (c) => !blacklistedForToken.has(c.org_id),
       );
       if (candidatesForToken.length === 0) {
+        this.orgCursor = (this.orgCursor + 1) % totalOrgs;
+        attempts++;
+        continue;
+      }
+
+      // Verifica cooldown de rate limit por org+token (429 com retry_after alto)
+      const orgRlCheck = this.isOrgTokenRateLimited(currentOrgId, selectedToken.tokenId);
+      if (orgRlCheck.blocked) {
+        const remSec = Math.ceil(orgRlCheck.remainingMs / 1000);
+        if (cfg.enable60RpmMode) {
+          this.blockedReasons.set("rl_org", (this.blockedReasons.get("rl_org") ?? 0) + 1);
+        }
+        // Log periódico para não spam (só a cada ~30 ocorrências)
+        const rlCount = (this.blockedReasons.get("rl_org") ?? 0);
+        if (rlCount <= 1 || rlCount % 30 === 0) {
+          void this.manager.log(this.instanceId, "INFO", "engine",
+            `Org "${orgChannels[0]?.org_name ?? currentOrgId}" ignorada — cooldown rate limit ${remSec}s restantes (token #${selectedToken.position}).`);
+        }
         this.orgCursor = (this.orgCursor + 1) % totalOrgs;
         attempts++;
         continue;
@@ -1402,15 +1452,34 @@ export class QueueRunner {
     } else if (r.status === 429) {
       this.recordSafetyEvent("429");
       this.checkEnterSafeMode(enable60Rpm);
-      // Backoff agressivo em 429 — Discord não gosta nem um pouco
-      const backoff = randInt(RATE_LIMIT_BACKOFF_MIN_MS, RATE_LIMIT_BACKOFF_MAX_MS);
-      this.extraDelayMs += backoff;
-      await this.manager.log(
-        this.instanceId,
-        "WARN",
-        "engine",
-        `Rate-limited em ${ch.org_name} · ${modeLabel} · #${ch.channel_name ?? ch.channel_id} — esperando ${Math.round(backoff / 1000)}s antes de continuar.`,
-      );
+
+      // Extrai retry_after do corpo JSON do Discord
+      let retryAfterMs = 0;
+      try {
+        const body = JSON.parse(r.error ?? "{}") as { retry_after?: number; global?: boolean };
+        retryAfterMs = Math.round((body.retry_after ?? 0) * 1000);
+      } catch { /* não é JSON — usa backoff padrão */ }
+
+      if (retryAfterMs > ORG_RATELIMIT_LOCAL_MAX_MS) {
+        // retry_after alto (ex: 172s) → cooldown POR ORG+TOKEN, NÃO global
+        // O scheduler continua rodando nas demais orgs sem interrupção.
+        this.setOrgTokenRateLimitCooldown(ch.org_id, token.tokenId, retryAfterMs);
+        const pauseSec = Math.ceil(retryAfterMs / 1000);
+        await this.manager.log(
+          this.instanceId, "WARN", "engine",
+          `Org "${ch.org_name}" pausada por ${pauseSec}s por rate limit (retry_after=${pauseSec}s) — token #${token.position}. Demais orgs continuam normais.`,
+        );
+      } else {
+        // retry_after pequeno (≤2s) ou ausente → backoff local pontual
+        const localWait = retryAfterMs > 0
+          ? retryAfterMs + 200
+          : randInt(1_500, 3_000);
+        await sleep(localWait);
+        await this.manager.log(
+          this.instanceId, "WARN", "engine",
+          `Rate-limited em ${ch.org_name} · ${modeLabel} · #${ch.channel_name ?? ch.channel_id} — aguardou ${Math.round(localWait / 1000)}s localmente.`,
+        );
+      }
       return false;
     } else if (r.status === 403 || isMissingAccess(r.status, r.error)) {
       // Erros de org inválida/sem acesso: se for 10004 (Unknown Guild) ou 50001 (Missing Access),
