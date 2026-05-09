@@ -27,15 +27,6 @@ function detectMode(text: string): GameMode | null {
 
 /**
  * Detecta a categoria a partir do nome do canal pelo sufixo.
- * Exemplos:
- *   1x1-mob          → Mobile
- *   3x3-emu          → Emulador
- *   2x2-misto, 2x2-mis → Misto
- *   4x4-tatico       → Tatico
- *   1x1-full-soco    → Full-Soco
- *
- * Ordem importa: a checagem de "full-soco" vem antes de "soco" sozinho,
- * "misto" antes de "mis", etc.
  */
 export function detectCategory(name: string): Category | null {
   const n = name.toLowerCase();
@@ -110,6 +101,79 @@ function extractEmbedValor(msg: DiscordMessage): string | null {
   return null;
 }
 
+// ── Discovery Rate Budget ──────────────────────────────────────────────────────
+// Controla concorrência e cooldowns por guild para evitar rate limit em
+// GET /guilds/:id/channels. Compartilhado entre chamadas simultâneas de discovery.
+
+const DISCOVERY_COOLDOWN_429_MIN_MS = 2 * 60_000; // 2 min após 429
+const DISCOVERY_COOLDOWN_429_MAX_MS = 5 * 60_000; // 5 min (jitter)
+const DISCOVERY_MAX_CONCURRENT = 2;               // max simultâneos por token
+
+export class DiscoveryRateBudget {
+  private guildCooldowns = new Map<string, number>(); // guild_id → blocked_until
+  private _active = 0;
+
+  // Estatísticas da sessão (acumuladas, resetadas ao ser chamado por runner diag)
+  skippedByCooldown = 0;
+  succeeded = 0;
+  failed429 = 0;
+
+  get active(): number { return this._active; }
+
+  isCoolingDown(guildId: string): boolean {
+    const until = this.guildCooldowns.get(guildId);
+    if (!until) return false;
+    if (Date.now() >= until) { this.guildCooldowns.delete(guildId); return false; }
+    return true;
+  }
+
+  remainingMs(guildId: string): number {
+    const until = this.guildCooldowns.get(guildId);
+    if (!until) return 0;
+    return Math.max(0, until - Date.now());
+  }
+
+  canAcquire(): boolean {
+    return this._active < DISCOVERY_MAX_CONCURRENT;
+  }
+
+  acquire(): boolean {
+    if (!this.canAcquire()) return false;
+    this._active++;
+    return true;
+  }
+
+  release(): void {
+    this._active = Math.max(0, this._active - 1);
+  }
+
+  setCooldown429(guildId: string): void {
+    // jitter entre min e max
+    const ms = DISCOVERY_COOLDOWN_429_MIN_MS +
+      Math.floor(Math.random() * (DISCOVERY_COOLDOWN_429_MAX_MS - DISCOVERY_COOLDOWN_429_MIN_MS));
+    const newUntil = Date.now() + ms;
+    const current = this.guildCooldowns.get(guildId) ?? 0;
+    if (newUntil > current) this.guildCooldowns.set(guildId, newUntil);
+  }
+
+  activeCooldowns(): number {
+    const now = Date.now();
+    let n = 0;
+    for (const until of this.guildCooldowns.values()) {
+      if (until > now) n++;
+    }
+    return n;
+  }
+
+  resetStats(): void {
+    this.skippedByCooldown = 0;
+    this.succeeded = 0;
+    this.failed429 = 0;
+  }
+}
+
+// ── discoverOrg ───────────────────────────────────────────────────────────────
+
 export interface DiscoveryResult {
   ok: boolean;
   org_id: number;
@@ -117,6 +181,7 @@ export interface DiscoveryResult {
   channels_found: number;
   queues_saved: number;
   error?: string;
+  was_rate_limited?: boolean;
 }
 
 export async function discoverOrg(
@@ -127,6 +192,8 @@ export async function discoverOrg(
   const rest = new DiscordRest(token);
   const { status, data: channels, error } = await rest.listGuildChannels(guildId);
   if (!channels) {
+    const was_rate_limited = status === 429 ||
+      (error ?? "").includes("rate_limited");
     return {
       ok: false,
       org_id: orgId,
@@ -134,6 +201,7 @@ export async function discoverOrg(
       channels_found: 0,
       queues_saved: 0,
       error: error ?? `HTTP ${status}`,
+      was_rate_limited,
     };
   }
 
@@ -141,7 +209,7 @@ export async function discoverOrg(
   let candidatesScanned = 0;
 
   for (const ch of channels) {
-    if (ch.type !== 0) continue; // só canal de texto
+    if (ch.type !== 0) continue;
 
     const modeFromName = detectMode(ch.name);
     const looksLikeQueue = !!modeFromName || /\bfila\b/i.test(ch.name);
@@ -155,7 +223,6 @@ export async function discoverOrg(
     const { data: msgs } = await rest.channelMessages(ch.id, 50);
     if (!msgs || msgs.length === 0) continue;
 
-    // TODAS as mensagens com botões viram filas (cada card de R$X é uma fila)
     const queueMsgs = msgs.filter(
       (m) => Array.isArray(m.components) && m.components.length > 0,
     );
@@ -167,7 +234,6 @@ export async function discoverOrg(
       const buttons = extractButtons(queueMsg);
       if (buttons.length === 0) continue;
 
-      // Modo: prefere o do nome; senão, tenta detectar pelo embed/conteúdo
       let mode = modeFromName;
       if (!mode) {
         const titles = (queueMsg.embeds ?? [])
@@ -211,7 +277,6 @@ export async function discoverOrg(
       queuesSaved++;
     }
 
-    // Limpa filas antigas que não existem mais nesse canal (mensagens deletadas)
     if (seenMsgIds.length > 0) {
       await query(
         `DELETE FROM org_channels
@@ -235,12 +300,6 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/**
- * Roda a descoberta automática para todas as orgs selecionadas de uma
- * instância que tenham guild_id mas ainda não tenham canais cadastrados.
- * Reutilizado pelo PUT /api/config e pelo manager.start (após o token
- * conectar).
- */
 /** Retorna true se o erro indica acesso negado permanente (código 50001 ou ban). */
 function isPermanentAccessError(error: string | undefined): boolean {
   if (!error) return false;
@@ -257,16 +316,16 @@ function isPermanentAccessError(error: string | undefined): boolean {
  * que tenham guild_id mas ainda não tenham sido varridas (last_discovered_at IS NULL)
  * e não estejam na blacklist do token atual.
  *
- * Ao término:
- *  - Sucesso → seta last_discovered_at = NOW() na org
- *  - Erro 50001 → insere na token_org_blacklist (per-token), não seta last_discovered_at
- *    para que outro token possa tentar no próximo start
- *  - Outros erros → loga, não seta last_discovered_at (retry no próximo start)
+ * Usa DiscoveryRateBudget para:
+ *  - Limitar concorrência (max DISCOVERY_MAX_CONCURRENT simultâneos)
+ *  - Aplicar cooldown por guild quando recebe 429
+ *  - Pular guilds em cooldown
  */
 export async function runAutoDiscoveryForInstance(
   instanceId: number,
   tokenId: number,
   token: string,
+  budget?: DiscoveryRateBudget,
 ): Promise<DiscoveryResult[]> {
   const toDiscover = await query<{
     id: number;
@@ -287,26 +346,80 @@ export async function runAutoDiscoveryForInstance(
   );
 
   const results: DiscoveryResult[] = [];
+  let skipped = 0;
+  let succeeded = 0;
+  let failed429 = 0;
+
   for (const o of toDiscover) {
+    const guildId = o.guild_id!;
+
+    // Verifica cooldown por guild
+    if (budget && budget.isCoolingDown(guildId)) {
+      const rem = Math.ceil(budget.remainingMs(guildId) / 1000);
+      await query(
+        `INSERT INTO logs (instance_id, level, source, message)
+         VALUES ($1, 'INFO', 'discovery', $2)`,
+        [instanceId, `${o.name}: discovery pulada — cooldown de 429 ativo (${rem}s restantes)`],
+      );
+      skipped++;
+      budget.skippedByCooldown++;
+      continue;
+    }
+
+    // Limita concorrência — aguarda slot disponível (com timeout para não travar)
+    if (budget) {
+      let waited = 0;
+      while (!budget.canAcquire() && waited < 30_000) {
+        await sleep(500);
+        waited += 500;
+      }
+      budget.acquire();
+    }
+
     try {
-      const r = await discoverOrg(token, o.id, o.guild_id!);
+      const r = await discoverOrg(token, o.id, guildId);
       results.push(r);
 
-      if (!r.ok && isPermanentAccessError(r.error)) {
-        // Erro permanente de acesso: entra na blacklist por token
-        await query(
-          `INSERT INTO token_org_blacklist (token_id, org_id, reason)
-           VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-          [tokenId, o.id, "discovery: sem acesso (50001)"],
-        );
+      if (!r.ok && r.was_rate_limited) {
+        // 429 no GET /guilds/:id/channels — aplica cooldown na guild
+        failed429++;
+        if (budget) {
+          budget.failed429++;
+          budget.setCooldown429(guildId);
+          const coolMs = budget.remainingMs(guildId);
+          await query(
+            `INSERT INTO logs (instance_id, level, source, message)
+             VALUES ($1, 'WARN', 'discovery', $2)`,
+            [instanceId, `${o.name}: rate limit (429) em GET /channels — cooldown de ${Math.ceil(coolMs / 1000)}s aplicado`],
+          );
+        }
+        // Não seta last_discovered_at → retry no próximo start
+      } else if (!r.ok && isPermanentAccessError(r.error)) {
+        // Erro permanente: entra na blacklist por token
+        try {
+          await query(
+            `INSERT INTO token_org_blacklist (token_id, org_id, reason)
+             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+            [tokenId, o.id, "discovery: sem acesso (50001)"],
+          );
+        } catch (fkErr: unknown) {
+          // FK violation: token_id não existe mais — ignora silenciosamente
+          const code = (fkErr as any)?.code;
+          if (code !== "23503") throw fkErr;
+          await query(
+            `INSERT INTO logs (instance_id, level, source, message)
+             VALUES ($1, 'WARN', 'discovery', $2)`,
+            [instanceId, `${o.name}: blacklist não inserida — token_id=${tokenId} não existe mais (FK)`],
+          );
+        }
         await query(
           `INSERT INTO logs (instance_id, level, source, message)
            VALUES ($1, 'WARN', 'discovery', $2)`,
           [instanceId, `${o.name}: sem acesso (50001) — adicionada à blacklist do token atual`],
         );
-        // NÃO seta last_discovered_at → permite retry com outro token no próximo start
       } else if (r.ok) {
-        // Sucesso: marca a org como varrida
+        succeeded++;
+        if (budget) budget.succeeded++;
         await query(
           `UPDATE orgs SET last_discovered_at = NOW() WHERE id = $1`,
           [o.id],
@@ -317,7 +430,6 @@ export async function runAutoDiscoveryForInstance(
           [instanceId, `${o.name}: ${r.channels_found} ${pluralCanal(r.channels_found)} escaneado(s), ${r.queues_saved} fila(s) cadastradas`],
         );
       } else {
-        // Erro transiente: loga mas não marca — será tentado no próximo start
         await query(
           `INSERT INTO logs (instance_id, level, source, message)
            VALUES ($1, 'ERROR', 'discovery', $2)`,
@@ -330,8 +442,21 @@ export async function runAutoDiscoveryForInstance(
          VALUES ($1, 'ERROR', 'discovery', $2)`,
         [instanceId, `${o.name}: exceção — ${(err as Error).message}`],
       );
+    } finally {
+      if (budget) budget.release();
     }
   }
+
+  // Log de sumário do budget
+  if (budget && toDiscover.length > 0) {
+    await query(
+      `INSERT INTO logs (instance_id, level, source, message)
+       VALUES ($1, 'INFO', 'discovery', $2)`,
+      [instanceId,
+        `discovery_budget: total=${toDiscover.length} guilds_success=${succeeded} guilds_failed_429=${failed429} guilds_skipped_by_cooldown=${skipped} cooldowns_ativos=${budget.activeCooldowns()}`],
+    );
+  }
+
   return results;
 }
 

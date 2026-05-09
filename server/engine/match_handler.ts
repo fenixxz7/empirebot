@@ -497,11 +497,26 @@ export class MatchHandler {
     // Log diagnóstico: informa status da activeQueue e contexto da detecção.
     // Aparece em TODOS os matches para facilitar debugging pós-troca-de-org.
     {
-      const aqStatus = orgCtx
-        ? `activeQueue=SIM (org="${orgCtx.org_name}" org_id=${orgCtx.org_id} mode=${orgCtx.mode ?? "?"})`
-        : guildId
-          ? `activeQueue=NÃO (guild=${guildId} — sem fila ativa nessa guild dentro do TTL ou guild_id não encontrado no orgs)`
-          : `activeQueue=NÃO (guild_id ausente no evento — canal possivelmente thread sem contexto de guild)`;
+      let aqStatus: string;
+      if (orgCtx) {
+        aqStatus = `activeQueue=SIM (org="${orgCtx.org_name}" org_id=${orgCtx.org_id} mode=${orgCtx.mode ?? "?"})`;
+      } else if (guildId) {
+        // Fallback: tenta encontrar a org pelo guild_id mesmo sem active_queue
+        const orgFallback = await query<{ id: number; name: string }>(
+          `SELECT o.id, o.name
+           FROM orgs o
+           JOIN instance_orgs io ON io.org_id = o.id AND io.instance_id = $1
+           WHERE o.guild_id = $2
+           LIMIT 1`,
+          [this.instanceId, guildId],
+        ).catch(() => [] as Array<{ id: number; name: string }>);
+        const orgApprox = orgFallback[0];
+        aqStatus = orgApprox
+          ? `activeQueue=NÃO (guild=${guildId} — org aproximada="${orgApprox.name}" id=${orgApprox.id} — nenhuma active_queue dentro do TTL para essa org)`
+          : `activeQueue=NÃO (guild=${guildId} — guild_id não encontrado em nenhuma org desta instância)`;
+      } else {
+        aqStatus = `activeQueue=NÃO (guild_id ausente no evento — canal possivelmente thread sem contexto de guild)`;
+      }
       await this.host.log(
         this.instanceId, "INFO", "match",
         `[diag] #${event.name} ch=${event.id} guild=${guildId ?? "?"} tipo=${event.type} — ${aqStatus}`,

@@ -67,8 +67,10 @@ class Manager {
     tokenId: number,
     token: string,
   ): Promise<void> {
+    // Obtém o budget do runner (se já iniciado) para compartilhar cooldowns e estatísticas
+    const budget = this.runners.get(instanceId)?.discoveryBudget;
     try {
-      const r = await runAutoDiscoveryForInstance(instanceId, tokenId, token);
+      const r = await runAutoDiscoveryForInstance(instanceId, tokenId, token, budget);
       if (r.length > 0) {
         const totalQ = r.reduce((acc, x) => acc + (x.queues_saved ?? 0), 0);
         const totalCh = r.reduce((acc, x) => acc + (x.channels_found ?? 0), 0);

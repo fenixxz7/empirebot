@@ -1,5 +1,6 @@
 import { query } from "../db/pool.js";
 import { DiscordRest, type DiscordMessage } from "../discord/rest.js";
+import { DiscoveryRateBudget } from "../discord/discovery.js";
 
 export interface ActiveToken {
   tokenId: number;
@@ -65,15 +66,23 @@ interface CycleConfig {
 }
 
 const STARTUP_GRACE_MS = 5000;
-// Intervalo mínimo e máximo do tick dinâmico (ms).
-// O tick é agendado com base em nextJoinAt — não mais um intervalo fixo.
-const TICK_MIN_MS = 100;   // nunca mais rápido que isso (evita CPU burn)
-const TICK_MAX_MS = 2500;  // nunca mais devagar que isso (para sweeps e reconexão)
+const TICK_MIN_MS = 100;
+const TICK_MAX_MS = 2500;
 const NO_TOKEN_LOG_INTERVAL_MS = 30_000;
 const NO_WORK_LOG_INTERVAL_MS = 60_000;
 const PLAYER_CACHE_MS = 30_000;
 const PLAYER_CACHE_403_MS = 10 * 60_000;
 const MAX_FRESH_FETCH_PER_TICK = 6;
+
+// Buffer de candidatos persistente — sobrevive a falhas de discovery
+const CANDIDATE_TTL_MS = 7 * 60_000; // 7min: filas conhecidas permanecem no buffer
+
+interface BufferedCandidate {
+  ch: ChannelRow;
+  players: number;
+  lastSeenAt: number;
+  expiresAt: number;
+}
 import { ACTIVE_QUEUE_TTL_MS } from "../lib/timings.js";
 
 // === RATE WINDOW (janela de 60s — caps configuráveis via instance_configs) ===
@@ -162,6 +171,12 @@ export class QueueRunner {
   private lastDiagAt = 0;
   // 60rpm: motivos de bloqueio acumulados entre logs de 30s
   private blockedReasons = new Map<string, number>();
+  // Buffer persistente de candidatos (sobrevive a falhas de discovery)
+  private candidateBuffer = new Map<string, BufferedCandidate>();
+  // Rate budget de discovery compartilhado entre auto-discovery e re-discovery
+  readonly discoveryBudget = new DiscoveryRateBudget();
+  // Contador acumulado de sem_candidatos entre diags de 30s
+  private semCandidatosTotal = 0;
 
   constructor(
     private readonly instanceId: number,
@@ -197,6 +212,9 @@ export class QueueRunner {
     this.chooseLatencies = [];
     this.lastDiagAt = 0;
     this.blockedReasons.clear();
+    this.candidateBuffer.clear();
+    this.discoveryBudget.resetStats();
+    this.semCandidatosTotal = 0;
     this.timer = setTimeout(() => this.tick(), STARTUP_GRACE_MS);
   }
 
@@ -422,6 +440,35 @@ export class QueueRunner {
     this.channelCache = null;
   }
 
+  /**
+   * Atualiza o buffer persistente de candidatos a partir de uma lista de canais recém-carregada.
+   * Remove entradas expiradas. NÃO remove entradas que não apareceram (discovery parcial).
+   */
+  private updateCandidateBuffer(rows: ChannelRow[]): void {
+    const now = Date.now();
+    // Atualiza/renova TTL de entradas existentes
+    for (const ch of rows) {
+      const key = `${ch.channel_id}:${ch.message_id}`;
+      const existing = this.candidateBuffer.get(key);
+      const players = this.playerCache.get(key)?.count ?? (existing?.players ?? 0);
+      this.candidateBuffer.set(key, {
+        ch,
+        players,
+        lastSeenAt: now,
+        expiresAt: now + CANDIDATE_TTL_MS,
+      });
+    }
+    // Remove expirados (limpeza incremental)
+    for (const [k, v] of this.candidateBuffer) {
+      if (v.expiresAt <= now) this.candidateBuffer.delete(k);
+    }
+  }
+
+  /** Remove um candidato do buffer (ex: 404 ao clicar, partida detectada). */
+  private evictCandidate(channelId: string, messageId: string): void {
+    this.candidateBuffer.delete(`${channelId}:${messageId}`);
+  }
+
   private async loadChannelsCached(
     orgIds: number[],
     allowedModes: string[],
@@ -435,6 +482,8 @@ export class QueueRunner {
     }
     const rows = await this.loadChannels(orgIds, allowedModes, allowedCategories, maxValor);
     this.channelCache = { rows, ts: Date.now(), key };
+    // Popula o buffer com os canais recém-carregados (atualiza TTL)
+    this.updateCandidateBuffer(rows);
     return rows;
   }
 
@@ -651,11 +700,33 @@ export class QueueRunner {
         return pickEnterButton(c.buttons) !== null;
       });
 
+      // Se a DB não tem candidatos, tenta recuperar do buffer persistente
+      // (evita sem_candidatos quando o Discord rate-limita o discovery)
+      let usingBufferedCandidates = false;
+      if (eligible.length === 0) {
+        const bufNow = Date.now();
+        const buffered = [...this.candidateBuffer.values()].filter(bc =>
+          bc.ch.org_id === currentOrgId &&
+          bc.expiresAt > bufNow &&
+          !activeKeys.has(`${bc.ch.channel_id}:${bc.ch.message_id}`) &&
+          bc.ch.guild_id && bc.ch.message_id && bc.ch.application_id &&
+          pickEnterButton(bc.ch.buttons) !== null,
+        );
+        if (buffered.length > 0) {
+          eligible.push(...buffered.map(bc => bc.ch));
+          usingBufferedCandidates = true;
+        }
+      }
+
       if (eligible.length === 0) {
         this.orgCursor = (this.orgCursor + 1) % totalOrgs;
         attempts++;
+        this.semCandidatosTotal++;
         if (cfg.enable60RpmMode) this.blockedReasons.set("sem_candidatos", (this.blockedReasons.get("sem_candidatos") ?? 0) + 1);
         continue;
+      }
+      if (usingBufferedCandidates && cfg.enable60RpmMode) {
+        this.blockedReasons.set("buffer_fallback", (this.blockedReasons.get("buffer_fallback") ?? 0) + 1);
       }
 
       // Seleciona token ativo com base na estratégia de rotação
@@ -818,6 +889,11 @@ export class QueueRunner {
       return;
     }
 
+    // Mede tempo de seleção AQUI — antes do sleep e do clique HTTP.
+    // cycleStart inclui carregamento de active_queues/channels; o que importa
+    // pro usuário é o tempo total de seleção até o ponto de ação.
+    const chooseMs = Date.now() - cycleStart;
+
     // Token ativo para joinQueue
     const tokenIdx = cfg.tokenStrategy === "single" ? 0 : this.tokenCursor % tokens.length;
     const token = tokens[tokenIdx]!;
@@ -867,15 +943,14 @@ export class QueueRunner {
       this.orgScores.set(candidate.org_id, (this.orgScores.get(candidate.org_id) ?? 0) + 1);
       this.lastClickAt = Date.now();
 
-      // ── Diagnóstico de ciclo ────────────────────────────────────────────
-      const chooseMs = Date.now() - cycleStart;
+      // ── Diagnóstico de ciclo (chooseMs já calculado antes do sleep) ─────
       if (cfg.enable60RpmMode) {
         this.chooseLatencies.push(chooseMs);
         if (this.chooseLatencies.length > 120) this.chooseLatencies.shift();
       }
       if (chooseMs > (cfg.enable60RpmMode ? CHOOSE_WARN_STAGE_MS : 500)) {
         void this.manager.log(this.instanceId, "INFO", "engine",
-          `Diag chooseQueue: total=${chooseMs}ms | active_db=${t_active_ms}ms | bg_refresh=${this.bgRefreshRunning} | pending_checks=${this.pendingRefusalChecks} | elegíveis_org=${candidateEligibleCount}`);
+          `Diag chooseQueue: select=${chooseMs}ms | active_db=${t_active_ms}ms | bg_refresh=${this.bgRefreshRunning} | pending_checks=${this.pendingRefusalChecks} | elegíveis_org=${candidateEligibleCount}`);
       }
 
       // ── Rate limit por org: após N cliques na org atual, avança ─────────
@@ -990,11 +1065,21 @@ export class QueueRunner {
     }
     if (this.tokenOrgBlacklist.get(tokenId)!.has(orgId)) return; // já bloqueado
     this.tokenOrgBlacklist.get(tokenId)!.add(orgId);
-    await query(
-      `INSERT INTO token_org_blacklist (token_id, org_id, reason)
-       VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-      [tokenId, orgId, reason],
-    );
+    try {
+      await query(
+        `INSERT INTO token_org_blacklist (token_id, org_id, reason)
+         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [tokenId, orgId, reason],
+      );
+    } catch (fkErr: unknown) {
+      // FK violation (23503): token_id foi deletado/recriado entre a leitura e o insert.
+      // A blacklist em memória já está setada; ignoramos o erro de persistência.
+      const code = (fkErr as any)?.code;
+      if (code !== "23503") throw fkErr;
+      void this.manager.log(this.instanceId, "WARN", "engine",
+        `blacklistOrgForToken: FK violation — token_id=${tokenId} não existe mais no DB (org="${orgName}"). Blacklist mantida em memória.`);
+      return;
+    }
     await this.manager.log(
       this.instanceId,
       "WARN",
@@ -1107,6 +1192,8 @@ export class QueueRunner {
             count: 0, ts: Date.now() - PLAYER_CACHE_MS + PLAYER_CACHE_403_MS,
           });
         } else if (r.status === 404) {
+          // 404 na mensagem: canal provavelmente foi deletado — remove do buffer e agenda re-discovery
+          this.evictCandidate(c.channel_id, c.message_id ?? "");
           this.scheduleOrgRediscovery(c.org_id, c.org_name, token.token, "mensagem 404 ao ler (bg)");
           this.playerCache.set(`${c.channel_id}:${c.message_id}`, { count: 0, ts: Date.now() });
         }
@@ -1135,16 +1222,39 @@ export class QueueRunner {
         );
         const guildId = rows[0]?.guild_id;
         if (!guildId) return;
+
+        // Verifica cooldown por guild antes de re-descobrir
+        if (this.discoveryBudget.isCoolingDown(guildId)) {
+          const remSec = Math.ceil(this.discoveryBudget.remainingMs(guildId) / 1000);
+          await this.manager.log(this.instanceId, "INFO", "discovery",
+            `Re-discovery de ${orgName} adiada — cooldown de 429 ativo (${remSec}s restantes).`);
+          return;
+        }
+
         const { discoverOrg } = await import("../discord/discovery.js");
         const r = await discoverOrg(token, orgId, guildId);
-        await this.manager.log(
-          this.instanceId,
-          r.ok ? "INFO" : "WARN",
-          "discovery",
-          r.ok
-            ? `Re-discovery de ${orgName} (${reason}): ${r.queues_saved} fila(s) atualizadas.`
-            : `Re-discovery de ${orgName} falhou: ${r.error ?? "?"}`,
-        );
+
+        if (!r.ok && r.was_rate_limited) {
+          // Aplica cooldown para evitar re-tentar imediatamente
+          this.discoveryBudget.setCooldown429(guildId);
+          this.discoveryBudget.failed429++;
+          const remSec = Math.ceil(this.discoveryBudget.remainingMs(guildId) / 1000);
+          await this.manager.log(this.instanceId, "WARN", "discovery",
+            `Re-discovery de ${orgName} (${reason}): rate limit 429 — cooldown de ${remSec}s aplicado.`);
+        } else {
+          await this.manager.log(
+            this.instanceId,
+            r.ok ? "INFO" : "WARN",
+            "discovery",
+            r.ok
+              ? `Re-discovery de ${orgName} (${reason}): ${r.queues_saved} fila(s) atualizadas.`
+              : `Re-discovery de ${orgName} falhou: ${r.error ?? "?"}`,
+          );
+          if (r.ok) {
+            this.discoveryBudget.succeeded++;
+            this.invalidateCaches();
+          }
+        }
       } catch (err) {
         await this.manager.log(
           this.instanceId,
@@ -1532,9 +1642,31 @@ export class QueueRunner {
     const cooldownSec = this.nextJoinAt > now ? Math.ceil((this.nextJoinAt - now) / 1000) : 0;
     const softStr = above60SoftLabel(activeCount, cfg.aqSoftLimit, cfg.aqHardLimit);
 
+    // Buffer de candidatos
+    const bufTotal = this.candidateBuffer.size;
+    const bufValid = [...this.candidateBuffer.values()].filter(bc => bc.expiresAt > now).length;
+
+    // Discovery budget
+    const disc429 = this.discoveryBudget.failed429;
+    const discCooldowns = this.discoveryBudget.activeCooldowns();
+
+    // sem_candidatos acumulado desde o último diag
+    const semCand = this.semCandidatosTotal;
+    this.semCandidatosTotal = 0;
+
     void this.manager.log(
       this.instanceId, "INFO", "engine",
-      `[60rpm diag] thrpt=${joinsPer60}/min(60s) ${joinsPer30}/min(30s) | chooseQ p50=${p50}ms p95=${p95}ms | active_q=${activeCount}${softStr} | pending=${this.pendingRefusalChecks} | send_ok=${sendRate}${cooldownSec > 0 ? ` | cooldown=${cooldownSec}s` : ""}${reasons ? ` | blocked: ${reasons}` : ""}${inSafe ? " | ⚠️ SAFE_MODE" : ""}`,
+      `[60rpm diag] thrpt=${joinsPer60}/min(60s) ${joinsPer30}/min(30s)` +
+      ` | chooseQ p50=${p50}ms p95=${p95}ms` +
+      ` | active_q=${activeCount}${softStr}` +
+      ` | pending=${this.pendingRefusalChecks}` +
+      ` | send_ok=${sendRate}` +
+      ` | buf=${bufValid}/${bufTotal}` +
+      ` | sem_cand=${semCand}` +
+      ` | disc_429=${disc429} disc_cooldowns=${discCooldowns}` +
+      (cooldownSec > 0 ? ` | cooldown=${cooldownSec}s` : "") +
+      (reasons ? ` | blocked: ${reasons}` : "") +
+      (inSafe ? " | ⚠️ SAFE_MODE" : ""),
     );
 
     this.blockedReasons.clear();
