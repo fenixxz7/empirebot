@@ -11,7 +11,7 @@ export function StatsGrid({
   const s = instance?.stats ?? { entradas: 0, na_fila: 0, partidas: 0, dms: 0, bloqueadas: 0, msgs_enviadas: 0 };
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           icon={<UsersIcon className="w-5 h-5 text-emerald-300" />}
           label="Entradas"
@@ -32,20 +32,6 @@ export function StatsGrid({
           sub="encontradas"
           value={s.partidas}
           tone="fuchsia"
-        />
-        <StatCard
-          icon={<MailIcon className="w-5 h-5 text-cyan-300" />}
-          label="DMs"
-          sub="detectadas"
-          value={s.dms}
-          tone="cyan"
-        />
-        <StatCard
-          icon={<ShieldIcon className="w-5 h-5 text-red-400" />}
-          label="Bloqueadas"
-          sub="filas evitadas"
-          value={s.bloqueadas}
-          tone="red"
         />
         <StatCard
           icon={<SendIcon className="w-5 h-5 text-green-400" />}
