@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 
 type Period = "today" | "week" | "month" | "all";
 type SortKey = "entradas" | "chats" | "mensagens";
@@ -65,150 +65,164 @@ function medal(i: number) {
   return `#${i + 1}`;
 }
 
-function EmptyChart({ height }: { height: number }) {
-  return (
-    <div className="flex items-center justify-center text-white/20 text-sm" style={{ height }}>
-      Sem dados para o período
-    </div>
-  );
-}
-
-function LineChart({ points, height = 220 }: { points: TimePoint[]; height?: number }) {
-  const svgRef = useRef<SVGSVGElement>(null);
+function GroupedBarChart({ points, height = 240 }: { points: TimePoint[]; height?: number }) {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
-  if (!points.length) return <EmptyChart height={height} />;
+  if (!points.length) {
+    return (
+      <div className="flex items-center justify-center text-white/20 text-sm" style={{ height }}>
+        Sem dados para o período
+      </div>
+    );
+  }
 
-  const VW = 600;
+  const VW = 560;
   const VH = height;
-  const padL = 10, padR = 10, padT = 14, padB = 30;
+  const padL = 40, padR = 12, padT = 14, padB = 30;
   const chartW = VW - padL - padR;
   const chartH = VH - padT - padB;
   const n = points.length;
 
-  const maxE = Math.max(...points.map(p => p.entradas),           1);
-  const maxC = Math.max(...points.map(p => p.chats_abertos),      1);
-  const maxM = Math.max(...points.map(p => p.mensagens_enviadas), 1);
-  const maxes = [maxE, maxC, maxM] as const;
+  // Eixo Y compartilhado com valores reais
+  const rawMax = Math.max(
+    ...points.map(p => p.entradas),
+    ...points.map(p => p.chats_abertos),
+    ...points.map(p => p.mensagens_enviadas),
+    1,
+  );
+  // Arredonda para cima para um valor "limpo"
+  const yMax = (() => {
+    const nice = [1,2,5,10,15,20,25,30,40,50,75,100,150,200,300,500,750,1000,1500,2000,5000];
+    const target = rawMax * 1.18;
+    return nice.find(c => c >= target) ?? Math.ceil(target / 100) * 100;
+  })();
 
-  const xOf = (i: number) => padL + (n === 1 ? chartW / 2 : (i / (n - 1)) * chartW);
-  const yOf = (val: number, max: number) => padT + chartH - Math.max(0, (val / max)) * chartH;
+  const yOf = (val: number) => padT + chartH - (val / yMax) * chartH;
 
-  const seriesVals = [
-    points.map(p => p.entradas),
-    points.map(p => p.chats_abertos),
-    points.map(p => p.mensagens_enviadas),
-  ];
+  // Ticks do eixo Y (4 linhas)
+  const yTicks = [0.25, 0.5, 0.75, 1.0].map(f => Math.round(yMax * f));
 
-  const makePath = (vals: number[], max: number) =>
-    vals.map((v, i) => `${i === 0 ? "M" : "L"}${xOf(i).toFixed(1)},${yOf(v, max).toFixed(1)}`).join(" ");
+  // Dimensões das barras
+  const slotW = chartW / n;
+  const barW  = Math.min(28, Math.max(6, slotW * 0.22));
+  const barGap = Math.max(2, barW * 0.18);
+  const groupW = 3 * barW + 2 * barGap;
 
-  const labelStep = Math.max(1, Math.ceil(n / 10));
+  const xCenter = (i: number) => padL + (i + 0.5) * slotW;
+  const barLeft = (i: number, si: number) => xCenter(i) - groupW / 2 + si * (barW + barGap);
+
+  const colors = ["#22d3ee", "#fb923c", "#4ade80"] as const;
+  const seriesKeys: (keyof TimePoint)[] = ["entradas", "chats_abertos", "mensagens_enviadas"];
+
+  const labelStep = Math.max(1, Math.ceil(n / 12));
 
   const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
-    if (!svgRef.current) return;
-    const rect = svgRef.current.getBoundingClientRect();
+    const rect = e.currentTarget.getBoundingClientRect();
     const svgX = ((e.clientX - rect.left) / rect.width) * VW;
-    if (n === 1) { setHoverIdx(0); return; }
-    const raw = Math.round(((svgX - padL) / chartW) * (n - 1));
-    setHoverIdx(Math.max(0, Math.min(n - 1, raw)));
+    const idx = Math.floor((svgX - padL) / slotW);
+    setHoverIdx(Math.max(0, Math.min(n - 1, idx)));
   };
 
-  const hoverX = hoverIdx !== null ? xOf(hoverIdx) : null;
-  const tooltipLeft = hoverIdx !== null ? Math.min(Math.max(hoverX! / VW * 100, 8), 72) : 50;
+  const hp = hoverIdx !== null ? points[hoverIdx]! : null;
+  const tooltipPct = hoverIdx !== null
+    ? Math.min(Math.max(xCenter(hoverIdx) / VW * 100, 12), 76)
+    : 50;
 
   return (
-    <div className="relative select-none">
-      <svg
-        ref={svgRef}
-        viewBox={`0 0 ${VW} ${VH}`}
-        className="w-full"
-        style={{ height }}
-        onMouseMove={handleMouseMove}
-        onMouseLeave={() => setHoverIdx(null)}
-      >
-        {/* Gridlines */}
-        {[0.25, 0.5, 0.75, 1].map(f => (
-          <line key={f}
-            x1={padL} y1={padT + chartH * (1 - f)}
-            x2={VW - padR} y2={padT + chartH * (1 - f)}
-            stroke="rgba(255,255,255,0.05)" strokeWidth={1}
-          />
-        ))}
-
-        {/* X-axis labels */}
-        {points.map((p, i) => i % labelStep === 0 && (
-          <text key={i}
-            x={xOf(i)} y={VH - 6}
-            textAnchor="middle" fontSize={9}
-            fill="rgba(255,255,255,0.3)"
-            fontFamily="monospace"
-          >{p.label}</text>
-        ))}
-
-        {/* Lines + dots — each series independently normalized */}
-        {SERIES.map((s, si) => {
-          const vals = seriesVals[si]!;
-          const max  = maxes[si];
-          return (
-            <g key={s.key}>
-              <path
-                d={makePath(vals, max)}
-                fill="none"
-                stroke={s.color}
-                strokeWidth={2}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                opacity={0.9}
-              />
-              {points.map((_, i) => (
-                <circle key={i}
-                  cx={xOf(i)} cy={yOf(vals[i]!, max)}
-                  r={hoverIdx === i ? 5 : 3}
-                  fill={s.color}
-                  opacity={hoverIdx === null || hoverIdx === i ? 1 : 0.4}
-                />
-              ))}
-            </g>
-          );
-        })}
-
-        {/* Hover indicator line */}
-        {hoverX !== null && (
-          <line
-            x1={hoverX} y1={padT}
-            x2={hoverX} y2={padT + chartH}
-            stroke="rgba(255,255,255,0.15)"
-            strokeWidth={1}
-            strokeDasharray="4,3"
-          />
-        )}
-      </svg>
-
-      {/* Tooltip */}
-      {hoverIdx !== null && (
-        <div
-          className="absolute top-1 z-20 pointer-events-none"
-          style={{ left: `${tooltipLeft}%`, transform: "translateX(-50%)" }}
+    <div className="relative select-none overflow-x-auto">
+      <div style={{ minWidth: Math.max(400, n * 40 + padL + padR) }}>
+        <svg
+          viewBox={`0 0 ${VW} ${VH}`}
+          width="100%"
+          height={height}
+          onMouseMove={handleMouseMove}
+          onMouseLeave={() => setHoverIdx(null)}
         >
-          <div className="bg-[#0d0d20] border border-white/15 rounded-xl px-3 py-2.5 shadow-xl min-w-[160px]">
-            <div className="text-xs font-semibold text-white/50 mb-2 text-center">
-              {points[hoverIdx]!.label}
-            </div>
-            {SERIES.map((s, si) => (
-              <div key={s.key} className="flex items-center justify-between gap-3 text-xs py-0.5">
-                <div className="flex items-center gap-1.5">
-                  <span style={{ color: s.color }}>●</span>
-                  <span className="text-white/60">{s.label}</span>
-                </div>
-                <span className="font-bold" style={{ color: s.color }}>
-                  {fmt(seriesVals[si]![hoverIdx]!)}
-                </span>
+          {/* Gridlines + eixo Y */}
+          {yTicks.map(tick => {
+            const y = yOf(tick);
+            return (
+              <g key={tick}>
+                <line x1={padL} y1={y} x2={VW - padR} y2={y}
+                  stroke="rgba(255,255,255,0.08)" strokeWidth={1} />
+                <text x={padL - 6} y={y + 3.5}
+                  textAnchor="end" fontSize={9}
+                  fill="rgba(255,255,255,0.35)" fontFamily="monospace">
+                  {tick}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Baseline */}
+          <line x1={padL} y1={padT + chartH} x2={VW - padR} y2={padT + chartH}
+            stroke="rgba(255,255,255,0.15)" strokeWidth={1} />
+
+          {/* Barras + labels */}
+          {points.map((pt, i) => {
+            const hov = hoverIdx === i;
+            return (
+              <g key={i}>
+                {/* Fundo de hover */}
+                {hov && (
+                  <rect x={padL + i * slotW + 1} y={padT}
+                    width={slotW - 2} height={chartH}
+                    fill="rgba(255,255,255,0.04)" rx={3} />
+                )}
+
+                {/* 3 barras agrupadas */}
+                {seriesKeys.map((key, si) => {
+                  const val = pt[key] as number;
+                  const h = val > 0 ? Math.max(3, (val / yMax) * chartH) : 0;
+                  return (
+                    <rect key={si}
+                      x={barLeft(i, si)}
+                      y={padT + chartH - h}
+                      width={barW}
+                      height={h}
+                      rx={Math.min(3, barW / 3)}
+                      fill={colors[si]}
+                      opacity={hov || hoverIdx === null ? 0.88 : 0.38}
+                    />
+                  );
+                })}
+
+                {/* Label do eixo X */}
+                {i % labelStep === 0 && (
+                  <text x={xCenter(i)} y={VH - 8}
+                    textAnchor="middle" fontSize={9}
+                    fill="rgba(255,255,255,0.38)" fontFamily="monospace">
+                    {pt.label}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+
+        {/* Tooltip */}
+        {hp && hoverIdx !== null && (
+          <div className="absolute top-2 pointer-events-none z-20"
+            style={{ left: `${tooltipPct}%`, transform: "translateX(-50%)" }}>
+            <div className="bg-[#10101e] border border-white/15 rounded-xl px-3.5 py-2.5 shadow-2xl min-w-[172px]">
+              <div className="text-xs font-semibold text-white/45 mb-2 text-center pb-1.5 border-b border-white/8">
+                {hp.label}
               </div>
-            ))}
+              {SERIES.map((s, si) => (
+                <div key={si} className="flex items-center justify-between gap-4 py-0.5">
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: s.color }} />
+                    <span className="text-white/60">{s.label}</span>
+                  </div>
+                  <span className="text-sm font-bold tabular-nums" style={{ color: s.color }}>
+                    {fmt(hp[s.key] as number)}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
@@ -376,15 +390,12 @@ export default function Stats() {
                  period === "month" ? "Atividade por dia (30 dias)" :
                                      "Histórico completo (por dia)"}
               </div>
-              <div className="text-xs text-white/30 mt-0.5">
-                Cada série normalizada independentemente — todas ficam visíveis
-              </div>
             </div>
             {/* Legend */}
-            <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-4 flex-wrap">
               {SERIES.map(s => (
-                <div key={s.key} className="flex items-center gap-1.5 text-xs text-white/50">
-                  <span className={`inline-block w-3 h-0.5 rounded`} style={{ background: s.color }} />
+                <div key={s.key} className="flex items-center gap-1.5 text-xs">
+                  <span className="inline-block w-3 h-3 rounded-sm" style={{ background: s.color, opacity: 0.85 }} />
                   <span style={{ color: s.color }}>{s.label}</span>
                 </div>
               ))}
@@ -395,7 +406,7 @@ export default function Stats() {
               Carregando…
             </div>
           ) : (
-            <LineChart points={timeseries?.points ?? []} height={220} />
+            <GroupedBarChart points={timeseries?.points ?? []} height={240} />
           )}
         </div>
 
