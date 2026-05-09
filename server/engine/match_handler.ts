@@ -461,9 +461,20 @@ export class MatchHandler {
       `SELECT id, msg_sent FROM matches WHERE instance_id = $1 AND channel_id = $2`,
       [this.instanceId, event.id],
     );
-    if (existing.length > 0 && existing[0]!.msg_sent) return;
+    if (existing.length > 0 && existing[0]!.msg_sent) {
+      // Log diagnóstico: idempotência — partida já foi processada
+      await this.host.log(
+        this.instanceId, "INFO", "match",
+        `[diag] #${event.name} (ch=${event.id}) ignorado — msg_sent=TRUE (partida já processada anteriormente)`,
+      );
+      return;
+    }
 
-    // Busca fila ativa nessa guild para pegar org/modo/valor
+    // Busca fila ativa nessa guild para pegar org/modo/valor.
+    // NOTA: esta consulta busca por guild_id — NÃO depende da org atual do engine.
+    // As active_queues de orgs anteriores permanecem na tabela até o sweep de 4min,
+    // então partidas de COROLLA chegando 2–3min após o engine avançar AINDA encontram
+    // a linha correspondente aqui (desde que dentro do TTL de 4min).
     const activeQueue = await query<{
       org_id: number;
       org_name: string;
@@ -483,6 +494,20 @@ export class MatchHandler {
 
     const orgCtx = activeQueue[0] ?? null;
 
+    // Log diagnóstico: informa status da activeQueue e contexto da detecção.
+    // Aparece em TODOS os matches para facilitar debugging pós-troca-de-org.
+    {
+      const aqStatus = orgCtx
+        ? `activeQueue=SIM (org="${orgCtx.org_name}" org_id=${orgCtx.org_id} mode=${orgCtx.mode ?? "?"})`
+        : guildId
+          ? `activeQueue=NÃO (guild=${guildId} — sem fila ativa nessa guild dentro do TTL ou guild_id não encontrado no orgs)`
+          : `activeQueue=NÃO (guild_id ausente no evento — canal possivelmente thread sem contexto de guild)`;
+      await this.host.log(
+        this.instanceId, "INFO", "match",
+        `[diag] #${event.name} ch=${event.id} guild=${guildId ?? "?"} tipo=${event.type} — ${aqStatus}`,
+      );
+    }
+
     // Identifica adversário: 1) permission_overwrites tipo 1 (user), 2) primeira mensagem
     let adversaryId: string | null = null;
 
@@ -490,7 +515,7 @@ export class MatchHandler {
     const sender = tokens[0] ?? null;
     if (!sender) {
       await this.host.log(this.instanceId, "WARN", "match",
-        `#${event.name} — nenhum token disponível para enviar mensagem`);
+        `[diag] #${event.name} IGNORADO — nenhum token disponível para enviar mensagem (motivo=no_sender guild=${guildId ?? "?"} activeQueue=${orgCtx ? "SIM" : "NÃO"})`);
       return;
     }
 

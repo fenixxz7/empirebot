@@ -477,7 +477,7 @@ class Manager {
                 .getChannel(chId)
                 .then((res) => {
                   const ch = res.data as
-                    | { guild_id?: string; type?: number }
+                    | { guild_id?: string; type?: number; name?: string; parent_id?: string | null; permission_overwrites?: any[]; thread_metadata?: any }
                     | undefined;
                   // Tipos DM: 1 (DM) e 3 (GROUP_DM). Qualquer outro = guild.
                   const isRealDm =
@@ -487,7 +487,36 @@ class Manager {
                   if (isRealDm) {
                     applyAsDm();
                   } else {
+                    // Canal é de guild — garante que não será tratado como DM no futuro.
                     rememberGuildChannel(chId);
+                    // BUG FIX: quando o MESSAGE_CREATE chegou sem guild_id/member (gateway
+                    // omitiu o campo — comum em threads/guilds grandes), o bloco de DM
+                    // interceptou o evento antes do bloco de detecção de match. Agora que
+                    // confirmamos via REST que é canal de guild, verificamos se é partida
+                    // e disparamos a detecção aqui mesmo, dentro do .then().
+                    // Marcamos em seenMessageChannels para evitar dupla detecção quando o
+                    // próximo MESSAGE_CREATE chegar (já estará em seenGuildChannels e cairá
+                    // no bloco correto de match abaixo).
+                    if (ch?.name && matchPatterns.some((r) => r.test(ch.name!))) {
+                      seenMessageChannels.add(chId);
+                      const matchTks = this.buildMatchTokens(instanceId, e.tokenId);
+                      this.log(
+                        instanceId, "INFO", "match",
+                        `Detectado via MESSAGE_CREATE (guild-check): #${ch.name} guild=${ch.guild_id ?? "?"} (token #${e.position})`,
+                      ).catch((err) => console.warn("[manager]", err instanceof Error ? err.message : err));
+                      matchHandler.onChannelCreate(
+                        {
+                          id: chId,
+                          name: ch.name,
+                          type: ch.type ?? 0,
+                          guild_id: ch.guild_id,
+                          parent_id: ch.parent_id ?? null,
+                          permission_overwrites: ch.permission_overwrites,
+                          thread_metadata: ch.thread_metadata,
+                        },
+                        matchTks,
+                      ).catch((err) => console.warn("[manager]", err instanceof Error ? err.message : err));
+                    }
                   }
                 })
                 .catch(() => {
