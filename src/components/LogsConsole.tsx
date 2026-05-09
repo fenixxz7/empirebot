@@ -5,6 +5,7 @@ const DISPLAY_LIMIT = 100;
 const BUFFER_LIMIT = 5000;
 const POLL_MS = 3000;
 const INITIAL_FETCH = 500;
+const POLL_FETCH = 200;
 
 type LogRow = {
   id: number;
@@ -20,39 +21,49 @@ export function LogsConsole({ instanceId }: { instanceId: number }) {
   const [rows, setRows] = useState<LogRow[]>([]);
   const [exportOpen, setExportOpen] = useState(false);
   const [copying, setCopying] = useState(false);
-  const lastIdRef = useRef(0);
+  const lastIdRef = useRef<number | null>(null); // null = initial load not done yet
   const exportRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let active = true;
+    // Reset on instance change
     setRows([]);
-    lastIdRef.current = 0;
+    lastIdRef.current = null;
 
     async function init() {
       try {
         const r = await api<LogRow[]>(`/api/logs/${instanceId}?limit=${INITIAL_FETCH}`);
         if (!active) return;
-        setRows(r);
-        if (r.length > 0) lastIdRef.current = r[0]!.id;
+        const sorted = [...r].sort((a, b) => b.id - a.id);
+        const maxId = sorted.length > 0 ? sorted[0]!.id : 0;
+        console.log("[logs] initial load", sorted.length, "logs, firstId=", sorted[sorted.length - 1]?.id ?? "-", "lastId=", maxId);
+        setRows(sorted);
+        lastIdRef.current = maxId; // 0 if empty — poll will use after_id=0 (fetches all new)
       } catch (e) {
-        console.error(e);
+        console.error("[logs] init error", e);
+        lastIdRef.current = 0; // allow poll to proceed even if init failed
       }
     }
 
     async function pollNew() {
-      if (lastIdRef.current === 0) return;
+      // Wait until initial load has completed (null = still loading)
+      if (lastIdRef.current === null) return;
+      const afterId = lastIdRef.current;
       try {
         const r = await api<LogRow[]>(
-          `/api/logs/${instanceId}?after_id=${lastIdRef.current}&limit=200`,
+          `/api/logs/${instanceId}?after_id=${afterId}&limit=${POLL_FETCH}`,
         );
+        console.log("[logs] poll after_id=", afterId, "→", r.length, "new logs");
         if (!active || r.length === 0) return;
-        if (r[0]!.id > lastIdRef.current) lastIdRef.current = r[0]!.id;
+        const sorted = [...r].sort((a, b) => b.id - a.id);
+        const maxId = sorted[0]!.id;
+        if (maxId > lastIdRef.current!) lastIdRef.current = maxId;
         setRows((prev) => {
-          const combined = [...r, ...prev];
+          const combined = [...sorted, ...prev];
           return combined.length > BUFFER_LIMIT ? combined.slice(0, BUFFER_LIMIT) : combined;
         });
       } catch (e) {
-        console.error(e);
+        console.error("[logs] poll error", e);
       }
     }
 
@@ -132,6 +143,7 @@ export function LogsConsole({ instanceId }: { instanceId: number }) {
   }
 
   const display = rows.slice(0, DISPLAY_LIMIT);
+  const loading = lastIdRef.current === null;
 
   return (
     <div className="card p-5">
@@ -140,7 +152,9 @@ export function LogsConsole({ instanceId }: { instanceId: number }) {
           <ChevronIcon className="w-4 h-4 text-emerald-300" />
           Logs{" "}
           <span className="text-slate-500 font-normal">
-            ({rows.length > DISPLAY_LIMIT ? `exibindo ${DISPLAY_LIMIT} de ${rows.length}` : rows.length})
+            {loading
+              ? "(carregando…)"
+              : `(${rows.length > DISPLAY_LIMIT ? `exibindo ${DISPLAY_LIMIT} de ${rows.length}` : rows.length})`}
           </span>
         </h3>
         <div className="flex items-center gap-2 flex-wrap">
@@ -218,7 +232,10 @@ export function LogsConsole({ instanceId }: { instanceId: number }) {
       </div>
 
       <div className="rounded-xl bg-black/60 border border-white/10 p-3 h-[260px] overflow-auto">
-        {display.length === 0 && (
+        {loading && (
+          <div className="text-slate-500 text-sm">Carregando logs…</div>
+        )}
+        {!loading && display.length === 0 && (
           <div className="text-slate-500 text-sm">Sem logs ainda.</div>
         )}
         {display.map((r) => {
