@@ -238,7 +238,7 @@ export class QueueRunner {
       `SELECT io.org_id
        FROM instance_orgs io
        JOIN orgs o ON o.id = io.org_id
-       WHERE io.instance_id = $1
+       WHERE io.instance_id = $1 AND io.selected = TRUE
        ORDER BY o.priority DESC, o.id ASC`,
       [this.instanceId],
     );

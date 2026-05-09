@@ -425,6 +425,11 @@ export async function initDatabase(): Promise<void> {
     );
   }
 
+  // Separar "org conhecida" de "org selecionada" — presença na tabela = conhecida, coluna = ativa
+  await pool.query(
+    `ALTER TABLE instance_orgs ADD COLUMN IF NOT EXISTS selected BOOLEAN NOT NULL DEFAULT TRUE`,
+  );
+
 }
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);

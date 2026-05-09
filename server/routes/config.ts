@@ -133,7 +133,7 @@ configRouter.get("/:instanceId", asyncHandler(async (req, res) => {
   );
 
   const selectedOrgs = await query<{ org_id: number }>(
-    `SELECT org_id FROM instance_orgs WHERE instance_id = $1`,
+    `SELECT org_id FROM instance_orgs WHERE instance_id = $1 AND selected = TRUE`,
     [id]
   );
 
@@ -305,13 +305,13 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
     }
   }
 
-  // Orgs selecionadas
+  // Orgs selecionadas — mantém todas as orgs conhecidas, apenas atualiza o flag selected
   if (Array.isArray(selected_org_ids)) {
-    await query(`DELETE FROM instance_orgs WHERE instance_id = $1`, [id]);
+    await query(`UPDATE instance_orgs SET selected = FALSE WHERE instance_id = $1`, [id]);
     for (const orgId of selected_org_ids) {
       await query(
-        `INSERT INTO instance_orgs (instance_id, org_id) VALUES ($1, $2)
-         ON CONFLICT DO NOTHING`,
+        `INSERT INTO instance_orgs (instance_id, org_id, selected) VALUES ($1, $2, TRUE)
+         ON CONFLICT (instance_id, org_id) DO UPDATE SET selected = TRUE`,
         [id, orgId]
       );
     }
@@ -451,10 +451,11 @@ configRouter.post("/:instanceId/import", validate({ body: ImportConfigBody }), a
     // Garante que a sequência não conflite com IDs inseridos explicitamente
     await query(`SELECT setval('orgs_id_seq', (SELECT MAX(id) FROM orgs))`);
 
-    await query(`DELETE FROM instance_orgs WHERE instance_id = $1`, [id]);
+    await query(`UPDATE instance_orgs SET selected = FALSE WHERE instance_id = $1`, [id]);
     for (const o of body.selected_orgs) {
       await query(
-        `INSERT INTO instance_orgs (instance_id, org_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+        `INSERT INTO instance_orgs (instance_id, org_id, selected) VALUES ($1, $2, TRUE)
+         ON CONFLICT (instance_id, org_id) DO UPDATE SET selected = TRUE`,
         [id, o.org_id],
       );
     }
