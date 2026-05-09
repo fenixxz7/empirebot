@@ -82,6 +82,7 @@ type ConfigPayload = {
     entry_cap_with_players_per_60s: number;
     entry_cap_empty_per_60s: number;
     entry_cap_total_per_60s: number;
+    refusal_check_delay_ms: number;
   } | null;
   token_pool: TokenPoolEntry[];
   selected_token_ids: number[];
@@ -134,6 +135,7 @@ export function ConfigForm({
   const [entryCapWithPlayers, setEntryCapWithPlayers] = useState(30);
   const [entryCapEmpty, setEntryCapEmpty] = useState(18);
   const [entryCapTotal, setEntryCapTotal] = useState(48);
+  const [refusalCheckDelayMs, setRefusalCheckDelayMs] = useState(800);
   const [tokenStrategy, setTokenStrategy] = useState("single");
   const [tokenStrategyN, setTokenStrategyN] = useState(5);
   const [selectedOrgIds, setSelectedOrgIds] = useState<Set<number>>(new Set());
@@ -185,6 +187,7 @@ export function ConfigForm({
       setEntryCapWithPlayers(Number(cfg.config.entry_cap_with_players_per_60s ?? 30));
       setEntryCapEmpty(Number(cfg.config.entry_cap_empty_per_60s ?? 18));
       setEntryCapTotal(Number(cfg.config.entry_cap_total_per_60s ?? 48));
+      setRefusalCheckDelayMs(Number(cfg.config.refusal_check_delay_ms ?? 800));
       setTokenStrategy(cfg.config.token_strategy ?? "single");
       setTokenStrategyN(Number(cfg.config.token_strategy_n ?? 5));
       const tv: TimingValues = {
@@ -484,6 +487,7 @@ export function ConfigForm({
           entry_cap_with_players_per_60s: entryCapWithPlayers,
           entry_cap_empty_per_60s: entryCapEmpty,
           entry_cap_total_per_60s: entryCapTotal,
+          refusal_check_delay_ms: refusalCheckDelayMs,
         }),
       });
       await reload();
@@ -801,6 +805,25 @@ export function ConfigForm({
                   defaultValue={msToS(timing.clickMax)} key={`clickMax-${timingPreset}`}
                   onBlur={(e) => { const v = parseS(e.target.value); if (v) setTiming(t => ({ ...t, clickMax: v })); else e.target.value = msToS(timing.clickMax); }} />
               </div>
+            </div>
+            <div className="col-span-2">
+              <p className="mb-1">Delay verificação de recusa (ms)</p>
+              <div className="flex gap-2 items-center max-w-xs">
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  className="input py-1 text-xs w-full"
+                  min={300}
+                  max={5000}
+                  step={100}
+                  value={refusalCheckDelayMs}
+                  onChange={(e) => setRefusalCheckDelayMs(Math.min(5000, Math.max(300, Number(e.target.value))))}
+                />
+                <span className="text-slate-500 whitespace-nowrap">
+                  {refusalCheckDelayMs <= 500 ? "⚡ rápido" : refusalCheckDelayMs <= 1200 ? "balanceado" : "conservador"}
+                </span>
+              </div>
+              <p className="text-xs text-slate-600 mt-1">Tempo que o bot aguarda após o clique antes de ler a resposta da org (async — não bloqueia o próximo clique). Padrão: 800ms.</p>
             </div>
           </div>
           <p className="text-xs text-slate-500 mt-2">

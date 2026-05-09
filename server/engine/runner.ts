@@ -57,6 +57,7 @@ interface CycleConfig {
   entryCapWithPlayers: number;
   entryCapEmpty: number;
   entryCapTotal: number;
+  refusalCheckDelayMs: number;
 }
 
 const STARTUP_GRACE_MS = 5000;
@@ -80,7 +81,8 @@ const RATE_LIMIT_BACKOFF_MAX_MS = 240_000;
 // Cooldown aplicado quando a org recusa entrada por limite real
 const REAL_LIMIT_COOLDOWN_MS = 3 * 60_000;   // 3 min após recusa de limite real
 const WAIT_DETECT_COOLDOWN_MS = 45_000;       // 45s para "aguarde Xs" genérico
-const REFUSAL_CHECK_WAIT_MS = 2_500;          // aguarda antes de ler canal após clique
+// Delay default da verificação pós-clique — sobrescrito por refusal_check_delay_ms na DB
+const DEFAULT_REFUSAL_CHECK_DELAY_MS = 800;
 
 interface PlayerInfo {
   count: number;
@@ -114,6 +116,10 @@ export class QueueRunner {
   private orgLimitCooldowns = new Map<number, number>();
   // Throttle de log de cooldown por org (evita spam a cada tick)
   private lastOrgLimitLog = new Map<number, number>();
+  // Throughput e diagnóstico de ciclo
+  private pendingRefusalChecks = 0;
+  private recentJoinTs: number[] = [];
+  private lastThroughputLog = 0;
 
   constructor(
     private readonly instanceId: number,
@@ -130,6 +136,9 @@ export class QueueRunner {
     this.orgClickCounts.clear();
     this.orgLimitCooldowns.clear();
     this.lastOrgLimitLog.clear();
+    this.pendingRefusalChecks = 0;
+    this.recentJoinTs = [];
+    this.lastThroughputLog = 0;
     this.timer = setTimeout(() => this.tick(), STARTUP_GRACE_MS);
   }
 
@@ -250,6 +259,7 @@ export class QueueRunner {
       entry_cap_with_players_per_60s: number;
       entry_cap_empty_per_60s: number;
       entry_cap_total_per_60s: number;
+      refusal_check_delay_ms: number;
     }>(
       `SELECT delay_seconds, allowed_modes, allowed_categories, blocked_names,
               max_valor, token_strategy, token_strategy_n,
@@ -259,7 +269,8 @@ export class QueueRunner {
               clicks_per_org,
               entry_cap_with_players_per_60s,
               entry_cap_empty_per_60s,
-              entry_cap_total_per_60s
+              entry_cap_total_per_60s,
+              refusal_check_delay_ms
        FROM instance_configs
        WHERE instance_id = $1`,
       [this.instanceId],
@@ -292,6 +303,7 @@ export class QueueRunner {
       entryCapWithPlayers: Math.max(0, Math.min(200, r?.entry_cap_with_players_per_60s ?? 30)),
       entryCapEmpty: Math.max(0, Math.min(200, r?.entry_cap_empty_per_60s ?? 18)),
       entryCapTotal: Math.max(0, Math.min(200, r?.entry_cap_total_per_60s ?? 48)),
+      refusalCheckDelayMs: Math.min(5000, Math.max(300, r?.refusal_check_delay_ms ?? DEFAULT_REFUSAL_CHECK_DELAY_MS)),
     };
   }
 
@@ -632,9 +644,27 @@ export class QueueRunner {
     // Pausa humanizada curta antes de clicar (configurável)
     await sleep(randInt(cfg.timingClickMinMs, cfg.timingClickMaxMs));
 
-    const joined = await this.joinQueue(candidate, token, activeRows.length, candidatePlayers);
+    const joined = await this.joinQueue(candidate, token, activeRows.length, candidatePlayers, cfg.refusalCheckDelayMs);
 
     if (joined) {
+      // Registra timestamp para cálculo de throughput
+      this.recentJoinTs.push(Date.now());
+      // Mantém apenas os últimos 120s de dados (buffer deslizante)
+      const cutoffTs = Date.now() - 120_000;
+      this.recentJoinTs = this.recentJoinTs.filter(t => t > cutoffTs);
+
+      // Log periódico de throughput com diagnóstico de gargalo
+      const nowLog = Date.now();
+      if (nowLog - this.lastThroughputLog > 60_000) {
+        this.lastThroughputLog = nowLog;
+        const joinsPer60 = this.recentJoinTs.filter(t => nowLog - t < 60_000).length;
+        let bottleneck = "aguardando filas";
+        if (this.pendingRefusalChecks > 0) bottleneck = `verificações pendentes (${this.pendingRefusalChecks})`;
+        else if (this.nextJoinAt > nowLog) bottleneck = `cooldown intra (${Math.ceil((this.nextJoinAt - nowLog) / 1000)}s)`;
+        await this.manager.log(this.instanceId, "INFO", "engine",
+          `Throughput: ${joinsPer60} entradas/min (últimos 60s), cap=${cfg.entryCapTotal}/min — gargalo: ${bottleneck}`);
+      }
+
       // Incrementa contador da janela conforme tipo de fila
       if (candidatePlayers > 0) {
         this.joinedWithPlayers++;
@@ -914,6 +944,7 @@ export class QueueRunner {
     token: ActiveToken,
     activeCount: number,
     playersInQueue: number,
+    refusalCheckDelayMs: number = DEFAULT_REFUSAL_CHECK_DELAY_MS,
   ): Promise<boolean> {
     const btn = pickEnterButton(ch.buttons);
     if (!btn || !btn.custom_id) return false;
@@ -935,32 +966,10 @@ export class QueueRunner {
       : (ch.mode ?? "?");
 
     if (success) {
-      await this.manager.log(
-        this.instanceId, "INFO", "engine",
-        `Tentativa aceita: ${ch.org_name} · ${ch.category ?? "?"} · ${modeLabel} · #${ch.channel_name ?? ch.channel_id} (${tag}) · "${btn.label}" · token #${token.position} — verificando resposta da org…`,
-      );
-
-      // ── Detecção de recusa real ────────────────────────────────────────
-      // Aguarda alguns segundos para a org processar e postar a resposta,
-      // depois lê as mensagens recentes do canal e detecta padrões de recusa.
-      const refusal = await this.detectRealLimitRefusal(ch, token, rest);
-
-      if (refusal.type !== "none") {
-        // Entrada recusada — NÃO registra nem computa estatística
-        if (refusal.type === "wait") {
-          const waitMs = Math.min(refusal.waitMs ?? WAIT_DETECT_COOLDOWN_MS, 120_000);
-          this.setOrgLimitCooldown(ch.org_id, waitMs);
-          await this.manager.log(this.instanceId, "WARN", "engine",
-            `Org ${ch.org_name} — cooldown curto detectado: "${refusal.text}" (aguardando ${Math.ceil(waitMs / 1000)}s). Entrada não contabilizada.`);
-        } else {
-          this.setOrgLimitCooldown(ch.org_id, REAL_LIMIT_COOLDOWN_MS);
-          await this.manager.log(this.instanceId, "WARN", "engine",
-            `Org ${ch.org_name} recusou entrada: limite real atingido — "${refusal.text}". Org pausada por ${REAL_LIMIT_COOLDOWN_MS / 60_000}min.`);
-        }
-        return false;
-      }
-
-      // Entrada confirmada — registra tudo
+      // ── Registro otimista imediato ─────────────────────────────────────
+      // Registra a entrada ANTES de verificar a resposta da org, para que o
+      // próximo clique comece imediatamente sem esperar o delay de verificação.
+      // Se a org recusar, a tarefa em background desfaz o registro.
       await query(
         `INSERT INTO active_queues
            (instance_id, org_id, channel_id, message_id, mode, category, token_id, joined_with_players)
@@ -986,7 +995,6 @@ export class QueueRunner {
         `UPDATE tokens SET last_used_at = NOW() WHERE id = $1`,
         [token.tokenId],
       );
-      // Grava histórico de entradas para estatísticas por org/período
       await query(
         `INSERT INTO queue_joins (instance_id, org_id, org_name, mode, category)
          VALUES ($1, $2, $3, $4, $5)`,
@@ -994,11 +1002,49 @@ export class QueueRunner {
       );
       this.playerCache.delete(`${ch.channel_id}:${ch.message_id}`);
       await this.manager.log(
-        this.instanceId,
-        "INFO",
-        "engine",
-        `Entrada confirmada: ${ch.org_name} · ${ch.category ?? "?"} · ${modeLabel} · #${ch.channel_name ?? ch.channel_id} (${tag}) · token #${token.position}`,
+        this.instanceId, "INFO", "engine",
+        `Entrou em ${ch.org_name} · ${ch.category ?? "?"} · ${modeLabel} · #${ch.channel_name ?? ch.channel_id} (${tag}) · "${btn.label}" · token #${token.position}`,
       );
+
+      // ── Verificação de recusa em background (não bloqueia próximo clique) ─
+      // Limite de concorrência: no máximo 5 verificações simultâneas.
+      if (this.pendingRefusalChecks < 5) {
+        this.pendingRefusalChecks++;
+        void (async () => {
+          try {
+            const refusal = await this.detectRealLimitRefusal(ch, token, rest, refusalCheckDelayMs);
+            if (refusal.type !== "none") {
+              // Desfaz registro otimista
+              await query(
+                `DELETE FROM active_queues
+                 WHERE instance_id = $1 AND channel_id = $2 AND message_id = $3`,
+                [this.instanceId, ch.channel_id, ch.message_id],
+              );
+              await query(
+                `UPDATE stats SET entradas = GREATEST(entradas - 1, 0), na_fila = GREATEST(na_fila - 1, 0)
+                 WHERE instance_id = $1`,
+                [this.instanceId],
+              );
+              if (refusal.type === "wait") {
+                const waitMs = Math.min(refusal.waitMs ?? WAIT_DETECT_COOLDOWN_MS, 120_000);
+                this.setOrgLimitCooldown(ch.org_id, waitMs);
+                await this.manager.log(this.instanceId, "WARN", "engine",
+                  `Org ${ch.org_name} — recusa detectada (cooldown curto): "${refusal.text}" (aguardando ${Math.ceil(waitMs / 1000)}s). Entrada desfeita.`);
+              } else {
+                this.setOrgLimitCooldown(ch.org_id, REAL_LIMIT_COOLDOWN_MS);
+                await this.manager.log(this.instanceId, "WARN", "engine",
+                  `Org ${ch.org_name} — recusa detectada (limite real): "${refusal.text}". Org pausada por ${REAL_LIMIT_COOLDOWN_MS / 60_000}min. Entrada desfeita.`);
+              }
+            }
+          } catch (err) {
+            // Verificação falhou silenciosamente — mantém o registro otimista
+            void this.manager.log(this.instanceId, "WARN", "engine",
+              `Verificação de recusa falhou em ${ch.org_name}: ${(err as Error).message}`);
+          } finally {
+            this.pendingRefusalChecks--;
+          }
+        })();
+      }
 
       return true;
     } else if (r.status === 429) {
@@ -1126,14 +1172,16 @@ export class QueueRunner {
     ch: ChannelRow,
     token: ActiveToken,
     rest: DiscordRest,
+    delayMs: number = DEFAULT_REFUSAL_CHECK_DELAY_MS,
   ): Promise<{ type: "none" | "limit" | "wait"; text: string; waitMs?: number }> {
-    await sleep(REFUSAL_CHECK_WAIT_MS);
+    const clickedAt = Date.now();
+    await sleep(delayMs);
 
     const { data: msgs } = await rest.channelMessages(ch.channel_id, 8).catch(() => ({ data: null }));
     if (!msgs || msgs.length === 0) return { type: "none", text: "" };
 
-    // Janela de 8 segundos: mensagens postadas após o clique
-    const cutoff = Date.now() - (REFUSAL_CHECK_WAIT_MS + 5_500);
+    // Janela: mensagens postadas após o clique (com margem de 1s antes)
+    const cutoff = clickedAt - 1_000;
 
     for (const msg of msgs) {
       const ts = msg.timestamp ? new Date(msg.timestamp).getTime() : 0;
