@@ -926,12 +926,31 @@ export function ConfigForm({
               </button>
             );
           })}
-          {!(entryCapWithPlayers === 15 && entryCapEmpty === 9 && entryCapTotal === 24) &&
-           !(entryCapWithPlayers === 30 && entryCapEmpty === 18 && entryCapTotal === 48) && (
-            <span className="px-3 py-1.5 rounded-lg text-sm font-medium border bg-purple-600/20 border-purple-500/60 text-purple-300">
-              Personalizado
-            </span>
-          )}
+          {(() => {
+            const isCustom =
+              !(entryCapWithPlayers === 15 && entryCapEmpty === 9 && entryCapTotal === 24) &&
+              !(entryCapWithPlayers === 30 && entryCapEmpty === 18 && entryCapTotal === 48);
+            return (
+              <button
+                type="button"
+                onClick={() => {
+                  if (!isCustom) {
+                    setEntryCapWithPlayers(40);
+                    setEntryCapEmpty(30);
+                    setEntryCapTotal(70);
+                  }
+                }}
+                className={
+                  "px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors " +
+                  (isCustom
+                    ? "bg-purple-600/20 border-purple-500/60 text-purple-300"
+                    : "bg-navy-950/60 border-white/10 text-slate-400 hover:border-white/30")
+                }
+              >
+                Personalizado
+              </button>
+            );
+          })()}
         </div>
         <div className="grid grid-cols-3 gap-3">
           <div>
