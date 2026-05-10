@@ -12,6 +12,7 @@ export interface MatchToken {
 export interface MatchHost {
   log(instanceId: number, level: string, source: string, message: string): Promise<void>;
   blacklistOrgForToken(instanceId: number, tokenId: number, tokenPos: number, orgId: number, orgName: string, reason: string): Promise<void>;
+  onMatchConfirmed?(instanceId: number, orgId: number | null): void;
 }
 
 interface ChannelCreateEvent {
@@ -604,6 +605,9 @@ export class MatchHandler {
       `UPDATE stats SET partidas = partidas + 1 WHERE instance_id = $1`,
       [this.instanceId],
     );
+
+    // Notifica o runner para registrar conversão por org (métricas de eficiência)
+    this.host.onMatchConfirmed?.(this.instanceId, orgCtx?.org_id ?? null);
 
     // Libera slot da fila ativa nessa guild (o match aconteceu, slot livre)
     if (guildId && orgCtx) {

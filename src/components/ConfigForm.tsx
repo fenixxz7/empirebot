@@ -87,6 +87,7 @@ type ConfigPayload = {
     enable_60rpm_mode?: boolean;
     active_queue_soft_limit?: number;
     active_queue_hard_limit?: number;
+    optimize_for_conversion?: boolean;
   } | null;
   token_pool: TokenPoolEntry[];
   selected_token_ids: number[];
@@ -144,6 +145,7 @@ export function ConfigForm({
   const [enable60RpmMode, setEnable60RpmMode] = useState(false);
   const [aqSoftLimit, setAqSoftLimit] = useState(120);
   const [aqHardLimit, setAqHardLimit] = useState(180);
+  const [optimizeForConversion, setOptimizeForConversion] = useState(false);
   const [tokenStrategy, setTokenStrategy] = useState("single");
   const [tokenStrategyN, setTokenStrategyN] = useState(5);
   const [selectedOrgIds, setSelectedOrgIds] = useState<Set<number>>(new Set());
@@ -200,6 +202,7 @@ export function ConfigForm({
       setEnable60RpmMode(Boolean(cfg.config.enable_60rpm_mode ?? false));
       setAqSoftLimit(Number(cfg.config.active_queue_soft_limit ?? 120));
       setAqHardLimit(Number(cfg.config.active_queue_hard_limit ?? 180));
+      setOptimizeForConversion(Boolean((cfg.config as any).optimize_for_conversion ?? false));
       setTokenStrategy(cfg.config.token_strategy ?? "single");
       setTokenStrategyN(Number(cfg.config.token_strategy_n ?? 5));
       const tv: TimingValues = {
@@ -504,6 +507,7 @@ export function ConfigForm({
           enable_60rpm_mode: enable60RpmMode,
           active_queue_soft_limit: aqSoftLimit,
           active_queue_hard_limit: aqHardLimit,
+          optimize_for_conversion: optimizeForConversion,
         }),
       });
       await reload();
@@ -1074,6 +1078,32 @@ export function ConfigForm({
               </div>
               <p className="text-xs text-slate-500">
                 Soft={aqSoftLimit}: acima disso só entra em filas com players. Hard={aqHardLimit}: acima disso pausa até liberar vagas via sweep.
+              </p>
+            </div>
+          )}
+        </div>
+      </Section>
+      )}
+
+      {isAdmin && (
+      <Section title="Otimizar para Conversão">
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setOptimizeForConversion((v) => !v)}
+              className={`relative w-12 h-6 rounded-full transition-colors flex-shrink-0 ${optimizeForConversion ? "bg-accent" : "bg-white/10"}`}
+            >
+              <span className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white shadow transition-transform ${optimizeForConversion ? "translate-x-6" : "translate-x-0"}`} />
+            </button>
+            <span className={`text-sm font-medium ${optimizeForConversion ? "text-accent" : "text-slate-400"}`}>
+              {optimizeForConversion ? "Ativo — modo foco em conversão" : "Desativado (padrão)"}
+            </span>
+          </div>
+          {optimizeForConversion && (
+            <div className="rounded-xl border border-emerald-400/30 bg-emerald-500/5 p-3 space-y-2">
+              <p className="text-xs text-emerald-300/80">
+                Ativa métricas de conversão por org (janela 15min), skip automático de orgs com ghost_rate alto (penalidade cold de 5min), pre-pass ponderado por taxa de conversão histórica, soft/hard limits independentes de 60rpm e log de eficiência a cada 60s.
               </p>
             </div>
           )}

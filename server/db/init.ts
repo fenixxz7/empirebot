@@ -19,6 +19,11 @@ export async function initDatabase(): Promise<void> {
     await pool.query(stmt);
   }
 
+  // Modo eficiência de conversão
+  await pool.query(
+    `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS optimize_for_conversion BOOLEAN NOT NULL DEFAULT FALSE`,
+  );
+
   // Garante colunas de orgs necessárias antes de qualquer query que as use
   await pool.query(
     `ALTER TABLE orgs ADD COLUMN IF NOT EXISTS discovery_blocked BOOLEAN NOT NULL DEFAULT FALSE`,

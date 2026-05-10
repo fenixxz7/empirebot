@@ -63,6 +63,7 @@ interface CycleConfig {
   enable60RpmMode: boolean;
   aqSoftLimit: number;
   aqHardLimit: number;
+  optimizeForConversion: boolean;
 }
 
 const STARTUP_GRACE_MS = 5000;
@@ -187,6 +188,13 @@ export class QueueRunner {
   private orgRateLimitCooldowns = new Map<string, number>();
   // Contador acumulado de sem_candidatos entre diags de 30s
   private semCandidatosTotal = 0;
+  // Métricas de conversão por org (janela deslizante de 15min)
+  private orgJoinTs = new Map<number, number[]>();
+  private orgMatchTs = new Map<number, number[]>();
+  private orgGhostTs = new Map<number, number[]>();
+  // Orgs em penalidade cold (ghost_rate > 50% → pausa 5min)
+  private coldOrgs = new Map<number, number>(); // orgId → thawAt
+  private lastEfficiencyLog = 0;
 
   constructor(
     private readonly instanceId: number,
@@ -227,6 +235,11 @@ export class QueueRunner {
     this.semCandidatosTotal = 0;
     this.lastBufDiagAt = 0;
     this.orgRateLimitCooldowns.clear();
+    this.orgJoinTs.clear();
+    this.orgMatchTs.clear();
+    this.orgGhostTs.clear();
+    this.coldOrgs.clear();
+    this.lastEfficiencyLog = 0;
     this.timer = setTimeout(() => this.tick(), STARTUP_GRACE_MS);
   }
 
@@ -271,6 +284,104 @@ export class QueueRunner {
     const newUntil = Date.now() + ms;
     const current = this.orgRateLimitCooldowns.get(key) ?? 0;
     if (newUntil > current) this.orgRateLimitCooldowns.set(key, newUntil);
+  }
+
+  // ─── Métricas de conversão por org (janela deslizante 15min) ─────────────
+
+  /** Registra um join bem-sucedido para a org. */
+  private recordJoin(orgId: number): void {
+    const arr = this.orgJoinTs.get(orgId) ?? [];
+    arr.push(Date.now());
+    this.orgJoinTs.set(orgId, arr);
+    this.pruneOrgMetric(this.orgJoinTs, orgId);
+  }
+
+  /** Registra um ghost (fila expirou sem match) para a org. */
+  private recordGhost(orgId: number): void {
+    const arr = this.orgGhostTs.get(orgId) ?? [];
+    arr.push(Date.now());
+    this.orgGhostTs.set(orgId, arr);
+    this.pruneOrgMetric(this.orgGhostTs, orgId);
+    // Verifica se org deve entrar em cold (ghost_rate > 50% na janela de 10min)
+    this.maybeFreeze(orgId);
+  }
+
+  /** Registra uma conversão (match confirmado) para a org. Chamado pelo Manager. */
+  recordMatchEvent(orgId: number): void {
+    const arr = this.orgMatchTs.get(orgId) ?? [];
+    arr.push(Date.now());
+    this.orgMatchTs.set(orgId, arr);
+    this.pruneOrgMetric(this.orgMatchTs, orgId);
+  }
+
+  /** Remove timestamps mais antigos que 20min (headroom acima da janela de 15min). */
+  private pruneOrgMetric(map: Map<number, number[]>, orgId: number): void {
+    const cutoff = Date.now() - 20 * 60_000;
+    const arr = map.get(orgId);
+    if (!arr) return;
+    const pruned = arr.filter(t => t > cutoff);
+    if (pruned.length === 0) map.delete(orgId);
+    else map.set(orgId, pruned);
+  }
+
+  /** Retorna métricas de conversão por org na janela indicada. */
+  private getOrgConversionMetrics(orgId: number, windowMs: number) {
+    return calcConvMetrics(
+      this.orgJoinTs.get(orgId) ?? [],
+      this.orgMatchTs.get(orgId) ?? [],
+      this.orgGhostTs.get(orgId) ?? [],
+      windowMs,
+    );
+  }
+
+  /** Verifica se a org deve entrar em cold (ghost_rate > 50% na janela de 10min). */
+  private maybeFreeze(orgId: number): void {
+    const m = calcConvMetrics(
+      this.orgJoinTs.get(orgId) ?? [],
+      this.orgMatchTs.get(orgId) ?? [],
+      this.orgGhostTs.get(orgId) ?? [],
+      10 * 60_000,
+    );
+    // Só aplica cold se há dados suficientes (≥5 joins na janela)
+    if (m.joins >= 5 && m.ghost_rate > 0.5) {
+      const thawAt = Date.now() + 5 * 60_000;
+      const existing = this.coldOrgs.get(orgId) ?? 0;
+      if (thawAt > existing) {
+        this.coldOrgs.set(orgId, thawAt);
+        void this.manager.log(
+          this.instanceId, "WARN", "engine",
+          `Org ${orgId} em penalidade cold (ghost_rate=${Math.round(m.ghost_rate * 100)}% em 10min) — pausa 5min.`,
+        );
+      }
+    }
+  }
+
+  /** Retorna true se a org está em penalidade cold (ghost_rate alta). */
+  private isOrgCold(orgId: number): boolean {
+    const thawAt = this.coldOrgs.get(orgId);
+    if (!thawAt) return false;
+    if (Date.now() >= thawAt) {
+      this.coldOrgs.delete(orgId);
+      return false;
+    }
+    return true;
+  }
+
+  /** Emite log de eficiência (conversão, ghosts) de todas as orgs a cada 60s. */
+  private async emitEfficiencyLog(cfg: CycleConfig, activeCount: number): Promise<void> {
+    const WINDOW_MS = 15 * 60_000;
+    const lines: string[] = [];
+    for (const orgId of this.orgJoinTs.keys()) {
+      const m = this.getOrgConversionMetrics(orgId, WINDOW_MS);
+      if (m.joins === 0) continue;
+      const cold = this.isOrgCold(orgId) ? " [COLD]" : "";
+      lines.push(
+        `org${orgId}: joins=${m.joins} match=${m.matches} ghost=${m.ghosts} conv=${Math.round(m.conversion_rate * 100)}% ghost_rate=${Math.round(m.ghost_rate * 100)}%${cold}`,
+      );
+    }
+    const softLim = cfg.optimizeForConversion ? ` soft=${cfg.aqSoftLimit} hard=${cfg.aqHardLimit}` : "";
+    const header = `[Eficiência 15min] active=${activeCount}${softLim} | ${lines.length > 0 ? lines.join(" | ") : "sem dados de joins ainda"}`;
+    await this.manager.log(this.instanceId, "INFO", "engine", header);
   }
 
   stop(): void {
@@ -365,6 +476,10 @@ export class QueueRunner {
       [this.instanceId, String(ACTIVE_QUEUE_TTL_MS)],
     );
     if (removed.length > 0) {
+      // Registra fantasmas por org para cálculo de ghost_rate
+      for (const r of removed) {
+        this.recordGhost(r.org_id);
+      }
       this.activeRowsCacheTs = 0; // invalida cache — sweep removeu entradas
       const remaining = await query<{ c: string }>(
         `SELECT COUNT(*)::text AS c FROM active_queues WHERE instance_id = $1`,
@@ -414,6 +529,7 @@ export class QueueRunner {
       enable_60rpm_mode: boolean;
       active_queue_soft_limit: number;
       active_queue_hard_limit: number;
+      optimize_for_conversion: boolean;
     }>(
       `SELECT delay_seconds, allowed_modes, allowed_categories, blocked_names,
               max_valor, token_strategy, token_strategy_n,
@@ -427,7 +543,8 @@ export class QueueRunner {
               refusal_check_delay_ms,
               enable_60rpm_mode,
               active_queue_soft_limit,
-              active_queue_hard_limit
+              active_queue_hard_limit,
+              optimize_for_conversion
        FROM instance_configs
        WHERE instance_id = $1`,
       [this.instanceId],
@@ -465,6 +582,7 @@ export class QueueRunner {
       enable60RpmMode: r?.enable_60rpm_mode ?? false,
       aqSoftLimit: Math.max(10, r?.active_queue_soft_limit ?? 120),
       aqHardLimit: Math.max(10, r?.active_queue_hard_limit ?? 180),
+      optimizeForConversion: r?.optimize_for_conversion ?? false,
     };
     this.configCache = { cfg, ts: Date.now() };
     return cfg;
@@ -632,9 +750,27 @@ export class QueueRunner {
       this.nextJoinAt = now + 1_500;
       return;
     }
+    // Eficiência: hard/soft limit mesmo sem 60rpm quando optimize_for_conversion
+    const efficiencyActive = cfg.optimizeForConversion && !cfg.enable60RpmMode;
+    if (efficiencyActive && activeRows.length >= cfg.aqHardLimit) {
+      this.maybeLog("noWork", `Eficiência: hard limit (${activeRows.length}/${cfg.aqHardLimit} active_queues) — aguardando sweep/partidas.`);
+      this.nextJoinAt = now + 2_000;
+      return;
+    }
     // 60rpm: soft limit — acima de aqSoftLimit, só aceita filas com players
     const above60Soft = cfg.enable60RpmMode && !inSafeMode && activeRows.length >= cfg.aqSoftLimit;
-    const effectiveNoPlayersSlot = above60Soft ? false : noPlayersSlotPreferred;
+    const aboveEffSoft = efficiencyActive && activeRows.length >= cfg.aqSoftLimit;
+    const aboveSoft = above60Soft || aboveEffSoft;
+    const effectiveNoPlayersSlot = aboveSoft ? false : noPlayersSlotPreferred;
+
+    // Eficiência: emite log de conversão a cada 60s
+    if (cfg.optimizeForConversion) {
+      const nowEff = Date.now();
+      if (nowEff - this.lastEfficiencyLog >= 60_000) {
+        this.lastEfficiencyLog = nowEff;
+        void this.emitEfficiencyLog(cfg, activeRows.length);
+      }
+    }
 
     // 60rpm: diagnóstico periódico de 30s
     if (cfg.enable60RpmMode) {
@@ -671,9 +807,11 @@ export class QueueRunner {
       (this.orgClickCounts.get(_prePassOrgId) ?? 0) > 0;
 
     if (playersSlot && !_midSequence) {
-      let bestOrg: { idx: number; players: number } | null = null;
+      let bestOrg: { idx: number; score: number } | null = null;
       for (let i = 0; i < totalOrgs; i++) {
         const orgId = orgIds[i]!;
+        // Eficiência: skip orgs em cold na pre-pass
+        if (cfg.optimizeForConversion && this.isOrgCold(orgId)) continue;
         const orgChs = channels.filter((c) => c.org_id === orgId);
         if (orgChs.length === 0) continue;
         const maxForOrg = orgChs[0]?.max_queues ?? 0;
@@ -689,8 +827,15 @@ export class QueueRunner {
           const cached = this.playerCache.get(key);
           if (cached && cached.count > maxPlayers) maxPlayers = cached.count;
         }
-        if (maxPlayers > 0 && (!bestOrg || maxPlayers > bestOrg.players)) {
-          bestOrg = { idx: i, players: maxPlayers };
+        if (maxPlayers > 0) {
+          let score = maxPlayers;
+          if (cfg.optimizeForConversion) {
+            const m = this.getOrgConversionMetrics(orgId, 15 * 60_000);
+            score = maxPlayers * 100 + Math.round(m.conversion_rate * 100) * 3 - Math.round(m.ghost_rate * 100) * 2;
+          }
+          if (!bestOrg || score > bestOrg.score) {
+            bestOrg = { idx: i, score };
+          }
         }
       }
       if (bestOrg) {
@@ -703,6 +848,15 @@ export class QueueRunner {
       const orgChannels = channels.filter((c) => c.org_id === currentOrgId);
       const maxForOrg = orgChannels[0]?.max_queues ?? 0;
       const activeForOrg = activePerOrg.get(currentOrgId) ?? 0;
+
+      // Eficiência: pula orgs em cold (ghost_rate alta recentemente)
+      if (cfg.optimizeForConversion && this.isOrgCold(currentOrgId)) {
+        if (cfg.enable60RpmMode) this.blockedReasons.set("cold_org", (this.blockedReasons.get("cold_org") ?? 0) + 1);
+        this.orgCursor = (this.orgCursor + 1) % totalOrgs;
+        attempts++;
+        advancedDueToFull = true;
+        continue;
+      }
 
       // Cooldown de limite real: org foi recusada pela própria plataforma recentemente
       const limitCd = this.isOrgInLimitCooldown(currentOrgId);
@@ -991,6 +1145,9 @@ export class QueueRunner {
       } else {
         this.joinedWithoutPlayers++;
       }
+
+      // ── Métricas de eficiência: registra join por org ──────────────────
+      this.recordJoin(candidate.org_id);
 
       // ── Org scoring: registra join ─────────────────────────────────────
       this.orgJoinCounts.set(candidate.org_id, (this.orgJoinCounts.get(candidate.org_id) ?? 0) + 1);
@@ -1893,6 +2050,19 @@ function normalizeMode(s: string): string | null {
  *   4. action=enter|play, qualquer outro variant  (ex: "Jogar Full UMP & XM8")
  *   5. action=other, qualquer outro variant       (ex: "Gel Inf", "2 Emu")
  */
+// ─── Métricas de conversão por org ──────────────────────────────────────────
+
+/** Retorna métricas de conversão para uma org na janela deslizante indicada. */
+function calcConvMetrics(joins: number[], matches: number[], ghosts: number[], windowMs: number) {
+  const cutoff = Date.now() - windowMs;
+  const j = joins.filter(t => t > cutoff).length;
+  const m = matches.filter(t => t > cutoff).length;
+  const g = ghosts.filter(t => t > cutoff).length;
+  const conversion_rate = j > 0 ? m / j : 0;
+  const ghost_rate = j > 0 ? g / j : 0;
+  return { joins: j, matches: m, ghosts: g, conversion_rate, ghost_rate };
+}
+
 function pickEnterButton(buttons: ChannelRow["buttons"]) {
   const usable = buttons.filter(
     (b) =>

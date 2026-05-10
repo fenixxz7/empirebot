@@ -72,6 +72,7 @@ export interface InstanceConfig {
   enable_60rpm_mode: boolean;
   active_queue_soft_limit: number;
   active_queue_hard_limit: number;
+  optimize_for_conversion: boolean;
 }
 
 export interface Token {

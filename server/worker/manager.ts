@@ -576,6 +576,11 @@ class Manager {
     return (this.workers.get(instanceId)?.length ?? 0) > 0;
   }
 
+  onMatchConfirmed(instanceId: number, orgId: number | null): void {
+    if (orgId === null) return;
+    this.runners.get(instanceId)?.recordMatchEvent(orgId);
+  }
+
   private buildMatchTokens(instanceId: number, priorityTokenId?: number): MatchToken[] {
     const all = (this.workers.get(instanceId) ?? [])
       .filter((w) => w.client.isReady())

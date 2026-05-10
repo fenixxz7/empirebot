@@ -53,6 +53,7 @@ const SaveConfigBody = z.object({
   enable_60rpm_mode: z.boolean().optional().default(false),
   active_queue_soft_limit: z.coerce.number().int().min(10).max(500).optional().default(120),
   active_queue_hard_limit: z.coerce.number().int().min(10).max(500).optional().default(180),
+  optimize_for_conversion: z.boolean().optional().default(false),
 });
 
 // Body do POST /:instanceId/import — formato JSON exportado.
@@ -108,6 +109,7 @@ configRouter.get("/:instanceId", asyncHandler(async (req, res) => {
     enable_60rpm_mode: boolean;
     active_queue_soft_limit: number;
     active_queue_hard_limit: number;
+    optimize_for_conversion: boolean;
   }>(
     `SELECT category, allowed_categories, delay_seconds, rotation_minutes,
             allowed_modes, message_main, message_per_org, image_url, blocked_names,
@@ -119,7 +121,8 @@ configRouter.get("/:instanceId", asyncHandler(async (req, res) => {
             match_msg_delay_min_ms, match_msg_delay_max_ms,
             entry_cap_with_players_per_60s, entry_cap_empty_per_60s,
             entry_cap_total_per_60s, refusal_check_delay_ms,
-            enable_60rpm_mode, active_queue_soft_limit, active_queue_hard_limit
+            enable_60rpm_mode, active_queue_soft_limit, active_queue_hard_limit,
+            optimize_for_conversion
      FROM instance_configs WHERE instance_id = $1`,
     [id]
   );
@@ -198,6 +201,7 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
     enable_60rpm_mode,
     active_queue_soft_limit,
     active_queue_hard_limit,
+    optimize_for_conversion,
   } = req.body;
 
   // allowed_categories pode chegar como array (UI) ou string CSV (terminal/api)
@@ -246,6 +250,7 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
          enable_60rpm_mode = $29,
          active_queue_soft_limit = $30,
          active_queue_hard_limit = $31,
+         optimize_for_conversion = $32,
          updated_at = NOW()
      WHERE instance_id = $1`,
     [id, primaryCategory, allowedCategoriesStr,
@@ -267,7 +272,8 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
      Math.min(50, Math.max(0, Number(hot_org_extra_clicks ?? 10))),
      Boolean(enable_60rpm_mode ?? false),
      Math.min(500, Math.max(10, Number(active_queue_soft_limit ?? 120))),
-     Math.min(500, Math.max(10, Number(active_queue_hard_limit ?? 180)))]
+     Math.min(500, Math.max(10, Number(active_queue_hard_limit ?? 180))),
+     Boolean(optimize_for_conversion ?? false)]
   );
 
   // Tokens: novo sistema — seleção por pool ID
