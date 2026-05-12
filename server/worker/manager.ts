@@ -41,6 +41,7 @@ interface RotationState {
 }
 
 const ROTATION_TICK_MS = 5_000;
+const STATUS_SYNC_INTERVAL_MS = 20_000;
 
 class Manager {
   private workers = new Map<number, WorkerEntry[]>();
@@ -50,6 +51,7 @@ class Manager {
   private discoveryRan = new Set<number>();
   private rotation = new Map<number, RotationState>();
   private rotationTimer: NodeJS.Timeout | null = null;
+  private statusSyncTimer: NodeJS.Timeout | null = null;
   /** Retorna todos os user_ids dos tokens conectados pra uma instância */
   getConnectedUserIds(instanceId: number): string[] {
     const entries = this.workers.get(instanceId) ?? [];
@@ -106,6 +108,7 @@ class Manager {
       minutes: rotationMinutes,
     });
     this.ensureRotationLoop();
+    this.ensureStatusSyncLoop();
 
     const tokens = await query<{ id: number; value: string; position: number }>(
       `SELECT id, value, position FROM tokens
@@ -520,6 +523,11 @@ class Manager {
       clearInterval(this.rotationTimer);
       this.rotationTimer = null;
     }
+    if (this.workers.size <= 1 && this.statusSyncTimer) {
+      // Para o sync se não restar mais instâncias com workers após esse stop
+      clearInterval(this.statusSyncTimer);
+      this.statusSyncTimer = null;
+    }
 
     // Para o motor de filas e o detector de partidas
     const runner = this.runners.get(instanceId);
@@ -653,6 +661,41 @@ class Manager {
         );
       }
     }, ROTATION_TICK_MS);
+  }
+
+  /**
+   * Garante que o loop de sync de status está rodando.
+   * A cada STATUS_SYNC_INTERVAL_MS reafirma no banco o status real
+   * de cada token baseado no estado em memória — sobrescreve qualquer
+   * escrita externa (ex: Empire DMS) que tenha marcado um token como
+   * 'invalid' enquanto o gateway ainda está conectado.
+   */
+  private ensureStatusSyncLoop(): void {
+    if (this.statusSyncTimer) return;
+    this.statusSyncTimer = setInterval(() => {
+      this.syncTokenStatuses().catch((err) =>
+        console.error("[statusSync]", err),
+      );
+    }, STATUS_SYNC_INTERVAL_MS);
+  }
+
+  private async syncTokenStatuses(): Promise<void> {
+    for (const [, entries] of this.workers) {
+      for (const e of entries) {
+        if (!e.client.isReady()) continue;
+        // Token está conectado em memória — garante que o banco reflita isso
+        await query(
+          `UPDATE tokens SET status = 'connected' WHERE id = $1 AND status <> 'connected'`,
+          [e.tokenId],
+        );
+        await query(
+          `UPDATE token_pool SET status = 'connected'
+           WHERE value = (SELECT value FROM tokens WHERE id = $1)
+             AND status <> 'connected'`,
+          [e.tokenId],
+        );
+      }
+    }
   }
 
   private async tickRotation(instanceId: number): Promise<void> {
