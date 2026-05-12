@@ -314,6 +314,17 @@ export class GatewayClient extends EventEmitter {
     // Codes that mean "do not reconnect"
     const fatal = [4004, 4010, 4011, 4012, 4013, 4014];
     if (fatal.includes(code)) {
+      // 4004 durante RESUME significa sessão expirada, não token inválido.
+      // Nesse caso, limpa a sessão e tenta um IDENTIFY fresco antes de declarar fatal.
+      // Só é verdadeiramente fatal se o 4004 ocorreu com sessionId=null (IDENTIFY novo).
+      if (code === 4004 && this.sessionId !== null) {
+        this.emit("debug", `${this.label} 4004 during resume — clearing session, retrying fresh identify`);
+        this.sessionId = null;
+        this.resumeUrl = null;
+        const delay = 2000 + Math.random() * 3000;
+        this.reconnectTimer = setTimeout(() => this.connect(), delay);
+        return;
+      }
       this.emit("fatal", code);
       return;
     }
