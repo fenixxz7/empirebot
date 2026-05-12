@@ -45,6 +45,15 @@ function requireAuth(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
+function requireApiKeyOrAuth(req: Request, res: Response, next: NextFunction) {
+  const apiKey = req.headers["x-api-key"];
+  const adminPass = process.env.ADMIN_PASSWORD;
+  if (apiKey && adminPass && apiKey === adminPass) {
+    return next();
+  }
+  return requireAuth(req, res, next);
+}
+
 export function mountApi(app: Express): void {
   // Auth routes — públicas, sem proteção
   app.use("/api/auth", authRouter);
@@ -58,6 +67,52 @@ export function mountApi(app: Express): void {
       res.status(503).json({ ok: false, db: "error", ts: new Date().toISOString() });
     }
   });
+
+  // Rota para apps externos (ex: Empire DMS) — autenticada via X-API-Key ou sessão
+  // Retorna tokens conectados com valor completo, opcionalmente filtrados por instância
+  app.get("/api/tokens/connected", requireApiKeyOrAuth, asyncHandler(async (req, res) => {
+    const instanceId = req.query.instance_id ? Number(req.query.instance_id) : null;
+
+    let rows: {
+      id: number; label: string | null; value: string;
+      status: string; username: string | null;
+      instance_id: number | null; instance_name: string | null;
+    }[];
+
+    if (instanceId) {
+      rows = await dbQuery<typeof rows[number]>(
+        `SELECT tp.id, tp.label, tp.value, tp.status, tp.username,
+                i.id AS instance_id, i.name AS instance_name
+         FROM token_pool tp
+         INNER JOIN instance_token_selection its ON its.token_pool_id = tp.id
+         INNER JOIN instances i ON i.id = its.instance_id
+         WHERE its.instance_id = $1
+           AND tp.status = 'connected'
+         ORDER BY its.position ASC`,
+        [instanceId],
+      );
+    } else {
+      rows = await dbQuery<typeof rows[number]>(
+        `SELECT tp.id, tp.label, tp.value, tp.status, tp.username,
+                i.id AS instance_id, i.name AS instance_name
+         FROM token_pool tp
+         INNER JOIN instance_token_selection its ON its.token_pool_id = tp.id
+         INNER JOIN instances i ON i.id = its.instance_id
+         WHERE tp.status = 'connected'
+         ORDER BY i.id ASC, its.position ASC`,
+      );
+    }
+
+    res.json(rows.map((t) => ({
+      id: t.id,
+      label: t.label,
+      value: t.value,
+      status: t.status,
+      username: t.username,
+      instance_id: t.instance_id,
+      instance_name: t.instance_name,
+    })));
+  }));
 
   // Rota de revelar token — registrada diretamente antes do router genérico
   app.get("/api/tokens/:id/value", requireAuth, requireAdmin, asyncHandler(async (req, res) => {
