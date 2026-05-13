@@ -569,6 +569,28 @@ export async function initDatabase(): Promise<void> {
       ON account_logs (ts DESC)
   `);
 
+  // ── Auto-Rotação — histórico de rotações ───────────────────────────────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS rotation_history (
+      id              BIGSERIAL PRIMARY KEY,
+      instance_id     INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+      old_account_id  INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+      new_account_id  INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+      reason          TEXT NOT NULL,
+      result          TEXT NOT NULL,
+      detail          TEXT,
+      rotated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS rotation_history_instance_ts
+      ON rotation_history (instance_id, rotated_at DESC)
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS rotation_history_ts
+      ON rotation_history (rotated_at DESC)
+  `);
+
 }
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);

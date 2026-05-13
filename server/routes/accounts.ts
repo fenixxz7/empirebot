@@ -825,6 +825,122 @@ accountsRouter.post("/:id/reset", asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// ─── Auto-Rotation Status ─────────────────────────────────────────────────────
+
+accountsRouter.get("/rotation-status", asyncHandler(async (_req, res) => {
+  const { getRotationStatus, ROTATION_REASON_LABELS } = await import("../engine/auto-rotator.js");
+
+  const instances = await query<{ id: number; name: string }>(
+    `SELECT id, name FROM instances ORDER BY id ASC`
+  );
+  const cfgRow = await query<{ auto_rotation: boolean; min_health_score: number; cooldown_after_use_ms: number }>(
+    `SELECT auto_rotation, min_health_score, cooldown_after_use_ms FROM accounts_config WHERE id = 1`
+  );
+  const cfg = cfgRow[0];
+
+  const result = await Promise.all(instances.map(async (inst) => {
+    const mem = getRotationStatus(inst.id);
+
+    const activeRows = await query<{
+      id: number; nickname: string; activated_at: string | null;
+      cooldown_until: string | null; auto_rotation: boolean;
+    }>(
+      `SELECT id, nickname, activated_at, cooldown_until, auto_rotation
+       FROM accounts WHERE state = 'ACTIVE' AND locked_by_instance = $1 LIMIT 1`,
+      [inst.id]
+    );
+    const active = activeRows[0] ?? null;
+
+    // Calcula next_eligible e cooldown_remaining
+    let nextEligibleAt: string | null = null;
+    let cooldownRemainingMs: number | null = null;
+    if (active?.cooldown_until) {
+      const until = new Date(active.cooldown_until);
+      if (until > new Date()) {
+        nextEligibleAt = until.toISOString();
+        cooldownRemainingMs = until.getTime() - Date.now();
+      }
+    }
+
+    // Pega a última rotação do DB também (para sobreviver a reinicializações)
+    const lastRotRows = await query<{ reason: string; result: string; rotated_at: string }>(
+      `SELECT reason, result, rotated_at FROM rotation_history
+       WHERE instance_id = $1 ORDER BY rotated_at DESC LIMIT 1`,
+      [inst.id]
+    );
+    const lastRotDb = lastRotRows[0] ?? null;
+
+    const lastReason = (mem.last_reason ?? lastRotDb?.reason ?? null) as string | null;
+    const lastRotatedAt = mem.last_rotated_at ?? lastRotDb?.rotated_at ?? null;
+
+    return {
+      instance_id: inst.id,
+      instance_name: inst.name,
+      in_progress: mem.in_progress,
+      last_reason: lastReason,
+      last_reason_label: lastReason
+        ? (ROTATION_REASON_LABELS[lastReason as keyof typeof ROTATION_REASON_LABELS] ?? lastReason)
+        : null,
+      last_rotated_at: lastRotatedAt,
+      active_account_id: active?.id ?? null,
+      active_account_nickname: active?.nickname ?? null,
+      next_eligible_at: nextEligibleAt,
+      cooldown_remaining_ms: cooldownRemainingMs,
+      failover_active: mem.failover_active,
+      auto_rotation_enabled: cfg?.auto_rotation ?? false,
+      active_account_auto_rotation: active?.auto_rotation ?? false,
+    };
+  }));
+
+  res.json(result);
+}));
+
+// ─── Rotation History ─────────────────────────────────────────────────────────
+
+accountsRouter.get("/rotation-history", asyncHandler(async (req, res) => {
+  const instanceId = req.query.instance_id ? Number(req.query.instance_id) : null;
+  const limit = Math.min(Number(req.query.limit ?? 50), 200);
+
+  let sql = `
+    SELECT
+      rh.id, rh.instance_id, rh.reason, rh.result, rh.detail, rh.rotated_at,
+      oa.nickname AS old_account_name,
+      na.nickname AS new_account_name,
+      i.name      AS instance_name
+    FROM rotation_history rh
+    LEFT JOIN accounts  oa ON oa.id = rh.old_account_id
+    LEFT JOIN accounts  na ON na.id = rh.new_account_id
+    LEFT JOIN instances i  ON i.id  = rh.instance_id
+    WHERE 1=1
+  `;
+  const params: unknown[] = [];
+  if (instanceId) { params.push(instanceId); sql += ` AND rh.instance_id = $${params.length}`; }
+  params.push(limit);
+  sql += ` ORDER BY rh.rotated_at DESC LIMIT $${params.length}`;
+
+  const rows = await query<Record<string, unknown>>(sql, params);
+  res.json(rows);
+}));
+
+// ─── Manual Rotation Trigger ──────────────────────────────────────────────────
+
+accountsRouter.post("/rotation-trigger/:instanceId", asyncHandler(async (req, res) => {
+  const instanceId = Number(req.params.instanceId);
+  const { triggerRotation } = await import("../engine/auto-rotator.js");
+
+  const activeRows = await query<{ id: number }>(
+    `SELECT id FROM accounts WHERE state = 'ACTIVE' AND locked_by_instance = $1 LIMIT 1`,
+    [instanceId]
+  );
+  const oldAccountId = activeRows[0]?.id ?? undefined;
+
+  triggerRotation(instanceId, "manual", oldAccountId).catch(err =>
+    console.error("[rotation-trigger]", err)
+  );
+
+  res.json({ ok: true, queued: true });
+}));
+
 // ─── Logs ─────────────────────────────────────────────────────────────────────
 
 accountsRouter.get("/logs", asyncHandler(async (req, res) => {

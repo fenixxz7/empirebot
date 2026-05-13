@@ -133,15 +133,58 @@ const TOKEN_STATUS_META: Record<string, { label: string; color: string }> = {
 };
 
 const LOG_EVENT_COLORS: Record<string, string> = {
-  created:      "text-emerald-400",
-  activated:    "text-emerald-300",
-  deactivated:  "text-slate-400",
-  state_change: "text-sky-300",
-  rotation:     "text-violet-300",
-  failure:      "text-rose-400",
-  reset:        "text-amber-300",
-  default:      "text-slate-300",
+  created:                "text-emerald-400",
+  activated:              "text-emerald-300",
+  deactivated:            "text-slate-400",
+  state_change:           "text-sky-300",
+  rotation:               "text-violet-300",
+  failure:                "text-rose-400",
+  reset:                  "text-amber-300",
+  auto_rotation_started:  "text-violet-400",
+  auto_rotation_aborted:  "text-rose-400",
+  account_selected:       "text-sky-300",
+  validation_approved:    "text-emerald-400",
+  validation_failed:      "text-rose-400",
+  heartbeat_validated:    "text-emerald-300",
+  cooldown_applied:       "text-cyan-300",
+  lock_created:           "text-slate-400",
+  lock_released:          "text-slate-400",
+  token_applied:          "text-sky-400",
+  rollback_executed:      "text-amber-400",
+  failover_executed:      "text-orange-400",
+  anti_pingpong_applied:  "text-violet-300",
+  default:                "text-slate-300",
 };
+
+// ─── Rotation Types ───────────────────────────────────────────────────────────
+
+interface RotationStatusEntry {
+  instance_id: number;
+  instance_name: string;
+  in_progress: boolean;
+  last_reason: string | null;
+  last_reason_label: string | null;
+  last_rotated_at: string | null;
+  active_account_id: number | null;
+  active_account_nickname: string | null;
+  next_eligible_at: string | null;
+  cooldown_remaining_ms: number | null;
+  failover_active: boolean;
+  auto_rotation_enabled: boolean;
+  active_account_auto_rotation: boolean;
+}
+
+interface RotationHistoryEntry {
+  id: number;
+  instance_id: number;
+  instance_name: string | null;
+  old_account_name: string | null;
+  new_account_name: string | null;
+  reason: string;
+  result: string;
+  detail: string | null;
+  rotated_at: string;
+}
 
 // ─── Pool por Instância types ─────────────────────────────────────────────────
 
@@ -1291,6 +1334,221 @@ function SummaryBar({ accounts }: { accounts: Account[] }) {
   );
 }
 
+// ─── Rotation Panel ───────────────────────────────────────────────────────────
+
+const RESULT_META: Record<string, { label: string; color: string; dot: string }> = {
+  success:  { label: "Sucesso",   color: "text-emerald-400", dot: "bg-emerald-400" },
+  failover: { label: "Failover",  color: "text-orange-400",  dot: "bg-orange-400" },
+  rollback: { label: "Rollback",  color: "text-amber-400",   dot: "bg-amber-400" },
+  aborted:  { label: "Abortado",  color: "text-rose-400",    dot: "bg-rose-400" },
+};
+
+function fmsDuration(ms: number): string {
+  const mins = Math.floor(ms / 60000);
+  const secs = Math.floor((ms % 60000) / 1000);
+  if (mins > 0) return `${mins}m ${secs}s`;
+  return `${secs}s`;
+}
+
+function RotationStatusCard({
+  entry,
+  onTrigger,
+  triggering,
+}: {
+  entry: RotationStatusEntry;
+  onTrigger: (instanceId: number) => void;
+  triggering: boolean;
+}) {
+  const autoOk = entry.auto_rotation_enabled && entry.active_account_auto_rotation;
+  const coolMs = entry.cooldown_remaining_ms;
+
+  return (
+    <div className={`card p-4 space-y-3 ${entry.in_progress ? "ring-2 ring-violet-400/40" : ""} ${entry.failover_active ? "ring-2 ring-orange-400/50" : ""}`}>
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-bold text-white">{entry.instance_name}</span>
+          {entry.in_progress && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-violet-400/15 text-violet-300 ring-1 ring-violet-400/30 animate-pulse">
+              ⟳ ROTACIONANDO
+            </span>
+          )}
+          {entry.failover_active && !entry.in_progress && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-orange-400/15 text-orange-300 ring-1 ring-orange-400/30">
+              ⚡ FAILOVER
+            </span>
+          )}
+        </div>
+        <div className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold ring-1 ${
+          autoOk
+            ? "bg-emerald-400/10 text-emerald-300 ring-emerald-400/30"
+            : "bg-slate-400/10 text-slate-400 ring-slate-400/20"
+        }`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${autoOk ? "bg-emerald-400" : "bg-slate-500"}`} />
+          Auto-rotação {autoOk ? "ATIVA" : "INATIVA"}
+        </div>
+      </div>
+
+      {/* Conta ativa */}
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-slate-500">Conta ativa</span>
+        <span className={entry.active_account_nickname ? "text-emerald-300 font-medium" : "text-slate-500 italic"}>
+          {entry.active_account_nickname ?? "Nenhuma"}
+        </span>
+      </div>
+
+      {/* Última rotação */}
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-slate-500">Última rotação</span>
+        <span className="text-slate-300">
+          {entry.last_rotated_at ? fmtRelative(entry.last_rotated_at) : "Nunca"}
+        </span>
+      </div>
+
+      {/* Motivo da última rotação */}
+      {entry.last_reason_label && (
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-slate-500">Motivo</span>
+          <span className="text-violet-300 font-medium">{entry.last_reason_label}</span>
+        </div>
+      )}
+
+      {/* Cooldown restante */}
+      {coolMs && coolMs > 0 && (
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-slate-500">Cooldown restante</span>
+          <span className="text-cyan-300 font-mono">{fmsDuration(coolMs)}</span>
+        </div>
+      )}
+
+      {/* Botão forçar rotação */}
+      <button
+        onClick={() => onTrigger(entry.instance_id)}
+        disabled={entry.in_progress || triggering}
+        className={`w-full text-xs py-1.5 rounded-lg font-semibold transition-colors ring-1 ${
+          entry.in_progress || triggering
+            ? "bg-white/5 text-slate-500 ring-white/10 cursor-not-allowed"
+            : "bg-violet-500/15 text-violet-300 ring-violet-400/30 hover:bg-violet-500/25"
+        }`}
+      >
+        {entry.in_progress ? "⟳ Em andamento..." : "⚡ Forçar rotação"}
+      </button>
+    </div>
+  );
+}
+
+function RotationPanel({
+  status,
+  history,
+  loading,
+  onRefresh,
+  onTrigger,
+  triggeringInstance,
+}: {
+  status: RotationStatusEntry[];
+  history: RotationHistoryEntry[];
+  loading: boolean;
+  onRefresh: () => void;
+  onTrigger: (instanceId: number) => void;
+  triggeringInstance: number | null;
+}) {
+  const autoRotEnabled = status.some(s => s.auto_rotation_enabled);
+
+  if (loading) {
+    return <div className="card p-12 text-center text-slate-500 text-sm">Carregando status de rotação...</div>;
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header bar */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold ring-1 ${
+            autoRotEnabled
+              ? "bg-emerald-400/10 text-emerald-300 ring-emerald-400/30"
+              : "bg-slate-400/10 text-slate-400 ring-slate-400/20"
+          }`}>
+            <span className={`w-2 h-2 rounded-full ${autoRotEnabled ? "bg-emerald-400 animate-pulse" : "bg-slate-500"}`} />
+            Auto-rotação global: {autoRotEnabled ? "LIGADA" : "DESLIGADA"}
+          </span>
+          {!autoRotEnabled && (
+            <span className="text-[11px] text-slate-500">
+              Configure em ⚙️ Configurações → Auto-rotação
+            </span>
+          )}
+        </div>
+        <button onClick={onRefresh} className="btn-secondary text-[11px] py-1 px-2.5">
+          ↻ Atualizar
+        </button>
+      </div>
+
+      {/* Per-instance status cards */}
+      {status.length === 0 ? (
+        <div className="card p-12 text-center text-slate-500 text-sm">
+          Nenhuma instância cadastrada.
+        </div>
+      ) : (
+        <div className="grid sm:grid-cols-2 gap-4">
+          {status.map(entry => (
+            <RotationStatusCard
+              key={entry.instance_id}
+              entry={entry}
+              onTrigger={onTrigger}
+              triggering={triggeringInstance === entry.instance_id}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Rotation history timeline */}
+      <div className="card p-4 space-y-3">
+        <p className="text-[10px] uppercase tracking-wider text-slate-500">Histórico de rotações</p>
+
+        {history.length === 0 ? (
+          <p className="text-slate-500 text-sm text-center py-6">Nenhuma rotação registrada ainda.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-slate-500 text-[10px] uppercase tracking-wider border-b border-white/5">
+                  <th className="pb-2 text-left">Quando</th>
+                  <th className="pb-2 text-left">Instância</th>
+                  <th className="pb-2 text-left">De → Para</th>
+                  <th className="pb-2 text-left">Motivo</th>
+                  <th className="pb-2 text-left">Resultado</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {history.map(h => {
+                  const rm = RESULT_META[h.result] ?? { label: h.result, color: "text-slate-400", dot: "bg-slate-400" };
+                  return (
+                    <tr key={h.id} className="text-slate-300 hover:bg-white/3 transition-colors">
+                      <td className="py-2 pr-3 text-slate-500 whitespace-nowrap">{fmtRelative(h.rotated_at)}</td>
+                      <td className="py-2 pr-3 font-medium text-white whitespace-nowrap">{h.instance_name ?? `#${h.instance_id}`}</td>
+                      <td className="py-2 pr-3 whitespace-nowrap">
+                        <span className="text-slate-500">{h.old_account_name ?? "—"}</span>
+                        <span className="text-slate-600 mx-1">→</span>
+                        <span className={h.new_account_name ? "text-emerald-300" : "text-slate-500"}>{h.new_account_name ?? "—"}</span>
+                      </td>
+                      <td className="py-2 pr-3 text-violet-300 whitespace-nowrap">{h.reason}</td>
+                      <td className="py-2">
+                        <span className={`inline-flex items-center gap-1 ${rm.color}`}>
+                          <span className={`w-1.5 h-1.5 rounded-full ${rm.dot}`} />
+                          {rm.label}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function Contas() {
@@ -1308,7 +1566,13 @@ export default function Contas() {
 
   const [pool, setPool] = useState<InstancePoolSummary[]>([]);
   const [poolLoading, setPoolLoading] = useState(false);
-  const [tab, setTab] = useState<"accounts" | "pool" | "config" | "logs">("accounts");
+
+  const [rotationStatus, setRotationStatus] = useState<RotationStatusEntry[]>([]);
+  const [rotationHistory, setRotationHistory] = useState<RotationHistoryEntry[]>([]);
+  const [rotationLoading, setRotationLoading] = useState(false);
+  const [triggeringInstance, setTriggeringInstance] = useState<number | null>(null);
+
+  const [tab, setTab] = useState<"accounts" | "pool" | "config" | "logs" | "rotation">("accounts");
   const [showForm, setShowForm] = useState(false);
   const [editAccount, setEditAccount] = useState<Account | null>(null);
   const [stateModal, setStateModal] = useState<{ id: number; state: AccountState } | null>(null);
@@ -1357,17 +1621,48 @@ export default function Contas() {
     }
   }, []);
 
+  const loadRotation = useCallback(async () => {
+    setRotationLoading(true);
+    try {
+      const [st, hist] = await Promise.all([
+        api<RotationStatusEntry[]>("/api/accounts/rotation-status"),
+        api<RotationHistoryEntry[]>("/api/accounts/rotation-history?limit=50"),
+      ]);
+      setRotationStatus(st);
+      setRotationHistory(hist);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setRotationLoading(false);
+    }
+  }, []);
+
+  const handleTriggerRotation = useCallback(async (instanceId: number) => {
+    setTriggeringInstance(instanceId);
+    try {
+      await api(`/api/accounts/rotation-trigger/${instanceId}`, { method: "POST" });
+      setTimeout(loadRotation, 2000);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setTriggeringInstance(null);
+    }
+  }, [loadRotation]);
+
   useEffect(() => {
     loadAll();
     loadLogs();
     loadPool();
+    loadRotation();
     const interval = setInterval(loadAll, 15000);
     logsIntervalRef.current = setInterval(loadLogs, 10000);
+    const rotInterval = setInterval(loadRotation, 15000);
     return () => {
       clearInterval(interval);
+      clearInterval(rotInterval);
       if (logsIntervalRef.current) clearInterval(logsIntervalRef.current);
     };
-  }, [loadAll, loadLogs]);
+  }, [loadAll, loadLogs, loadRotation]);
 
   async function handleAction(id: number, action: string) {
     setActionLoading(id);
@@ -1462,6 +1757,7 @@ export default function Contas() {
           {([
             { key: "accounts", label: "👤 Contas" },
             { key: "pool",     label: "🏊 Pool" },
+            { key: "rotation", label: "🔄 Rotação" },
             { key: "config",   label: "⚙️ Configurações" },
             { key: "logs",     label: `📋 Logs (${logs.length})` },
           ] as const).map(t => (
@@ -1470,6 +1766,7 @@ export default function Contas() {
               onClick={() => {
                 setTab(t.key);
                 if (t.key === "pool") loadPool();
+                if (t.key === "rotation") loadRotation();
               }}
               className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
                 tab === t.key
@@ -1568,6 +1865,18 @@ export default function Contas() {
               setTab("accounts");
               setFilterSearch(accounts.find(a => a.id === id)?.nickname ?? "");
             }}
+          />
+        )}
+
+        {/* ── Rotation Tab ── */}
+        {tab === "rotation" && (
+          <RotationPanel
+            status={rotationStatus}
+            history={rotationHistory}
+            loading={rotationLoading}
+            onRefresh={loadRotation}
+            onTrigger={handleTriggerRotation}
+            triggeringInstance={triggeringInstance}
           />
         )}
 
