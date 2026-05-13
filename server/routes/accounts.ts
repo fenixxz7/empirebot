@@ -148,15 +148,24 @@ accountsRouter.put("/config", asyncHandler(async (req, res) => {
 // ─── Accounts CRUD ────────────────────────────────────────────────────────────
 
 accountsRouter.get("/", asyncHandler(async (_req, res) => {
+  const now = new Date();
+  // Auto-libera locks expirados
+  await query(`
+    UPDATE accounts SET account_lock = FALSE, locked_by_instance = NULL, locked_at = NULL, lock_expires_at = NULL
+    WHERE account_lock = TRUE AND lock_expires_at IS NOT NULL AND lock_expires_at < $1
+  `, [now.toISOString()]);
+
   const rows = await query<Record<string, unknown>>(`
     SELECT
       a.*,
-      tp.status  AS token_status,
+      tp.status   AS token_status,
       tp.username AS token_username,
-      i.name     AS instance_name
+      i.name      AS instance_name,
+      li.name     AS locked_by_instance_name
     FROM accounts a
-    LEFT JOIN token_pool tp ON tp.id = a.token_pool_id
-    LEFT JOIN instances  i  ON i.id  = a.instance_id
+    LEFT JOIN token_pool tp ON tp.id  = a.token_pool_id
+    LEFT JOIN instances  i  ON i.id   = a.instance_id
+    LEFT JOIN instances  li ON li.id  = a.locked_by_instance
     ORDER BY a.id ASC
   `);
 
@@ -172,11 +181,19 @@ accountsRouter.get("/", asyncHandler(async (_req, res) => {
       cooldown_until: r.cooldown_until as string | null,
       quarantine_until: r.quarantine_until as string | null,
     });
+    const tokenPreview = r.token_value
+      ? String(r.token_value).length <= 12
+        ? String(r.token_value)
+        : `${String(r.token_value).slice(0, 6)}…${String(r.token_value).slice(-4)}`
+      : null;
     return {
       ...r,
       health_score: score,
       tier: calcTier(score),
       password: undefined,
+      token_value: undefined,
+      token_value_preview: tokenPreview,
+      has_token: !!r.token_value,
     };
   });
 
@@ -185,7 +202,7 @@ accountsRouter.get("/", asyncHandler(async (_req, res) => {
 
 accountsRouter.post("/", asyncHandler(async (req, res) => {
   const b = req.body as {
-    nickname?: string; email?: string; password?: string;
+    nickname?: string; email?: string; password?: string; token_value?: string;
     token_pool_id?: number | null; instance_id?: number | null;
     auto_rotation?: boolean; auto_refresh?: boolean; auto_relogin?: boolean;
     min_use_ms?: number | null; max_use_ms?: number | null; auto_time_mode?: boolean;
@@ -198,15 +215,16 @@ accountsRouter.post("/", asyncHandler(async (req, res) => {
 
   const rows = await query<{ id: number }>(`
     INSERT INTO accounts (
-      nickname, email, password, token_pool_id, instance_id,
+      nickname, email, password, token_value, token_pool_id, instance_id,
       state, auto_rotation, auto_refresh, auto_relogin,
       min_use_ms, max_use_ms, auto_time_mode, notes
-    ) VALUES ($1,$2,$3,$4,$5,'STANDBY',$6,$7,$8,$9,$10,$11,$12)
+    ) VALUES ($1,$2,$3,$4,$5,$6,'STANDBY',$7,$8,$9,$10,$11,$12,$13)
     RETURNING id
   `, [
     b.nickname.trim(),
     b.email?.trim() || null,
     b.password?.trim() || null,
+    b.token_value?.trim() || null,
     b.token_pool_id || null,
     b.instance_id || null,
     b.auto_rotation ?? true,
@@ -230,7 +248,7 @@ accountsRouter.put("/:id", asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
   const b = req.body as Record<string, unknown>;
 
-  const current = await query<{ id: number }>(`SELECT id FROM accounts WHERE id = $1`, [id]);
+  const current = await query<{ id: number; instance_id: number | null }>(`SELECT id, instance_id FROM accounts WHERE id = $1`, [id]);
   if (!current[0]) return res.status(404).json({ error: "Conta não encontrada." });
 
   await query(`
@@ -238,20 +256,22 @@ accountsRouter.put("/:id", asyncHandler(async (req, res) => {
       nickname       = COALESCE($1, nickname),
       email          = $2,
       password       = CASE WHEN $3::text IS NOT NULL THEN $3 ELSE password END,
-      token_pool_id  = $4,
-      instance_id    = $5,
-      auto_rotation  = COALESCE($6, auto_rotation),
-      auto_refresh   = COALESCE($7, auto_refresh),
-      auto_relogin   = COALESCE($8, auto_relogin),
-      min_use_ms     = $9,
-      max_use_ms     = $10,
-      auto_time_mode = COALESCE($11, auto_time_mode),
-      notes          = $12
-    WHERE id = $13
+      token_value    = CASE WHEN $4::text IS NOT NULL THEN $4 ELSE token_value END,
+      token_pool_id  = $5,
+      instance_id    = $6,
+      auto_rotation  = COALESCE($7, auto_rotation),
+      auto_refresh   = COALESCE($8, auto_refresh),
+      auto_relogin   = COALESCE($9, auto_relogin),
+      min_use_ms     = $10,
+      max_use_ms     = $11,
+      auto_time_mode = COALESCE($12, auto_time_mode),
+      notes          = $13
+    WHERE id = $14
   `, [
     b.nickname ?? null,
     b.email ?? null,
     b.password ?? null,
+    b.token_value ?? null,
     b.token_pool_id ?? null,
     b.instance_id ?? null,
     b.auto_rotation ?? null,
@@ -263,6 +283,19 @@ accountsRouter.put("/:id", asyncHandler(async (req, res) => {
     b.notes ?? null,
     id,
   ]);
+
+  const prevInstId = current[0].instance_id;
+  const newInstId = b.instance_id != null ? Number(b.instance_id) || null : prevInstId;
+  const logDetail = newInstId
+    ? `Conta vinculada à instância ${newInstId}`
+    : "Conta definida como global (sem instância vinculada)";
+
+  if ((b.instance_id !== undefined) && (newInstId !== prevInstId)) {
+    await query(`
+      INSERT INTO account_logs (account_id, instance_id, event_type, detail)
+      VALUES ($1, $2, 'instance_link', $3)
+    `, [id, newInstId, logDetail]);
+  }
 
   res.json({ ok: true });
 }));
@@ -295,7 +328,8 @@ accountsRouter.post("/:id/state", asyncHandler(async (req, res) => {
 
   await query(`UPDATE accounts SET state = $1 WHERE id = $2`, [state, id]);
 
-  const detail = reason ? `${rows[0].state} → ${state}: ${reason}` : `${rows[0].state} → ${state}`;
+  const prevState = rows[0].state;
+  const detail = reason ? `${prevState} → ${state}: ${reason}` : `${prevState} → ${state}`;
   await query(`
     INSERT INTO account_logs (account_id, instance_id, event_type, detail)
     VALUES ($1, $2, 'state_change', $3)
@@ -389,31 +423,156 @@ accountsRouter.post("/:id/failure", asyncHandler(async (req, res) => {
 
 accountsRouter.post("/:id/activate", asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
+  const { target_instance_id } = req.body as { target_instance_id?: number };
 
-  const rows = await query<{ instance_id: number | null; cooldown_until: string | null; quarantine_until: string | null }>(`
-    SELECT instance_id, cooldown_until, quarantine_until FROM accounts WHERE id = $1
+  const rows = await query<{
+    instance_id: number | null;
+    token_value: string | null;
+    cooldown_until: string | null;
+    quarantine_until: string | null;
+    account_lock: boolean;
+    locked_by_instance: number | null;
+    lock_expires_at: string | null;
+  }>(`
+    SELECT instance_id, token_value, cooldown_until, quarantine_until,
+           account_lock, locked_by_instance, lock_expires_at
+    FROM accounts WHERE id = $1
   `, [id]);
   if (!rows[0]) return res.status(404).json({ error: "Conta não encontrada." });
 
   const now = new Date();
+
   if (rows[0].quarantine_until && new Date(rows[0].quarantine_until) > now) {
     return res.status(400).json({ error: "Conta em quarentena." });
   }
 
+  // Verifica lock ativo
+  if (rows[0].account_lock && rows[0].lock_expires_at && new Date(rows[0].lock_expires_at) > now) {
+    const lockedBy = rows[0].locked_by_instance;
+    const reqInstance = target_instance_id ?? rows[0].instance_id;
+    if (lockedBy && lockedBy !== reqInstance) {
+      return res.status(409).json({ error: `Conta em uso pela instância ${lockedBy}.` });
+    }
+  }
+
+  // Determina qual instância usará a conta
+  const instanceId = rows[0].instance_id ?? target_instance_id ?? null;
+
+  // Se a conta tem token próprio e está vinculada a uma instância, registra no pool da instância
+  if (rows[0].token_value && instanceId) {
+    const existing = await query<{ id: number }>(
+      `SELECT tp.id FROM token_pool tp
+       INNER JOIN instance_token_selection its ON its.token_pool_id = tp.id
+       WHERE its.instance_id = $1 AND tp.value = $2`,
+      [instanceId, rows[0].token_value]
+    );
+
+    if (existing.length === 0) {
+      // Insere no pool global (sem ON CONFLICT para permitir duplicatas conceituais)
+      const poolRows = await query<{ id: number }>(
+        `INSERT INTO token_pool (value, label, status)
+         VALUES ($1, $2, 'unknown')
+         ON CONFLICT (value) DO UPDATE SET label = EXCLUDED.label
+         RETURNING id`,
+        [rows[0].token_value, `Conta #${id}`]
+      );
+      const tokenId = poolRows[0]!.id;
+      const posRows = await query<{ max_pos: number | null }>(
+        `SELECT MAX(position) AS max_pos FROM instance_token_selection WHERE instance_id = $1`,
+        [instanceId]
+      );
+      const nextPos = (posRows[0]?.max_pos ?? 0) + 1;
+      await query(
+        `INSERT INTO instance_token_selection (instance_id, token_pool_id, position)
+         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [instanceId, tokenId, nextPos]
+      );
+      await query(`UPDATE accounts SET token_pool_id = $1 WHERE id = $2`, [tokenId, id]);
+      await query(`
+        INSERT INTO account_logs (account_id, instance_id, event_type, detail)
+        VALUES ($1, $2, 'token_applied', $3)
+      `, [id, instanceId, `Token aplicado na instância ${instanceId}`]);
+    }
+  }
+
+  // Aplica lock por 2 horas
+  const lockExpires = new Date(now.getTime() + 2 * 3600 * 1000);
   await query(`
     UPDATE accounts SET
-      state            = 'ACTIVE',
-      activated_at     = NOW(),
-      last_active_at   = NOW(),
+      state                = 'ACTIVE',
+      activated_at         = NOW(),
+      last_active_at       = NOW(),
       consecutive_failures = 0,
-      cooldown_until   = NULL
+      cooldown_until       = NULL,
+      account_lock         = TRUE,
+      locked_by_instance   = $2,
+      locked_at            = NOW(),
+      lock_expires_at      = $3
+    WHERE id = $1
+  `, [id, instanceId, lockExpires.toISOString()]);
+
+  const detail = instanceId
+    ? `Conta ativada e bloqueada pela instância ${instanceId}`
+    : "Conta ativada (sem instância vinculada)";
+  await query(`
+    INSERT INTO account_logs (account_id, instance_id, event_type, detail)
+    VALUES ($1, $2, 'activated', $3)
+  `, [id, instanceId, detail]);
+
+  res.json({ ok: true });
+}));
+
+// ─── Lock / Unlock ────────────────────────────────────────────────────────────
+
+accountsRouter.post("/:id/lock", asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  const { instance_id, duration_ms } = req.body as { instance_id?: number; duration_ms?: number };
+
+  const rows = await query<{ instance_id: number | null }>(`SELECT instance_id FROM accounts WHERE id = $1`, [id]);
+  if (!rows[0]) return res.status(404).json({ error: "Conta não encontrada." });
+
+  const lockMs = duration_ms ?? 2 * 3600 * 1000;
+  const lockExpires = new Date(Date.now() + lockMs);
+  const instId = instance_id ?? rows[0].instance_id;
+
+  await query(`
+    UPDATE accounts SET
+      account_lock       = TRUE,
+      locked_by_instance = $2,
+      locked_at          = NOW(),
+      lock_expires_at    = $3
+    WHERE id = $1
+  `, [id, instId, lockExpires.toISOString()]);
+
+  await query(`
+    INSERT INTO account_logs (account_id, instance_id, event_type, detail)
+    VALUES ($1, $2, 'lock_acquired', $3)
+  `, [id, instId, `Lock adquirido pela instância ${instId}, expira em ${lockExpires.toISOString()}`]);
+
+  res.json({ ok: true });
+}));
+
+accountsRouter.post("/:id/unlock", asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+
+  const rows = await query<{ instance_id: number | null; locked_by_instance: number | null }>(`
+    SELECT instance_id, locked_by_instance FROM accounts WHERE id = $1
+  `, [id]);
+  if (!rows[0]) return res.status(404).json({ error: "Conta não encontrada." });
+
+  await query(`
+    UPDATE accounts SET
+      account_lock       = FALSE,
+      locked_by_instance = NULL,
+      locked_at          = NULL,
+      lock_expires_at    = NULL
     WHERE id = $1
   `, [id]);
 
   await query(`
     INSERT INTO account_logs (account_id, instance_id, event_type, detail)
-    VALUES ($1, $2, 'activated', 'Conta ativada')
-  `, [id, rows[0].instance_id]);
+    VALUES ($1, $2, 'lock_released', 'Lock liberado manualmente')
+  `, [id, rows[0].locked_by_instance ?? rows[0].instance_id]);
 
   res.json({ ok: true });
 }));

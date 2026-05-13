@@ -417,7 +417,8 @@ export function ConfigForm({
     setBusyTokens(true);
     try {
       for (const id of tokenDeleteSet) {
-        await api(`/api/tokens/${id}`, { method: "DELETE" });
+        // Passa instance_id para remover apenas da seleção desta instância
+        await api(`/api/tokens/${id}?instance_id=${instanceId}`, { method: "DELETE" });
       }
       setSelectedTokenIds((prev) => {
         const n = new Set(prev);
@@ -426,7 +427,7 @@ export function ConfigForm({
       });
       cancelTokensAction();
       await reloadTokenPool();
-      setFeedback(`${tokenDeleteSet.size} token(s) removido(s) do pool.`);
+      setFeedback(`${tokenDeleteSet.size} token(s) removido(s) desta instância.`);
       setTimeout(() => setFeedback(null), 3000);
     } catch (e) {
       setFeedback(e instanceof Error ? e.message : "Erro ao apagar token");
@@ -685,7 +686,7 @@ export function ConfigForm({
         {tokensMode === "delete" && (
           <div className="mt-3 rounded-xl border border-rose-400/30 bg-rose-500/5 p-3">
             <div className="text-xs text-rose-200/90 mb-2">
-              Marque os tokens que deseja remover do pool global. Eles serão desvinculados de todas as instâncias.
+              Marque os tokens que deseja remover desta instância. Outras instâncias não serão afetadas.
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <button

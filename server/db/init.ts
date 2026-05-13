@@ -464,6 +464,13 @@ export async function initDatabase(): Promise<void> {
     `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS hot_org_extra_clicks INTEGER NOT NULL DEFAULT 10`,
   );
 
+  // ── Isolamento de token por instância ─────────────────────────────────────
+  // Garante que a UNIQUE constraint de token_pool.value não bloqueia tokens
+  // iguais em instâncias diferentes (o isolamento real já é via
+  // instance_token_selection; a global é mantida para o pool compartilhado)
+  // Não há alteração de schema necessária — o isolamento é comportamental
+  // (DELETE só remove da instance_token_selection da instância específica).
+
   // ── CONTAS — Account Manager ───────────────────────────────────────────────
 
   // Configuração global do sistema de contas
@@ -503,6 +510,7 @@ export async function initDatabase(): Promise<void> {
       nickname             TEXT    NOT NULL,
       email                TEXT,
       password             TEXT,
+      token_value          TEXT,
       token_pool_id        INTEGER REFERENCES token_pool(id) ON DELETE SET NULL,
       instance_id          INTEGER REFERENCES instances(id)  ON DELETE SET NULL,
       session_data         JSONB,
@@ -524,10 +532,21 @@ export async function initDatabase(): Promise<void> {
       last_token_refresh_at TIMESTAMPTZ,
       cooldown_until       TIMESTAMPTZ,
       quarantine_until     TIMESTAMPTZ,
+      account_lock         BOOLEAN   NOT NULL DEFAULT FALSE,
+      locked_by_instance   INTEGER   REFERENCES instances(id) ON DELETE SET NULL,
+      locked_at            TIMESTAMPTZ,
+      lock_expires_at      TIMESTAMPTZ,
       notes                TEXT,
       created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+
+  // Migrações idempotentes para accounts já existentes
+  await pool.query(`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS token_value TEXT`);
+  await pool.query(`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS account_lock BOOLEAN NOT NULL DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS locked_by_instance INTEGER REFERENCES instances(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS lock_expires_at TIMESTAMPTZ`);
 
   // Logs operacionais das contas
   await pool.query(`

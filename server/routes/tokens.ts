@@ -69,8 +69,25 @@ tokensRouter.post("/", asyncHandler(async (req, res) => {
   res.json({ ok: true, id: tokenId });
 }));
 
+// DELETE — remove apenas da seleção da instância informada.
+// O registro global em token_pool NÃO é apagado para não afetar outras instâncias.
+// Caso nenhuma instância use mais o token, limpeza opcional pode ser adicionada futuramente.
 tokensRouter.delete("/:id", asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
-  await query(`DELETE FROM token_pool WHERE id = $1`, [id]);
+  const instanceId = req.query.instance_id ? Number(req.query.instance_id) : null;
+
+  if (instanceId) {
+    // Remove APENAS da seleção desta instância — não afeta outras instâncias
+    await query(
+      `DELETE FROM instance_token_selection WHERE token_pool_id = $1 AND instance_id = $2`,
+      [id, instanceId],
+    );
+  } else {
+    // Sem instância informada: remove de todas as seleções e do pool global
+    // (mantido para compatibilidade, mas não é mais usado pelo painel normal)
+    await query(`DELETE FROM instance_token_selection WHERE token_pool_id = $1`, [id]);
+    await query(`DELETE FROM token_pool WHERE id = $1`, [id]);
+  }
+
   res.json({ ok: true });
 }));

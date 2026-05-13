@@ -14,6 +14,8 @@ interface Account {
   id: number;
   nickname: string;
   email: string | null;
+  has_token: boolean;
+  token_value_preview: string | null;
   token_pool_id: number | null;
   instance_id: number | null;
   instance_name: string | null;
@@ -36,6 +38,10 @@ interface Account {
   last_rotation_at: string | null;
   cooldown_until: string | null;
   quarantine_until: string | null;
+  account_lock: boolean;
+  locked_by_instance: number | null;
+  locked_by_instance_name: string | null;
+  lock_expires_at: string | null;
   notes: string | null;
   created_at: string;
 }
@@ -302,6 +308,11 @@ function AccountCard({
           ❄️ Cooldown até {new Date(account.cooldown_until!).toLocaleTimeString("pt-BR")}
         </div>
       )}
+      {account.account_lock && account.lock_expires_at && new Date(account.lock_expires_at) > now && (
+        <div className="rounded-lg bg-violet-500/10 ring-1 ring-violet-500/30 px-3 py-2 text-[11px] text-violet-300">
+          🔒 Em uso{account.locked_by_instance_name ? ` por ${account.locked_by_instance_name}` : ""} · expira {new Date(account.lock_expires_at).toLocaleTimeString("pt-BR")}
+        </div>
+      )}
 
       {/* Expanded details */}
       {expanded && (
@@ -322,8 +333,12 @@ function AccountCard({
           {account.auto_time_mode && (
             <div className="flex justify-between"><span>Tempo de uso</span><span className="text-violet-400">Automático</span></div>
           )}
+          <div className="flex justify-between"><span>Token próprio</span><span className={account.has_token ? "text-emerald-400" : "text-slate-500"}>{account.has_token ? `Sim (${account.token_value_preview})` : "Não"}</span></div>
           {account.token_username && (
             <div className="flex justify-between"><span>Token user</span><span className="text-slate-300">@{account.token_username}</span></div>
+          )}
+          {account.account_lock && account.lock_expires_at && (
+            <div className="flex justify-between"><span>Lock</span><span className="text-violet-300">🔒 {account.locked_by_instance_name ?? "ativo"} até {new Date(account.lock_expires_at).toLocaleTimeString("pt-BR")}</span></div>
           )}
           {account.notes && (
             <div className="pt-1 border-t border-white/5">
@@ -366,6 +381,14 @@ function AccountCard({
             ↻ Rotar
           </button>
         )}
+        {account.account_lock && (
+          <button
+            onClick={() => onAction(account.id, "unlock")}
+            className="btn text-[10px] px-2.5 py-1.5 bg-violet-500/15 text-violet-300 hover:bg-violet-500/25 ring-1 ring-violet-400/30"
+          >
+            🔓 Unlock
+          </button>
+        )}
         <button
           onClick={() => onAction(account.id, "reset")}
           className="btn-secondary text-[10px]"
@@ -396,6 +419,7 @@ function AccountForm({
     nickname: initial?.nickname ?? "",
     email: initial?.email ?? "",
     password: "",
+    token_value: "",
     token_pool_id: initial?.token_pool_id ?? "",
     instance_id: initial?.instance_id ?? "",
     auto_rotation: initial?.auto_rotation ?? true,
@@ -408,6 +432,7 @@ function AccountForm({
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [showTokenField, setShowTokenField] = useState(false);
 
   const set = (k: string, v: unknown) => setForm(f => ({ ...f, [k]: v }));
 
@@ -420,6 +445,7 @@ function AccountForm({
         nickname: form.nickname,
         email: form.email || null,
         password: form.password || null,
+        token_value: form.token_value || null,
         token_pool_id: form.token_pool_id ? Number(form.token_pool_id) : null,
         instance_id: form.instance_id ? Number(form.instance_id) : null,
         auto_rotation: form.auto_rotation,
@@ -453,29 +479,66 @@ function AccountForm({
               <input className="input" type="email" value={form.email} onChange={e => set("email", e.target.value)} placeholder="exemplo@email.com" />
             </div>
             <div>
-              <label className="label block mb-1">Senha {initial?.id ? "(deixe vazio para manter)" : ""}</label>
+              <label className="label block mb-1">Senha <span className="text-slate-600">(opcional, fallback)</span></label>
               <input className="input" type="password" value={form.password} onChange={e => set("password", e.target.value)} placeholder="••••••••" />
             </div>
           </div>
 
+          {/* Token proprio */}
+          <div className="rounded-xl border border-white/8 bg-white/2 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold text-slate-300">Token Discord</p>
+                {initial?.id && initial.has_token && !showTokenField && (
+                  <p className="text-[11px] text-emerald-400 mt-0.5">
+                    ✓ Token salvo: <span className="font-mono">{initial.token_value_preview}</span>
+                  </p>
+                )}
+                {initial?.id && !initial.has_token && !showTokenField && (
+                  <p className="text-[11px] text-slate-500 mt-0.5">Nenhum token salvo</p>
+                )}
+                {!initial?.id && (
+                  <p className="text-[11px] text-slate-500 mt-0.5">Cole o token do Discord (recomendado)</p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowTokenField(v => !v)}
+                className="text-[11px] text-accent hover:text-accent/80 transition-colors"
+              >
+                {showTokenField ? "▲ Fechar" : initial?.id ? "✏️ Alterar" : "➕ Adicionar"}
+              </button>
+            </div>
+            {(showTokenField || !initial?.id) && (
+              <input
+                className="input font-mono text-xs"
+                type="password"
+                value={form.token_value}
+                onChange={e => set("token_value", e.target.value)}
+                placeholder={initial?.id ? "Novo token (vazio = manter atual)" : "Cole o token aqui..."}
+                autoComplete="off"
+              />
+            )}
+          </div>
+
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="label block mb-1">Token do Pool</label>
+              <label className="label block mb-1">Instância vinculada</label>
+              <select className="input" value={form.instance_id} onChange={e => set("instance_id", e.target.value)}>
+                <option value="">— Nenhuma (global) —</option>
+                {instances.map(i => (
+                  <option key={i.id} value={i.id}>{i.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label block mb-1">Token do Pool <span className="text-slate-600">(legado)</span></label>
               <select className="input" value={form.token_pool_id} onChange={e => set("token_pool_id", e.target.value)}>
                 <option value="">— Nenhum —</option>
                 {tokens.map(t => (
                   <option key={t.id} value={t.id}>
                     {t.label ? `${t.label} · ` : ""}{t.value_preview} ({t.status})
                   </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="label block mb-1">Instância vinculada</label>
-              <select className="input" value={form.instance_id} onChange={e => set("instance_id", e.target.value)}>
-                <option value="">— Nenhuma —</option>
-                {instances.map(i => (
-                  <option key={i.id} value={i.id}>{i.name}</option>
                 ))}
               </select>
             </div>
