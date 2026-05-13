@@ -6,6 +6,7 @@ import Messages from "./pages/Messages";
 import Login from "./pages/Login";
 import AccessKeys from "./pages/AccessKeys";
 import AuditLog from "./pages/AuditLog";
+import Contas from "./pages/Contas";
 import "./index.css";
 
 type AuthState = { status: "loading" } | { status: "unauthenticated" } | { status: "authenticated"; isAdmin: boolean };
@@ -57,6 +58,7 @@ function Root() {
   const path = window.location.pathname;
   if (path.startsWith("/stats")) return <Stats />;
   if (path.startsWith("/messages")) return <Messages />;
+  if (path.startsWith("/contas")) return <Contas />;
   if (path.startsWith("/acessos")) {
     return auth.isAdmin ? <AccessKeys /> : <App isAdmin={false} onLogout={handleLogout} />;
   }

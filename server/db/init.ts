@@ -464,6 +464,92 @@ export async function initDatabase(): Promise<void> {
     `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS hot_org_extra_clicks INTEGER NOT NULL DEFAULT 10`,
   );
 
+  // ── CONTAS — Account Manager ───────────────────────────────────────────────
+
+  // Configuração global do sistema de contas
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS accounts_config (
+      id                              INTEGER PRIMARY KEY DEFAULT 1,
+      max_active                      INTEGER   NOT NULL DEFAULT 10,
+      min_health_score                INTEGER   NOT NULL DEFAULT 40,
+      max_continuous_ms               BIGINT    NOT NULL DEFAULT 7200000,
+      min_use_ms                      BIGINT,
+      max_use_ms                      BIGINT,
+      auto_time_mode                  BOOLEAN   NOT NULL DEFAULT TRUE,
+      cooldown_after_use_ms           BIGINT    NOT NULL DEFAULT 2700000,
+      cooldown_after_fail_ms          BIGINT    NOT NULL DEFAULT 1800000,
+      quarantine_ms                   BIGINT    NOT NULL DEFAULT 3600000,
+      health_check_interval_ms        BIGINT    NOT NULL DEFAULT 30000,
+      session_validation_interval_ms  BIGINT    NOT NULL DEFAULT 120000,
+      token_validation_interval_ms    BIGINT    NOT NULL DEFAULT 300000,
+      reauth_preventive_ms            BIGINT    NOT NULL DEFAULT 21600000,
+      auto_rotation                   BOOLEAN   NOT NULL DEFAULT TRUE,
+      auto_refresh                    BOOLEAN   NOT NULL DEFAULT TRUE,
+      auto_relogin                    BOOLEAN   NOT NULL DEFAULT FALSE,
+      rotation_strategy               TEXT      NOT NULL DEFAULT 'weighted_health',
+      CHECK (id = 1)
+    )
+  `);
+
+  // Seed config padrão se não existir
+  await pool.query(`
+    INSERT INTO accounts_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING
+  `);
+
+  // Tabela principal de contas
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS accounts (
+      id                   SERIAL PRIMARY KEY,
+      nickname             TEXT    NOT NULL,
+      email                TEXT,
+      password             TEXT,
+      token_pool_id        INTEGER REFERENCES token_pool(id) ON DELETE SET NULL,
+      instance_id          INTEGER REFERENCES instances(id)  ON DELETE SET NULL,
+      session_data         JSONB,
+      cookies              JSONB,
+      state                TEXT    NOT NULL DEFAULT 'STANDBY',
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      failure_count        INTEGER NOT NULL DEFAULT 0,
+      rotation_count       INTEGER NOT NULL DEFAULT 0,
+      auto_rotation        BOOLEAN NOT NULL DEFAULT TRUE,
+      auto_refresh         BOOLEAN NOT NULL DEFAULT TRUE,
+      auto_relogin         BOOLEAN NOT NULL DEFAULT FALSE,
+      min_use_ms           BIGINT,
+      max_use_ms           BIGINT,
+      auto_time_mode       BOOLEAN NOT NULL DEFAULT TRUE,
+      activated_at         TIMESTAMPTZ,
+      last_active_at       TIMESTAMPTZ,
+      last_rotation_at     TIMESTAMPTZ,
+      last_login_at        TIMESTAMPTZ,
+      last_token_refresh_at TIMESTAMPTZ,
+      cooldown_until       TIMESTAMPTZ,
+      quarantine_until     TIMESTAMPTZ,
+      notes                TEXT,
+      created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  // Logs operacionais das contas
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS account_logs (
+      id          BIGSERIAL PRIMARY KEY,
+      account_id  INTEGER REFERENCES accounts(id)  ON DELETE CASCADE,
+      instance_id INTEGER REFERENCES instances(id) ON DELETE SET NULL,
+      event_type  TEXT    NOT NULL,
+      detail      TEXT,
+      ts          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS account_logs_account_ts
+      ON account_logs (account_id, ts DESC)
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS account_logs_ts
+      ON account_logs (ts DESC)
+  `);
+
 }
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);

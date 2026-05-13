@@ -45,29 +45,37 @@ export function Header({
               ⏻ Sair
             </button>
           </div>
-          {/* Row 2: nav links right-aligned (admin only) */}
-          {isAdmin && (
-            <div className="mt-1.5 flex items-center gap-2">
-              <a
-                href="/acessos"
-                className="text-[11px] uppercase tracking-widest text-amber-400 hover:text-amber-300 transition-colors border border-amber-500/30 hover:border-amber-400/50 rounded-lg px-3 py-1"
-              >
-                🔑 Acessos
-              </a>
-              <a
-                href="/auditoria"
-                className="text-[11px] uppercase tracking-widest text-violet-400 hover:text-violet-300 transition-colors border border-violet-500/30 hover:border-violet-400/50 rounded-lg px-3 py-1"
-              >
-                📋 Auditoria
-              </a>
-              <a
-                href="/stats"
-                className="text-[11px] uppercase tracking-widest text-violet-400 hover:text-violet-300 transition-colors border border-violet-500/30 hover:border-violet-400/50 rounded-lg px-3 py-1"
-              >
-                📊 Statistics
-              </a>
-            </div>
-          )}
+          {/* Row 2: nav links */}
+          <div className="mt-1.5 flex items-center gap-2">
+            <a
+              href="/contas"
+              className="text-[11px] uppercase tracking-widest text-cyan-400 hover:text-cyan-300 transition-colors border border-cyan-500/30 hover:border-cyan-400/50 rounded-lg px-3 py-1"
+            >
+              👤 Contas
+            </a>
+            {isAdmin && (
+              <>
+                <a
+                  href="/acessos"
+                  className="text-[11px] uppercase tracking-widest text-amber-400 hover:text-amber-300 transition-colors border border-amber-500/30 hover:border-amber-400/50 rounded-lg px-3 py-1"
+                >
+                  🔑 Acessos
+                </a>
+                <a
+                  href="/auditoria"
+                  className="text-[11px] uppercase tracking-widest text-violet-400 hover:text-violet-300 transition-colors border border-violet-500/30 hover:border-violet-400/50 rounded-lg px-3 py-1"
+                >
+                  📋 Auditoria
+                </a>
+                <a
+                  href="/stats"
+                  className="text-[11px] uppercase tracking-widest text-violet-400 hover:text-violet-300 transition-colors border border-violet-500/30 hover:border-violet-400/50 rounded-lg px-3 py-1"
+                >
+                  📊 Statistics
+                </a>
+              </>
+            )}
+          </div>
           {/* Row 3: status pills */}
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <span className={connected ? "pill-ok" : "pill-stop"}>

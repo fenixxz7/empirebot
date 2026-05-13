@@ -11,6 +11,7 @@ import { tokensRouter } from "./tokens.js";
 import { blacklistRouter } from "./blacklist.js";
 import { sendErrorsRouter } from "./send-errors.js";
 import { messageOverridesRouter } from "./message-overrides.js";
+import { accountsRouter } from "./accounts.js";
 import { pool, query as dbQuery } from "../db/pool.js";
 import { query } from "../db/pool.js";
 import { requireAdmin } from "./auth.js";
@@ -134,4 +135,5 @@ export function mountApi(app: Express): void {
   app.use("/api/instances/:id/blacklist", requireAuth, blacklistRouter);
   app.use("/api/instances/:id/send-errors", requireAuth, sendErrorsRouter);
   app.use("/api/instances/:id/message-overrides", requireAuth, messageOverridesRouter);
+  app.use("/api/accounts", requireAuth, accountsRouter);
 }

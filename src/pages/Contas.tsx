@@ -1,0 +1,1156 @@
+import { useEffect, useState, useCallback, useRef } from "react";
+import { api } from "@/lib/api";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type AccountState =
+  | "ACTIVE" | "IDLE" | "STANDBY" | "COOLING" | "RESERVED" | "WAITING"
+  | "REAUTH" | "INVALID_TOKEN" | "NEEDS_VERIFICATION" | "LOGIN_CHALLENGE"
+  | "MANUAL_ACTION_REQUIRED" | "LIMITED" | "ERROR" | "DEAD" | "BANNED";
+
+type RotationStrategy = "sequential" | "random" | "weighted_health" | "least_recently_used";
+
+interface Account {
+  id: number;
+  nickname: string;
+  email: string | null;
+  token_pool_id: number | null;
+  instance_id: number | null;
+  instance_name: string | null;
+  token_status: string | null;
+  token_username: string | null;
+  state: AccountState;
+  health_score: number;
+  tier: string;
+  consecutive_failures: number;
+  failure_count: number;
+  rotation_count: number;
+  auto_rotation: boolean;
+  auto_refresh: boolean;
+  auto_relogin: boolean;
+  min_use_ms: number | null;
+  max_use_ms: number | null;
+  auto_time_mode: boolean;
+  activated_at: string | null;
+  last_active_at: string | null;
+  last_rotation_at: string | null;
+  cooldown_until: string | null;
+  quarantine_until: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
+interface AccountLog {
+  id: number;
+  account_id: number | null;
+  account_name: string | null;
+  instance_id: number | null;
+  instance_name: string | null;
+  event_type: string;
+  detail: string | null;
+  ts: string;
+}
+
+interface AccountsConfig {
+  max_active: number;
+  min_health_score: number;
+  max_continuous_ms: number;
+  min_use_ms: number | null;
+  max_use_ms: number | null;
+  auto_time_mode: boolean;
+  cooldown_after_use_ms: number;
+  cooldown_after_fail_ms: number;
+  quarantine_ms: number;
+  health_check_interval_ms: number;
+  session_validation_interval_ms: number;
+  token_validation_interval_ms: number;
+  reauth_preventive_ms: number;
+  auto_rotation: boolean;
+  auto_refresh: boolean;
+  auto_relogin: boolean;
+  rotation_strategy: RotationStrategy;
+}
+
+interface TokenPoolItem {
+  id: number;
+  label: string | null;
+  value_preview: string;
+  status: string;
+  username: string | null;
+}
+
+interface Instance {
+  id: number;
+  name: string;
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const STATE_META: Record<AccountState, { label: string; color: string; bg: string; ring: string; dot: string }> = {
+  ACTIVE:                 { label: "ATIVO",          color: "text-emerald-300", bg: "bg-emerald-400/10", ring: "ring-emerald-400/30", dot: "bg-emerald-400" },
+  IDLE:                   { label: "IDLE",            color: "text-sky-300",     bg: "bg-sky-400/10",     ring: "ring-sky-400/30",     dot: "bg-sky-400" },
+  STANDBY:                { label: "STANDBY",         color: "text-slate-300",   bg: "bg-white/5",        ring: "ring-white/10",       dot: "bg-slate-400" },
+  COOLING:                { label: "COOLING",         color: "text-cyan-300",    bg: "bg-cyan-400/10",    ring: "ring-cyan-400/30",    dot: "bg-cyan-400" },
+  RESERVED:               { label: "RESERVADO",       color: "text-violet-300",  bg: "bg-violet-400/10",  ring: "ring-violet-400/30",  dot: "bg-violet-400" },
+  WAITING:                { label: "AGUARDANDO",      color: "text-amber-300",   bg: "bg-amber-400/10",   ring: "ring-amber-400/30",   dot: "bg-amber-400" },
+  REAUTH:                 { label: "REAUTH",          color: "text-orange-300",  bg: "bg-orange-400/10",  ring: "ring-orange-400/30",  dot: "bg-orange-400" },
+  INVALID_TOKEN:          { label: "TOKEN INVÁLIDO",  color: "text-rose-300",    bg: "bg-rose-400/10",    ring: "ring-rose-400/30",    dot: "bg-rose-400" },
+  NEEDS_VERIFICATION:     { label: "VERIFICAÇÃO",     color: "text-yellow-300",  bg: "bg-yellow-400/10",  ring: "ring-yellow-400/30",  dot: "bg-yellow-400" },
+  LOGIN_CHALLENGE:        { label: "CHALLENGE",       color: "text-orange-400",  bg: "bg-orange-400/10",  ring: "ring-orange-400/40",  dot: "bg-orange-400" },
+  MANUAL_ACTION_REQUIRED: { label: "AÇÃO MANUAL",     color: "text-red-300",     bg: "bg-red-400/10",     ring: "ring-red-400/30",     dot: "bg-red-400" },
+  LIMITED:                { label: "LIMITADO",        color: "text-amber-400",   bg: "bg-amber-400/10",   ring: "ring-amber-400/40",   dot: "bg-amber-400" },
+  ERROR:                  { label: "ERRO",            color: "text-rose-400",    bg: "bg-rose-400/10",    ring: "ring-rose-400/40",    dot: "bg-rose-400" },
+  DEAD:                   { label: "MORTO",           color: "text-red-500",     bg: "bg-red-500/10",     ring: "ring-red-500/30",     dot: "bg-red-500" },
+  BANNED:                 { label: "BANIDO",          color: "text-red-600",     bg: "bg-red-600/10",     ring: "ring-red-600/30",     dot: "bg-red-600" },
+};
+
+const TIER_META: Record<string, { color: string; bg: string; label: string }> = {
+  S: { color: "text-yellow-300",  bg: "bg-yellow-400/15", label: "S" },
+  A: { color: "text-emerald-300", bg: "bg-emerald-400/15", label: "A" },
+  B: { color: "text-sky-300",     bg: "bg-sky-400/15",    label: "B" },
+  C: { color: "text-amber-300",   bg: "bg-amber-400/15",  label: "C" },
+  D: { color: "text-rose-300",    bg: "bg-rose-400/15",   label: "D" },
+};
+
+const ALL_STATES: AccountState[] = [
+  "ACTIVE","IDLE","STANDBY","COOLING","RESERVED","WAITING","REAUTH",
+  "INVALID_TOKEN","NEEDS_VERIFICATION","LOGIN_CHALLENGE","MANUAL_ACTION_REQUIRED",
+  "LIMITED","ERROR","DEAD","BANNED",
+];
+
+const TOKEN_STATUS_META: Record<string, { label: string; color: string }> = {
+  connected:    { label: "Conectado",    color: "text-emerald-400" },
+  rate_limited: { label: "Rate Limit",  color: "text-amber-400" },
+  invalid:      { label: "Inválido",    color: "text-rose-400" },
+  disconnected: { label: "Desconectado",color: "text-slate-400" },
+  unknown:      { label: "Desconhecido",color: "text-slate-500" },
+};
+
+const LOG_EVENT_COLORS: Record<string, string> = {
+  created:      "text-emerald-400",
+  activated:    "text-emerald-300",
+  deactivated:  "text-slate-400",
+  state_change: "text-sky-300",
+  rotation:     "text-violet-300",
+  failure:      "text-rose-400",
+  reset:        "text-amber-300",
+  default:      "text-slate-300",
+};
+
+const ROTATION_STRATEGIES: { value: RotationStrategy; label: string }[] = [
+  { value: "sequential",          label: "Sequential" },
+  { value: "random",              label: "Random" },
+  { value: "weighted_health",     label: "Weighted Health (recomendado)" },
+  { value: "least_recently_used", label: "Least Recently Used" },
+];
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function fmtRelative(ts: string | null): string {
+  if (!ts) return "—";
+  const diff = Date.now() - new Date(ts).getTime();
+  const s = Math.floor(diff / 1000);
+  if (s < 60) return `${s}s atrás`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}min atrás`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h atrás`;
+  return `${Math.floor(h / 24)}d atrás`;
+}
+
+function fmtDuration(ms: number | null): string {
+  if (!ms) return "—";
+  const min = Math.floor(ms / 60000);
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60);
+  const rem = min % 60;
+  return rem > 0 ? `${h}h ${rem}min` : `${h}h`;
+}
+
+function fmtTs(ts: string): string {
+  return new Date(ts).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function healthColor(score: number): string {
+  if (score >= 75) return "bg-emerald-500";
+  if (score >= 50) return "bg-amber-500";
+  if (score >= 25) return "bg-orange-500";
+  return "bg-rose-500";
+}
+
+function healthTextColor(score: number): string {
+  if (score >= 75) return "text-emerald-400";
+  if (score >= 50) return "text-amber-400";
+  if (score >= 25) return "text-orange-400";
+  return "text-rose-400";
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function StateBadge({ state }: { state: AccountState }) {
+  const m = STATE_META[state] ?? STATE_META.STANDBY;
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${m.color} ${m.bg} ring-1 ${m.ring}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${m.dot} ${state === "ACTIVE" ? "animate-pulse" : ""}`} />
+      {m.label}
+    </span>
+  );
+}
+
+function TierBadge({ tier }: { tier: string }) {
+  const m = TIER_META[tier] ?? TIER_META.D;
+  return (
+    <span className={`inline-flex items-center justify-center w-7 h-7 rounded-lg text-xs font-black ${m.color} ${m.bg}`}>
+      {m.label}
+    </span>
+  );
+}
+
+function HealthBar({ score }: { score: number }) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all duration-500 ${healthColor(score)}`}
+          style={{ width: `${score}%` }}
+        />
+      </div>
+      <span className={`text-xs font-bold tabular-nums w-8 text-right ${healthTextColor(score)}`}>{score}%</span>
+    </div>
+  );
+}
+
+// ─── Account Card ─────────────────────────────────────────────────────────────
+
+function AccountCard({
+  account, onAction, onEdit,
+}: {
+  account: Account;
+  onAction: (id: number, action: string) => void;
+  onEdit: (account: Account) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const isActive = account.state === "ACTIVE";
+  const isStandby = ["STANDBY", "IDLE", "COOLING"].includes(account.state);
+  const isCooling = account.state === "COOLING";
+  const now = new Date();
+  const inCooldown = account.cooldown_until && new Date(account.cooldown_until) > now;
+  const inQuarantine = account.quarantine_until && new Date(account.quarantine_until) > now;
+
+  return (
+    <div className={`card p-4 flex flex-col gap-3 transition-all duration-200 ${isActive ? "ring-1 ring-emerald-500/30" : ""} ${inQuarantine ? "ring-1 ring-red-500/30" : ""}`}>
+      {/* Header row */}
+      <div className="flex items-start gap-3">
+        <TierBadge tier={account.tier} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-bold text-white truncate">{account.nickname}</span>
+            <StateBadge state={account.state} />
+          </div>
+          {account.email && (
+            <p className="text-[11px] text-slate-500 mt-0.5 truncate">{account.email}</p>
+          )}
+          {account.instance_name && (
+            <p className="text-[11px] text-cyan-500 mt-0.5">Instância: {account.instance_name}</p>
+          )}
+        </div>
+        <button
+          onClick={() => onEdit(account)}
+          className="shrink-0 text-slate-500 hover:text-slate-300 transition-colors p-1 rounded"
+          title="Editar"
+        >
+          ✏️
+        </button>
+      </div>
+
+      {/* Health bar */}
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[10px] uppercase tracking-wider text-slate-500">Health Score</span>
+        </div>
+        <HealthBar score={account.health_score} />
+      </div>
+
+      {/* Quick stats row */}
+      <div className="grid grid-cols-3 gap-2">
+        <div className="text-center">
+          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Token</p>
+          <p className={`text-[11px] font-semibold mt-0.5 ${TOKEN_STATUS_META[account.token_status ?? "unknown"]?.color ?? "text-slate-400"}`}>
+            {TOKEN_STATUS_META[account.token_status ?? "unknown"]?.label ?? "—"}
+          </p>
+        </div>
+        <div className="text-center">
+          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Rotações</p>
+          <p className="text-[11px] font-semibold text-slate-300 mt-0.5">{account.rotation_count}</p>
+        </div>
+        <div className="text-center">
+          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Falhas</p>
+          <p className={`text-[11px] font-semibold mt-0.5 ${account.consecutive_failures > 0 ? "text-rose-400" : "text-slate-300"}`}>
+            {account.consecutive_failures > 0 ? `${account.consecutive_failures} cons.` : account.failure_count}
+          </p>
+        </div>
+      </div>
+
+      {/* Cooldown/Quarantine warning */}
+      {inQuarantine && (
+        <div className="rounded-lg bg-red-500/10 ring-1 ring-red-500/30 px-3 py-2 text-[11px] text-red-300">
+          ⛔ Quarentena até {new Date(account.quarantine_until!).toLocaleTimeString("pt-BR")}
+        </div>
+      )}
+      {!inQuarantine && inCooldown && (
+        <div className="rounded-lg bg-cyan-500/10 ring-1 ring-cyan-500/30 px-3 py-2 text-[11px] text-cyan-300">
+          ❄️ Cooldown até {new Date(account.cooldown_until!).toLocaleTimeString("pt-BR")}
+        </div>
+      )}
+
+      {/* Expanded details */}
+      {expanded && (
+        <div className="space-y-1.5 border-t border-white/5 pt-3 text-[11px] text-slate-400">
+          <div className="flex justify-between"><span>Última atividade</span><span className="text-slate-300">{fmtRelative(account.last_active_at)}</span></div>
+          <div className="flex justify-between"><span>Última rotação</span><span className="text-slate-300">{fmtRelative(account.last_rotation_at)}</span></div>
+          <div className="flex justify-between"><span>Ativada em</span><span className="text-slate-300">{fmtRelative(account.activated_at)}</span></div>
+          <div className="flex justify-between"><span>Falhas totais</span><span className="text-slate-300">{account.failure_count}</span></div>
+          <div className="flex justify-between"><span>Auto-rotação</span><span className={account.auto_rotation ? "text-emerald-400" : "text-slate-500"}>{account.auto_rotation ? "Sim" : "Não"}</span></div>
+          <div className="flex justify-between"><span>Auto-refresh</span><span className={account.auto_refresh ? "text-emerald-400" : "text-slate-500"}>{account.auto_refresh ? "Sim" : "Não"}</span></div>
+          <div className="flex justify-between"><span>Auto-relogin</span><span className={account.auto_relogin ? "text-amber-400" : "text-slate-500"}>{account.auto_relogin ? "Sim" : "Não"}</span></div>
+          {!account.auto_time_mode && (
+            <>
+              <div className="flex justify-between"><span>Tempo mín.</span><span className="text-slate-300">{fmtDuration(account.min_use_ms)}</span></div>
+              <div className="flex justify-between"><span>Tempo máx.</span><span className="text-slate-300">{fmtDuration(account.max_use_ms)}</span></div>
+            </>
+          )}
+          {account.auto_time_mode && (
+            <div className="flex justify-between"><span>Tempo de uso</span><span className="text-violet-400">Automático</span></div>
+          )}
+          {account.token_username && (
+            <div className="flex justify-between"><span>Token user</span><span className="text-slate-300">@{account.token_username}</span></div>
+          )}
+          {account.notes && (
+            <div className="pt-1 border-t border-white/5">
+              <p className="text-slate-500">Notas: <span className="text-slate-300">{account.notes}</span></p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Action buttons */}
+      <div className="flex gap-1.5 flex-wrap pt-1 border-t border-white/5">
+        <button
+          onClick={() => setExpanded(e => !e)}
+          className="btn-secondary text-[10px]"
+        >
+          {expanded ? "▲ Menos" : "▼ Mais"}
+        </button>
+
+        {!isActive && !inQuarantine && (
+          <button
+            onClick={() => onAction(account.id, "activate")}
+            className="btn text-[10px] px-2.5 py-1.5 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 ring-1 ring-emerald-400/30"
+          >
+            ▶ Ativar
+          </button>
+        )}
+        {isActive && (
+          <button
+            onClick={() => onAction(account.id, "deactivate")}
+            className="btn text-[10px] px-2.5 py-1.5 bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 ring-1 ring-amber-400/30"
+          >
+            ⏸ Pausar
+          </button>
+        )}
+        {isActive && (
+          <button
+            onClick={() => onAction(account.id, "rotate")}
+            className="btn text-[10px] px-2.5 py-1.5 bg-violet-500/15 text-violet-300 hover:bg-violet-500/25 ring-1 ring-violet-400/30"
+          >
+            ↻ Rotar
+          </button>
+        )}
+        <button
+          onClick={() => onAction(account.id, "reset")}
+          className="btn-secondary text-[10px]"
+        >
+          ⟳ Reset
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Account Form Modal ───────────────────────────────────────────────────────
+
+function AccountForm({
+  initial,
+  tokens,
+  instances,
+  onSave,
+  onCancel,
+}: {
+  initial: Partial<Account> | null;
+  tokens: TokenPoolItem[];
+  instances: Instance[];
+  onSave: (data: Record<string, unknown>) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [form, setForm] = useState({
+    nickname: initial?.nickname ?? "",
+    email: initial?.email ?? "",
+    password: "",
+    token_pool_id: initial?.token_pool_id ?? "",
+    instance_id: initial?.instance_id ?? "",
+    auto_rotation: initial?.auto_rotation ?? true,
+    auto_refresh: initial?.auto_refresh ?? true,
+    auto_relogin: initial?.auto_relogin ?? false,
+    auto_time_mode: initial?.auto_time_mode ?? true,
+    min_use_ms: initial?.min_use_ms ? String(initial.min_use_ms / 60000) : "",
+    max_use_ms: initial?.max_use_ms ? String(initial.max_use_ms / 60000) : "",
+    notes: initial?.notes ?? "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const set = (k: string, v: unknown) => setForm(f => ({ ...f, [k]: v }));
+
+  async function handleSave() {
+    if (!form.nickname.trim()) { setError("Nome é obrigatório."); return; }
+    setSaving(true);
+    setError("");
+    try {
+      await onSave({
+        nickname: form.nickname,
+        email: form.email || null,
+        password: form.password || null,
+        token_pool_id: form.token_pool_id ? Number(form.token_pool_id) : null,
+        instance_id: form.instance_id ? Number(form.instance_id) : null,
+        auto_rotation: form.auto_rotation,
+        auto_refresh: form.auto_refresh,
+        auto_relogin: form.auto_relogin,
+        auto_time_mode: form.auto_time_mode,
+        min_use_ms: form.min_use_ms ? Number(form.min_use_ms) * 60000 : null,
+        max_use_ms: form.max_use_ms ? Number(form.max_use_ms) * 60000 : null,
+        notes: form.notes || null,
+      });
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Erro ao salvar.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="card p-6 w-full max-w-lg space-y-4 max-h-[90vh] overflow-y-auto">
+        <h2 className="text-base font-bold text-white">{initial?.id ? "Editar Conta" : "Nova Conta"}</h2>
+
+        <div className="space-y-3">
+          <div>
+            <label className="label block mb-1">Nome / Nickname *</label>
+            <input className="input" value={form.nickname} onChange={e => set("nickname", e.target.value)} placeholder="ex: Conta Principal" />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label block mb-1">E-mail</label>
+              <input className="input" type="email" value={form.email} onChange={e => set("email", e.target.value)} placeholder="exemplo@email.com" />
+            </div>
+            <div>
+              <label className="label block mb-1">Senha {initial?.id ? "(deixe vazio para manter)" : ""}</label>
+              <input className="input" type="password" value={form.password} onChange={e => set("password", e.target.value)} placeholder="••••••••" />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label block mb-1">Token do Pool</label>
+              <select className="input" value={form.token_pool_id} onChange={e => set("token_pool_id", e.target.value)}>
+                <option value="">— Nenhum —</option>
+                {tokens.map(t => (
+                  <option key={t.id} value={t.id}>
+                    {t.label ? `${t.label} · ` : ""}{t.value_preview} ({t.status})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label block mb-1">Instância vinculada</label>
+              <select className="input" value={form.instance_id} onChange={e => set("instance_id", e.target.value)}>
+                <option value="">— Nenhuma —</option>
+                {instances.map(i => (
+                  <option key={i.id} value={i.id}>{i.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Auto flags */}
+          <div className="grid grid-cols-3 gap-2">
+            {([
+              ["auto_rotation", "Auto-rotação"],
+              ["auto_refresh",  "Auto-refresh"],
+              ["auto_relogin",  "Auto-relogin"],
+            ] as const).map(([key, label]) => (
+              <label key={key} className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form[key]}
+                  onChange={e => set(key, e.target.checked)}
+                  className="w-4 h-4 rounded border-white/20 bg-navy-950 text-accent focus:ring-accent/30"
+                />
+                <span className="text-xs text-slate-300">{label}</span>
+              </label>
+            ))}
+          </div>
+
+          {/* Time mode */}
+          <div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.auto_time_mode}
+                onChange={e => set("auto_time_mode", e.target.checked)}
+                className="w-4 h-4 rounded border-white/20 bg-navy-950 text-accent focus:ring-accent/30"
+              />
+              <span className="text-xs text-slate-300">Modo automático de tempo de uso</span>
+            </label>
+          </div>
+
+          {!form.auto_time_mode && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="label block mb-1">Tempo mínimo (min)</label>
+                <input className="input" type="number" min={0} value={form.min_use_ms} onChange={e => set("min_use_ms", e.target.value)} placeholder="ex: 30" />
+              </div>
+              <div>
+                <label className="label block mb-1">Tempo máximo (min)</label>
+                <input className="input" type="number" min={0} value={form.max_use_ms} onChange={e => set("max_use_ms", e.target.value)} placeholder="ex: 120" />
+              </div>
+            </div>
+          )}
+
+          <div>
+            <label className="label block mb-1">Notas</label>
+            <textarea className="textarea" rows={2} value={form.notes} onChange={e => set("notes", e.target.value)} placeholder="Observações..." />
+          </div>
+        </div>
+
+        {error && <p className="text-xs text-rose-400">{error}</p>}
+
+        <div className="flex gap-2 justify-end pt-2">
+          <button className="btn-ghost" onClick={onCancel}>Cancelar</button>
+          <button className="btn-primary" onClick={handleSave} disabled={saving}>
+            {saving ? "Salvando..." : "Salvar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── State Change Modal ───────────────────────────────────────────────────────
+
+function StateModal({
+  accountId,
+  current,
+  onSave,
+  onCancel,
+}: {
+  accountId: number;
+  current: AccountState;
+  onSave: (state: AccountState, reason: string) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [state, setState] = useState<AccountState>(current);
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function handleSave() {
+    setSaving(true);
+    await onSave(state, reason);
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="card p-6 w-full max-w-sm space-y-4">
+        <h2 className="text-base font-bold text-white">Alterar Estado — Conta #{accountId}</h2>
+        <div>
+          <label className="label block mb-1">Novo estado</label>
+          <select className="input" value={state} onChange={e => setState(e.target.value as AccountState)}>
+            {ALL_STATES.map(s => (
+              <option key={s} value={s}>{STATE_META[s].label}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="label block mb-1">Motivo (opcional)</label>
+          <input className="input" value={reason} onChange={e => setReason(e.target.value)} placeholder="ex: Rate limit detectado" />
+        </div>
+        <div className="flex gap-2 justify-end">
+          <button className="btn-ghost" onClick={onCancel}>Cancelar</button>
+          <button className="btn-primary" onClick={handleSave} disabled={saving}>Salvar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Config Panel ─────────────────────────────────────────────────────────────
+
+const DEFAULT_CONFIG: AccountsConfig = {
+  max_active: 10,
+  min_health_score: 40,
+  max_continuous_ms: 7200000,
+  min_use_ms: null,
+  max_use_ms: null,
+  auto_time_mode: true,
+  cooldown_after_use_ms: 2700000,
+  cooldown_after_fail_ms: 1800000,
+  quarantine_ms: 3600000,
+  health_check_interval_ms: 30000,
+  session_validation_interval_ms: 120000,
+  token_validation_interval_ms: 300000,
+  reauth_preventive_ms: 21600000,
+  auto_rotation: true,
+  auto_refresh: true,
+  auto_relogin: false,
+  rotation_strategy: "weighted_health",
+};
+
+function ConfigPanel({ config, onSave }: { config: AccountsConfig; onSave: (c: AccountsConfig) => Promise<void> }) {
+  const [form, setForm] = useState<AccountsConfig>(config);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const set = (k: keyof AccountsConfig, v: unknown) =>
+    setForm(f => ({ ...f, [k]: v }));
+
+  const msToMin = (ms: number | null) => ms == null ? "" : String(ms / 60000);
+  const minToMs = (s: string) => s ? Number(s) * 60000 : null;
+
+  async function handleSave() {
+    setSaving(true);
+    await onSave(form);
+    setSaving(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  }
+
+  return (
+    <div className="card p-5 space-y-5">
+      <h3 className="text-sm font-bold text-white uppercase tracking-wider">⚙️ Configurações Globais</h3>
+
+      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+
+        <div>
+          <label className="label block mb-1">Máx. contas ativas</label>
+          <input className="input" type="number" min={1} max={100} value={form.max_active}
+            onChange={e => set("max_active", Number(e.target.value))} />
+        </div>
+
+        <div>
+          <label className="label block mb-1">Score mínimo (%)</label>
+          <input className="input" type="number" min={0} max={100} value={form.min_health_score}
+            onChange={e => set("min_health_score", Number(e.target.value))} />
+        </div>
+
+        <div>
+          <label className="label block mb-1">Estratégia de rotação</label>
+          <select className="input" value={form.rotation_strategy}
+            onChange={e => set("rotation_strategy", e.target.value as RotationStrategy)}>
+            {ROTATION_STRATEGIES.map(r => (
+              <option key={r.value} value={r.value}>{r.label}</option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="label block mb-1">Tempo máx. contínuo (min)</label>
+          <input className="input" type="number" min={1} value={msToMin(form.max_continuous_ms)}
+            onChange={e => set("max_continuous_ms", minToMs(e.target.value) ?? 7200000)} />
+        </div>
+
+        <div>
+          <label className="label block mb-1">Cooldown pós uso (min)</label>
+          <input className="input" type="number" min={0} value={msToMin(form.cooldown_after_use_ms)}
+            onChange={e => set("cooldown_after_use_ms", minToMs(e.target.value) ?? 2700000)} />
+        </div>
+
+        <div>
+          <label className="label block mb-1">Cooldown pós falha (min)</label>
+          <input className="input" type="number" min={0} value={msToMin(form.cooldown_after_fail_ms)}
+            onChange={e => set("cooldown_after_fail_ms", minToMs(e.target.value) ?? 1800000)} />
+        </div>
+
+        <div>
+          <label className="label block mb-1">Quarentena (min)</label>
+          <input className="input" type="number" min={0} value={msToMin(form.quarantine_ms)}
+            onChange={e => set("quarantine_ms", minToMs(e.target.value) ?? 3600000)} />
+        </div>
+
+        <div>
+          <label className="label block mb-1">Intervalo health check (seg)</label>
+          <input className="input" type="number" min={10} value={form.health_check_interval_ms / 1000}
+            onChange={e => set("health_check_interval_ms", Number(e.target.value) * 1000)} />
+        </div>
+
+        <div>
+          <label className="label block mb-1">Validação de sessão (min)</label>
+          <input className="input" type="number" min={1} value={msToMin(form.session_validation_interval_ms)}
+            onChange={e => set("session_validation_interval_ms", minToMs(e.target.value) ?? 120000)} />
+        </div>
+
+        <div>
+          <label className="label block mb-1">Validação de token (min)</label>
+          <input className="input" type="number" min={1} value={msToMin(form.token_validation_interval_ms)}
+            onChange={e => set("token_validation_interval_ms", minToMs(e.target.value) ?? 300000)} />
+        </div>
+
+        <div>
+          <label className="label block mb-1">Reauth preventivo (h)</label>
+          <input className="input" type="number" min={1} value={form.reauth_preventive_ms / 3600000}
+            onChange={e => set("reauth_preventive_ms", Number(e.target.value) * 3600000)} />
+        </div>
+      </div>
+
+      {/* Modo de tempo */}
+      <div>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" checked={form.auto_time_mode}
+            onChange={e => set("auto_time_mode", e.target.checked)}
+            className="w-4 h-4 rounded border-white/20 bg-navy-950 text-accent" />
+          <span className="text-sm text-slate-300">Modo automático de tempo de uso (global)</span>
+        </label>
+        <p className="text-xs text-slate-500 mt-1 ml-6">O bot decide dinamicamente o tempo ideal de permanência de cada conta.</p>
+      </div>
+
+      {!form.auto_time_mode && (
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="label block mb-1">Tempo mínimo global (min)</label>
+            <input className="input" type="number" min={0} value={msToMin(form.min_use_ms)}
+              onChange={e => set("min_use_ms", minToMs(e.target.value))} placeholder="ex: 30" />
+          </div>
+          <div>
+            <label className="label block mb-1">Tempo máximo global (min)</label>
+            <input className="input" type="number" min={0} value={msToMin(form.max_use_ms)}
+              onChange={e => set("max_use_ms", minToMs(e.target.value))} placeholder="ex: 120" />
+          </div>
+        </div>
+      )}
+
+      {/* Toggles */}
+      <div className="grid grid-cols-3 gap-3">
+        {([
+          ["auto_rotation", "Auto-rotação", "Ativa rotação automática de contas"],
+          ["auto_refresh",  "Auto-refresh",  "Atualiza token/sessão automaticamente"],
+          ["auto_relogin",  "Auto-relogin",  "Tenta relogin via email/senha (fallback)"],
+        ] as const).map(([key, label, desc]) => (
+          <div key={key} className="rounded-xl bg-white/5 ring-1 ring-white/10 p-3">
+            <label className="flex items-center justify-between gap-2 cursor-pointer">
+              <div>
+                <p className="text-xs font-semibold text-slate-200">{label}</p>
+                <p className="text-[10px] text-slate-500 mt-0.5">{desc}</p>
+              </div>
+              <input type="checkbox" checked={form[key]}
+                onChange={e => set(key, e.target.checked)}
+                className="w-4 h-4 rounded border-white/20 bg-navy-950 text-accent" />
+            </label>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex justify-end">
+        <button className="btn-primary" onClick={handleSave} disabled={saving}>
+          {saving ? "Salvando..." : saved ? "✓ Salvo" : "Salvar configurações"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Logs Panel ───────────────────────────────────────────────────────────────
+
+function LogsPanel({
+  logs,
+  filterAccountId,
+  onFilterChange,
+  accounts,
+}: {
+  logs: AccountLog[];
+  filterAccountId: number | null;
+  onFilterChange: (id: number | null) => void;
+  accounts: Account[];
+}) {
+  const [search, setSearch] = useState("");
+  const [filterEvent, setFilterEvent] = useState("");
+
+  const filtered = logs.filter(l => {
+    if (filterAccountId && l.account_id !== filterAccountId) return false;
+    if (filterEvent && l.event_type !== filterEvent) return false;
+    if (search && !`${l.account_name ?? ""} ${l.detail ?? ""} ${l.event_type}`.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  const eventTypes = [...new Set(logs.map(l => l.event_type))].sort();
+
+  return (
+    <div className="card p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-bold text-white uppercase tracking-wider">📋 Logs Operacionais</h3>
+        <span className="text-xs text-slate-500">{filtered.length} registros</span>
+      </div>
+
+      {/* Filters */}
+      <div className="flex gap-2 flex-wrap">
+        <input
+          className="input flex-1 min-w-[160px] text-xs py-1.5"
+          placeholder="Buscar..."
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+        <select className="input w-40 text-xs py-1.5" value={filterAccountId ?? ""} onChange={e => onFilterChange(e.target.value ? Number(e.target.value) : null)}>
+          <option value="">Todas as contas</option>
+          {accounts.map(a => <option key={a.id} value={a.id}>{a.nickname}</option>)}
+        </select>
+        <select className="input w-40 text-xs py-1.5" value={filterEvent} onChange={e => setFilterEvent(e.target.value)}>
+          <option value="">Todos os eventos</option>
+          {eventTypes.map(e => <option key={e} value={e}>{e}</option>)}
+        </select>
+        <button className="btn-secondary text-xs" onClick={() => { setSearch(""); setFilterEvent(""); onFilterChange(null); }}>
+          Limpar
+        </button>
+      </div>
+
+      {/* Log entries */}
+      <div className="space-y-0.5 max-h-72 overflow-y-auto font-mono">
+        {filtered.length === 0 ? (
+          <p className="text-xs text-slate-500 text-center py-8">Nenhum log encontrado</p>
+        ) : filtered.map(log => (
+          <div key={log.id} className="flex items-start gap-2 py-1 px-2 rounded hover:bg-white/3 text-[11px] leading-5">
+            <span className="text-slate-500 shrink-0 w-16">{fmtTs(log.ts)}</span>
+            <span className={`shrink-0 font-bold w-24 ${LOG_EVENT_COLORS[log.event_type] ?? LOG_EVENT_COLORS.default}`}>
+              [{log.event_type}]
+            </span>
+            {log.account_name && (
+              <span className="text-sky-400 shrink-0">{log.account_name}</span>
+            )}
+            {log.detail && (
+              <span className="text-slate-300 break-all">{log.detail}</span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Summary Bar ──────────────────────────────────────────────────────────────
+
+function SummaryBar({ accounts }: { accounts: Account[] }) {
+  const total = accounts.length;
+  const active = accounts.filter(a => a.state === "ACTIVE").length;
+  const standby = accounts.filter(a => ["STANDBY","IDLE","COOLING","RESERVED","WAITING"].includes(a.state)).length;
+  const problems = accounts.filter(a => ["ERROR","DEAD","BANNED","INVALID_TOKEN","NEEDS_VERIFICATION","LOGIN_CHALLENGE","MANUAL_ACTION_REQUIRED"].includes(a.state)).length;
+  const avgHealth = total ? Math.round(accounts.reduce((s, a) => s + a.health_score, 0) / total) : 0;
+
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      {[
+        { label: "Total de contas", value: total, color: "text-slate-200" },
+        { label: "Ativas agora", value: active, color: "text-emerald-400" },
+        { label: "Em standby", value: standby, color: "text-sky-400" },
+        { label: "Com problemas", value: problems, color: problems > 0 ? "text-rose-400" : "text-slate-400" },
+      ].map(({ label, value, color }) => (
+        <div key={label} className="card p-4 flex flex-col gap-1">
+          <p className="text-[10px] uppercase tracking-wider text-slate-500">{label}</p>
+          <p className={`text-2xl font-extrabold tabular-nums ${color}`}>{value}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Main Page ────────────────────────────────────────────────────────────────
+
+export default function Contas() {
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [logs, setLogs] = useState<AccountLog[]>([]);
+  const [config, setConfig] = useState<AccountsConfig>(DEFAULT_CONFIG);
+  const [tokens, setTokens] = useState<TokenPoolItem[]>([]);
+  const [instances, setInstances] = useState<Instance[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const [filterState, setFilterState] = useState<AccountState | "">("");
+  const [filterSearch, setFilterSearch] = useState("");
+  const [filterTier, setFilterTier] = useState("");
+  const [sortKey, setSortKey] = useState<"health" | "name" | "state" | "tier">("health");
+
+  const [tab, setTab] = useState<"accounts" | "config" | "logs">("accounts");
+  const [showForm, setShowForm] = useState(false);
+  const [editAccount, setEditAccount] = useState<Account | null>(null);
+  const [stateModal, setStateModal] = useState<{ id: number; state: AccountState } | null>(null);
+  const [filterLogAccount, setFilterLogAccount] = useState<number | null>(null);
+  const [actionLoading, setActionLoading] = useState<number | null>(null);
+
+  const logsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const loadAll = useCallback(async () => {
+    try {
+      const [accs, cfg, toks, insts] = await Promise.all([
+        api<Account[]>("/api/accounts"),
+        api<AccountsConfig>("/api/accounts/config"),
+        api<TokenPoolItem[]>("/api/tokens"),
+        api<{ id: number; name: string }[]>("/api/instances"),
+      ]);
+      setAccounts(accs);
+      if (cfg && Object.keys(cfg).length > 0) setConfig(cfg);
+      setTokens(toks);
+      setInstances(insts);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadLogs = useCallback(async () => {
+    try {
+      const l = await api<AccountLog[]>("/api/accounts/logs?limit=200");
+      setLogs(l);
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadAll();
+    loadLogs();
+    const interval = setInterval(loadAll, 15000);
+    logsIntervalRef.current = setInterval(loadLogs, 10000);
+    return () => {
+      clearInterval(interval);
+      if (logsIntervalRef.current) clearInterval(logsIntervalRef.current);
+    };
+  }, [loadAll, loadLogs]);
+
+  async function handleAction(id: number, action: string) {
+    setActionLoading(id);
+    try {
+      await api(`/api/accounts/${id}/${action}`, { method: "POST" });
+      await Promise.all([loadAll(), loadLogs()]);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function handleSaveAccount(data: Record<string, unknown>) {
+    if (editAccount?.id) {
+      await api(`/api/accounts/${editAccount.id}`, { method: "PUT", body: JSON.stringify(data) });
+    } else {
+      await api("/api/accounts", { method: "POST", body: JSON.stringify(data) });
+    }
+    setShowForm(false);
+    setEditAccount(null);
+    await loadAll();
+  }
+
+  async function handleSaveConfig(cfg: AccountsConfig) {
+    await api("/api/accounts/config", { method: "PUT", body: JSON.stringify(cfg) });
+    setConfig(cfg);
+  }
+
+  async function handleStateChange(state: AccountState, reason: string) {
+    if (!stateModal) return;
+    await api(`/api/accounts/${stateModal.id}/state`, {
+      method: "POST",
+      body: JSON.stringify({ state, reason }),
+    });
+    setStateModal(null);
+    await Promise.all([loadAll(), loadLogs()]);
+  }
+
+  // Filter + sort
+  const filtered = accounts
+    .filter(a => {
+      if (filterState && a.state !== filterState) return false;
+      if (filterTier && a.tier !== filterTier) return false;
+      if (filterSearch && !`${a.nickname} ${a.email ?? ""} ${a.instance_name ?? ""}`.toLowerCase().includes(filterSearch.toLowerCase())) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      if (sortKey === "health") return b.health_score - a.health_score;
+      if (sortKey === "name") return a.nickname.localeCompare(b.nickname);
+      if (sortKey === "state") return a.state.localeCompare(b.state);
+      if (sortKey === "tier") return a.tier.localeCompare(b.tier);
+      return 0;
+    });
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-slate-500 text-sm">
+        Carregando contas...
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen px-4 sm:px-6 lg:px-10 py-8">
+      <div className="mx-auto max-w-6xl space-y-6">
+
+        {/* Header */}
+        <div className="card p-5 flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-3">
+            <a href="/" className="text-slate-500 hover:text-slate-300 transition-colors text-xs border border-white/10 rounded-lg px-3 py-1.5">
+              ← Voltar
+            </a>
+            <h1 className="text-xl font-extrabold text-white tracking-tight">
+              <span className="bg-gradient-to-r from-cyan-300 to-sky-400 bg-clip-text text-transparent">CONTAS</span>
+            </h1>
+            <span className="text-[10px] uppercase tracking-[0.25em] text-slate-500">Account Manager</span>
+          </div>
+          <button
+            onClick={() => { setEditAccount(null); setShowForm(true); }}
+            className="btn-primary text-sm"
+          >
+            + Nova conta
+          </button>
+        </div>
+
+        {/* Summary */}
+        <SummaryBar accounts={accounts} />
+
+        {/* Tabs */}
+        <div className="flex gap-2">
+          {([
+            { key: "accounts", label: "👤 Contas" },
+            { key: "config",   label: "⚙️ Configurações" },
+            { key: "logs",     label: `📋 Logs (${logs.length})` },
+          ] as const).map(t => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
+                tab === t.key
+                  ? "bg-cyan-500/20 text-cyan-300 ring-1 ring-cyan-400/30"
+                  : "bg-white/5 text-slate-400 hover:bg-white/10 hover:text-slate-300"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {/* ── Accounts Tab ── */}
+        {tab === "accounts" && (
+          <div className="space-y-4">
+            {/* Filters */}
+            <div className="flex gap-2 flex-wrap">
+              <input
+                className="input flex-1 min-w-[180px] text-xs py-2"
+                placeholder="Buscar por nome, email ou instância..."
+                value={filterSearch}
+                onChange={e => setFilterSearch(e.target.value)}
+              />
+              <select className="input w-44 text-xs py-2" value={filterState} onChange={e => setFilterState(e.target.value as AccountState | "")}>
+                <option value="">Todos os estados</option>
+                {ALL_STATES.map(s => <option key={s} value={s}>{STATE_META[s].label}</option>)}
+              </select>
+              <select className="input w-28 text-xs py-2" value={filterTier} onChange={e => setFilterTier(e.target.value)}>
+                <option value="">Todos os tiers</option>
+                {["S","A","B","C","D"].map(t => <option key={t} value={t}>Tier {t}</option>)}
+              </select>
+              <select className="input w-36 text-xs py-2" value={sortKey} onChange={e => setSortKey(e.target.value as typeof sortKey)}>
+                <option value="health">↓ Health Score</option>
+                <option value="name">Nome A-Z</option>
+                <option value="state">Estado</option>
+                <option value="tier">Tier</option>
+              </select>
+              {(filterSearch || filterState || filterTier) && (
+                <button className="btn-secondary text-xs" onClick={() => { setFilterSearch(""); setFilterState(""); setFilterTier(""); }}>
+                  Limpar filtros
+                </button>
+              )}
+            </div>
+
+            {filtered.length === 0 ? (
+              <div className="card p-12 text-center">
+                <p className="text-slate-500 text-sm">
+                  {accounts.length === 0
+                    ? "Nenhuma conta cadastrada. Clique em \"+ Nova conta\" para começar."
+                    : "Nenhuma conta encontrada com os filtros aplicados."}
+                </p>
+              </div>
+            ) : (
+              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {filtered.map(account => (
+                  <div key={account.id} className={actionLoading === account.id ? "opacity-60 pointer-events-none" : ""}>
+                    <AccountCard
+                      account={account}
+                      onAction={handleAction}
+                      onEdit={a => { setEditAccount(a); setShowForm(true); }}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Pool overview */}
+            {accounts.length > 0 && (
+              <div className="card p-4">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-3">Pool de contas — distribuição</p>
+                <div className="flex gap-1.5 flex-wrap">
+                  {ALL_STATES.map(s => {
+                    const count = accounts.filter(a => a.state === s).length;
+                    if (count === 0) return null;
+                    const m = STATE_META[s];
+                    return (
+                      <span key={s} className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold ${m.color} ${m.bg} ring-1 ${m.ring}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${m.dot}`} />
+                        {m.label}: {count}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Config Tab ── */}
+        {tab === "config" && (
+          <ConfigPanel config={config} onSave={handleSaveConfig} />
+        )}
+
+        {/* ── Logs Tab ── */}
+        {tab === "logs" && (
+          <LogsPanel
+            logs={logs}
+            filterAccountId={filterLogAccount}
+            onFilterChange={setFilterLogAccount}
+            accounts={accounts}
+          />
+        )}
+
+      </div>
+
+      {/* Modals */}
+      {showForm && (
+        <AccountForm
+          initial={editAccount}
+          tokens={tokens}
+          instances={instances}
+          onSave={handleSaveAccount}
+          onCancel={() => { setShowForm(false); setEditAccount(null); }}
+        />
+      )}
+      {stateModal && (
+        <StateModal
+          accountId={stateModal.id}
+          current={stateModal.state}
+          onSave={handleStateChange}
+          onCancel={() => setStateModal(null)}
+        />
+      )}
+    </div>
+  );
+}
