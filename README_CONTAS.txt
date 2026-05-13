@@ -322,5 +322,187 @@ EXEMPLO 4: Remover token apenas do BOT1 sem afetar o BOT2
   - Resultado: token removido APENAS do BOT1. O BOT2 continua intacto.
 
 --------------------------------------------------------------------------------
+POOL POR INSTÂNCIA — ABA 🏊 POOL
+--------------------------------------------------------------------------------
+
+A aba "🏊 Pool" mostra, em tempo real, o estado do pool de contas para cada
+instância cadastrada. Ela responde à pergunta central:
+
+  "Quantas contas cada bot tem disponíveis AGORA para entrar em fila?"
+
+--------------------------------------------------------------------------------
+O QUE SÃO CONTAS GLOBAIS
+--------------------------------------------------------------------------------
+
+Contas globais são contas sem instância vinculada (campo "Instância" = Nenhuma).
+
+  - Qualquer instância pode usar uma conta global, desde que esteja disponível.
+  - São compartilhadas entre todos os bots.
+  - Aparecem no pool de TODAS as instâncias.
+
+Exemplo prático:
+  - Você tem 10 contas globais.
+  - BOT1 e BOT2 ambos enxergam essas 10 contas no pool.
+  - Mas uma conta só pode ser usada por UM bot por vez (lock ativo).
+
+--------------------------------------------------------------------------------
+O QUE SÃO CONTAS EXCLUSIVAS
+--------------------------------------------------------------------------------
+
+Contas exclusivas são contas vinculadas a uma instância específica
+(campo "Instância" = BOT1, BOT2, etc).
+
+  - Só aparecem no pool da instância à qual estão vinculadas.
+  - Nenhuma outra instância pode usá-las.
+  - Identificadas com badge "EXCLUSIVA" na lista expandida.
+
+Exemplo prático:
+  - "Conta BOT1 #1" está vinculada ao BOT1.
+  - Ela aparece APENAS no pool do BOT1.
+  - O BOT2 nunca verá ou usará essa conta.
+
+--------------------------------------------------------------------------------
+COMO CALCULAR O POOL DE UMA INSTÂNCIA
+--------------------------------------------------------------------------------
+
+Pool de BOT1 = Contas vinculadas ao BOT1 + Contas globais disponíveis
+
+Um conta é UTILIZÁVEL (conta no "usáveis") se:
+  ✓ Está no pool da instância (exclusiva ou global)
+  ✓ Estado não é DEAD, BANNED, INVALID_TOKEN, NEEDS_VERIFICATION,
+    LOGIN_CHALLENGE ou MANUAL_ACTION_REQUIRED
+  ✓ Não está em cooldown (cooldown_until > agora)
+  ✓ Não está em quarentena (quarantine_until > agora)
+  ✓ Não está bloqueada por outra instância
+  ✓ Health score ≥ mínimo configurado (padrão: 40%)
+
+--------------------------------------------------------------------------------
+MOTIVOS DE INDISPONIBILIDADE
+--------------------------------------------------------------------------------
+
+Cada conta indisponível mostra o(s) motivo(s) na lista expandida:
+
+  "Bloqueada por BOT2"
+    → Conta com lock ativo adquirido pelo BOT2. Será liberada automaticamente
+      quando o lock expirar (padrão: 2 horas após ativação).
+
+  "Cooldown até HH:MM"
+    → Conta em período de descanso. Ficará disponível ao fim do cooldown.
+
+  "Quarentena até HH:MM"
+    → Conta com muitas falhas consecutivas, em quarentena forçada.
+      Ficará disponível ao fim da quarentena.
+
+  "Estado: DEAD / BANNED / INVALID_TOKEN / ..."
+    → Estado crítico que impede uso imediato.
+    → DEAD: conta com falha crítica irrecuperável.
+    → BANNED: conta banida pelo Discord.
+    → INVALID_TOKEN: token expirado ou inválido.
+    → NEEDS_VERIFICATION: Discord solicitou verificação manual.
+    → LOGIN_CHALLENGE: challenge de segurança ativo.
+    → MANUAL_ACTION_REQUIRED: requer intervenção do operador.
+
+  "Health baixo (X%)"
+    → Health score abaixo do mínimo configurado.
+    → Configure o mínimo em "⚙️ Configurações" → "Health mínimo para rotação".
+
+--------------------------------------------------------------------------------
+COMO INTERPRETAR OS CARDS
+--------------------------------------------------------------------------------
+
+Cada card de instância exibe:
+
+  [Nome da Instância]                         [X usáveis]
+  ──────────────────────────────────────────────────────
+  Exclusivas   │ Globais disp. │ Ativas agora
+  Cooldown     │ Quarentena    │ Bloq. outra
+
+  [Barra de health médio do pool]
+  [Barra de utilização do pool (% utilizável)]
+
+  [Melhor disponível → clique para ir ao card da conta]
+
+  [▼ Ver todas as contas (N)]  ← expande a lista completa
+
+Cores do contador "usáveis":
+  Verde  → 2 ou mais contas utilizáveis (pool saudável)
+  Âmbar  → 1 conta utilizável (atenção — pool crítico)
+  Vermelho → 0 contas utilizáveis (bot sem conta para usar)
+
+--------------------------------------------------------------------------------
+FILTROS DA ABA POOL
+--------------------------------------------------------------------------------
+
+Os filtros controlam quais contas aparecem na lista expandida de cada instância:
+
+  [Só disponíveis]  → Oculta contas indisponíveis. Mostra apenas as utilizáveis.
+  [Bloqueadas]      → Mostra/oculta contas com lock de outra instância.
+  [Globais]         → Mostra/oculta contas sem instância vinculada.
+  [Exclusivas]      → Mostra/oculta contas vinculadas àquela instância.
+  [Cooldown]        → Mostra/oculta contas em cooldown.
+  [Quarentena]      → Mostra/oculta contas em quarentena.
+  [Inválidas]       → Mostra/oculta contas com estado crítico (DEAD, BANNED, etc).
+
+Os filtros NÃO afetam os contadores do card — apenas a lista expandida.
+
+Botão [↻ Atualizar]:
+  → Recalcula o pool manualmente. O pool também é calculado ao abrir a aba.
+
+--------------------------------------------------------------------------------
+BARRA DE RESUMO GLOBAL
+--------------------------------------------------------------------------------
+
+No topo da aba Pool, uma barra de 4 cards mostra os totais de TODAS as instâncias:
+
+  Total utilizáveis    → soma de contas utilizáveis em todas as instâncias
+  Em cooldown          → soma de contas em cooldown em todas as instâncias
+  Em quarentena        → soma de contas em quarentena
+  Bloqueadas           → soma de contas bloqueadas por outra instância
+
+--------------------------------------------------------------------------------
+MELHOR CONTA DISPONÍVEL
+--------------------------------------------------------------------------------
+
+O card destaca automaticamente a conta com maior health score entre as
+utilizáveis daquela instância. Clicar no bloco verde leva ao card da conta
+na aba "👤 Contas", com o nome da conta já preenchido no filtro de busca.
+
+--------------------------------------------------------------------------------
+EXEMPLO COMPLETO — INTERPRETAÇÃO DE UM CENÁRIO REAL
+--------------------------------------------------------------------------------
+
+Cenário: 2 bots, 8 contas no total.
+
+  Contas:
+  - "A01" → vinculada BOT1, estado ACTIVE,  health 88%
+  - "A02" → vinculada BOT1, estado COOLING, health 60%  ← em cooldown
+  - "A03" → vinculada BOT2, estado STANDBY, health 95%
+  - "A04" → vinculada BOT2, estado ACTIVE,  health 72%
+  - "G01" → global,         estado STANDBY, health 91%  ← lock por BOT1
+  - "G02" → global,         estado STANDBY, health 82%
+  - "G03" → global,         estado DEAD,    health  0%
+  - "G04" → global,         estado STANDBY, health 45%
+
+  Pool do BOT1:
+  - Exclusivas: A01, A02 (2)
+  - Globais no pool: G01, G02, G03, G04 (4)
+  - Utilizáveis: A01 (ativa, 88%), G02 (standby, 82%), G04 (45%) = 3
+  - Não utilizáveis:
+    → A02: cooldown
+    → G01: bloqueada pelo BOT1 (ele mesmo tem o lock — ainda conta como lock)
+    → G03: DEAD
+  - Health médio: (88+60+91+82+0+45) / 6 = 61%
+  - Melhor disponível: A01 (88%)
+
+  Pool do BOT2:
+  - Exclusivas: A03, A04 (2)
+  - Globais no pool: G01, G02, G03, G04 (4) — G01 tem lock do BOT1!
+  - Utilizáveis: A03 (95%), A04 (72%), G02 (82%), G04 (45%) = 4
+  - Não utilizáveis:
+    → G01: bloqueada por BOT1
+    → G03: DEAD
+  - Melhor disponível: A03 (95%)
+
+--------------------------------------------------------------------------------
 FIM DO README
 ================================================================================

@@ -143,6 +143,42 @@ const LOG_EVENT_COLORS: Record<string, string> = {
   default:      "text-slate-300",
 };
 
+// ─── Pool por Instância types ─────────────────────────────────────────────────
+
+interface PoolAccountEntry {
+  id: number;
+  nickname: string;
+  email: string | null;
+  state: string;
+  health_score: number;
+  tier: string;
+  is_exclusive: boolean;
+  is_global: boolean;
+  is_available: boolean;
+  unavailable_reasons: string[];
+  is_active: boolean;
+  in_cooldown: boolean;
+  in_quarantine: boolean;
+  locked_by_other: boolean;
+  locked_by_instance_name: string | null;
+}
+
+interface InstancePoolSummary {
+  instance_id: number;
+  instance_name: string;
+  exclusive_accounts_count: number;
+  global_available_count: number;
+  active_count: number;
+  cooldown_count: number;
+  quarantine_count: number;
+  locked_by_other_count: number;
+  usable_count: number;
+  average_health: number;
+  best_available_account: { id: number; nickname: string; health_score: number; tier: string } | null;
+  unavailable_reasons_summary: Record<string, number>;
+  accounts: PoolAccountEntry[];
+}
+
 const ROTATION_STRATEGIES: { value: RotationStrategy; label: string }[] = [
   { value: "sequential",          label: "Sequential" },
   { value: "random",              label: "Random" },
@@ -396,6 +432,330 @@ function AccountCard({
           ⟳ Reset
         </button>
       </div>
+    </div>
+  );
+}
+
+// ─── Pool por Instância Panel ─────────────────────────────────────────────────
+
+type PoolFilter = {
+  onlyAvailable: boolean;
+  showLocked: boolean;
+  showGlobal: boolean;
+  showExclusive: boolean;
+  showCooldown: boolean;
+  showQuarantine: boolean;
+  showInvalid: boolean;
+};
+
+const POOL_FILTER_DEFAULT: PoolFilter = {
+  onlyAvailable: false,
+  showLocked: true,
+  showGlobal: true,
+  showExclusive: true,
+  showCooldown: true,
+  showQuarantine: true,
+  showInvalid: true,
+};
+
+const UNAVAILABLE_STATES_SET = new Set([
+  "DEAD","BANNED","INVALID_TOKEN","NEEDS_VERIFICATION","LOGIN_CHALLENGE","MANUAL_ACTION_REQUIRED",
+]);
+
+function poolFilterAccount(a: PoolAccountEntry, f: PoolFilter): boolean {
+  if (f.onlyAvailable && !a.is_available) return false;
+  if (!f.showLocked && a.locked_by_other) return false;
+  if (!f.showGlobal && a.is_global) return false;
+  if (!f.showExclusive && a.is_exclusive) return false;
+  if (!f.showCooldown && a.in_cooldown) return false;
+  if (!f.showQuarantine && a.in_quarantine) return false;
+  if (!f.showInvalid && UNAVAILABLE_STATES_SET.has(a.state)) return false;
+  return true;
+}
+
+function PoolAccountRow({ a, onGoTo }: { a: PoolAccountEntry; onGoTo?: () => void }) {
+  const stateMeta = STATE_META[a.state as AccountState] ?? { label: a.state, color: "text-slate-400", bg: "bg-white/5", ring: "ring-white/10", dot: "bg-slate-400" };
+  return (
+    <div className={`flex items-center gap-3 px-3 py-2 rounded-lg text-[11px] transition-colors ${a.is_available ? "bg-emerald-500/5 ring-1 ring-emerald-500/10" : "bg-white/3 ring-1 ring-white/5"}`}>
+      <TierBadge tier={a.tier} />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-semibold text-white truncate">{a.nickname}</span>
+          {a.is_exclusive && (
+            <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-400 ring-1 ring-cyan-400/20 font-semibold">EXCLUSIVA</span>
+          )}
+          {a.is_global && (
+            <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-500/15 text-slate-400 ring-1 ring-slate-400/20 font-semibold">GLOBAL</span>
+          )}
+          <span className={`text-[9px] px-1.5 py-0.5 rounded ${stateMeta.bg} ${stateMeta.color} ring-1 ${stateMeta.ring} font-semibold`}>{stateMeta.label}</span>
+        </div>
+        {a.email && <p className="text-slate-600 truncate mt-0.5">{a.email}</p>}
+        {!a.is_available && a.unavailable_reasons.length > 0 && (
+          <p className="text-rose-400/80 mt-0.5 truncate">⚠ {a.unavailable_reasons.join(" · ")}</p>
+        )}
+      </div>
+      <div className="w-20 shrink-0">
+        <HealthBar score={a.health_score} />
+      </div>
+      {onGoTo && (
+        <button onClick={onGoTo} className="shrink-0 text-slate-600 hover:text-slate-300 text-[10px] transition-colors">
+          ↗
+        </button>
+      )}
+    </div>
+  );
+}
+
+function InstancePoolCard({
+  summary,
+  filter,
+  onGoToAccount,
+}: {
+  summary: InstancePoolSummary;
+  filter: PoolFilter;
+  onGoToAccount: (id: number) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  const available = summary.accounts.filter(a => a.is_available && poolFilterAccount(a, filter));
+  const unavailable = summary.accounts.filter(a => !a.is_available && poolFilterAccount(a, filter));
+
+  const usabilityPct = summary.accounts.length > 0
+    ? Math.round((summary.usable_count / summary.accounts.length) * 100)
+    : 0;
+
+  const healthColor = summary.average_health >= 75 ? "text-emerald-400"
+    : summary.average_health >= 50 ? "text-amber-400"
+    : "text-rose-400";
+
+  const usableColor = summary.usable_count === 0 ? "text-rose-400"
+    : summary.usable_count <= 1 ? "text-amber-400"
+    : "text-emerald-400";
+
+  return (
+    <div className="card p-5 space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-base font-extrabold text-white tracking-tight">{summary.instance_name}</p>
+          <p className="text-[10px] text-slate-500 mt-0.5 uppercase tracking-wider">
+            {summary.accounts.length} conta{summary.accounts.length !== 1 ? "s" : ""} no pool
+          </p>
+        </div>
+        <div className={`text-2xl font-extrabold tabular-nums ${usableColor}`}>
+          {summary.usable_count}
+          <span className="text-xs text-slate-500 font-normal ml-1">usáveis</span>
+        </div>
+      </div>
+
+      {/* Stats grid */}
+      <div className="grid grid-cols-3 gap-2">
+        {[
+          { label: "Exclusivas",   value: summary.exclusive_accounts_count, color: "text-cyan-400" },
+          { label: "Globais disp.", value: summary.global_available_count,  color: "text-slate-300" },
+          { label: "Ativas agora", value: summary.active_count,             color: "text-emerald-400" },
+          { label: "Cooldown",     value: summary.cooldown_count,           color: summary.cooldown_count > 0 ? "text-cyan-300" : "text-slate-500" },
+          { label: "Quarentena",   value: summary.quarantine_count,         color: summary.quarantine_count > 0 ? "text-red-400" : "text-slate-500" },
+          { label: "Bloq. outra",  value: summary.locked_by_other_count,    color: summary.locked_by_other_count > 0 ? "text-violet-400" : "text-slate-500" },
+        ].map(({ label, value, color }) => (
+          <div key={label} className="text-center bg-white/3 rounded-lg py-2">
+            <p className="text-[9px] uppercase tracking-wider text-slate-500">{label}</p>
+            <p className={`text-lg font-bold tabular-nums mt-0.5 ${color}`}>{value}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Health + usability bar */}
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between text-[10px]">
+          <span className="text-slate-500">Health médio do pool</span>
+          <span className={`font-bold ${healthColor}`}>{summary.average_health}%</span>
+        </div>
+        <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all ${summary.average_health >= 75 ? "bg-emerald-500" : summary.average_health >= 50 ? "bg-amber-500" : "bg-rose-500"}`}
+            style={{ width: `${summary.average_health}%` }}
+          />
+        </div>
+        <div className="flex items-center justify-between text-[10px]">
+          <span className="text-slate-500">Utilização do pool</span>
+          <span className="text-slate-400">{usabilityPct}% utilizável</span>
+        </div>
+      </div>
+
+      {/* Best available */}
+      {summary.best_available_account && (
+        <div
+          className="flex items-center gap-3 rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 cursor-pointer hover:bg-emerald-500/10 transition-colors"
+          onClick={() => onGoToAccount(summary.best_available_account!.id)}
+        >
+          <TierBadge tier={summary.best_available_account.tier} />
+          <div className="flex-1 min-w-0">
+            <p className="text-[10px] text-slate-500 uppercase tracking-wider">Melhor disponível</p>
+            <p className="text-xs font-semibold text-white truncate">{summary.best_available_account.nickname}</p>
+          </div>
+          <span className="text-emerald-400 font-bold text-sm">{summary.best_available_account.health_score}%</span>
+        </div>
+      )}
+
+      {summary.usable_count === 0 && (
+        <div className="rounded-xl border border-rose-400/20 bg-rose-500/5 px-3 py-2 text-[11px] text-rose-300 text-center">
+          ⚠ Nenhuma conta utilizável nesta instância
+        </div>
+      )}
+
+      {/* Expand toggle */}
+      <button
+        onClick={() => setExpanded(e => !e)}
+        className="w-full text-[10px] text-slate-500 hover:text-slate-300 transition-colors text-center py-1 border-t border-white/5"
+      >
+        {expanded ? "▲ Recolher lista" : `▼ Ver todas as contas (${summary.accounts.length})`}
+      </button>
+
+      {/* Expanded account list */}
+      {expanded && (
+        <div className="space-y-3 border-t border-white/5 pt-3">
+          {available.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] uppercase tracking-wider text-emerald-400/70 font-semibold">
+                ✓ Disponíveis ({available.length})
+              </p>
+              {available.map(a => (
+                <PoolAccountRow key={a.id} a={a} onGoTo={() => onGoToAccount(a.id)} />
+              ))}
+            </div>
+          )}
+          {unavailable.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] uppercase tracking-wider text-rose-400/70 font-semibold">
+                ✗ Indisponíveis ({unavailable.length})
+              </p>
+              {unavailable.map(a => (
+                <PoolAccountRow key={a.id} a={a} onGoTo={() => onGoToAccount(a.id)} />
+              ))}
+            </div>
+          )}
+          {available.length === 0 && unavailable.length === 0 && (
+            <p className="text-center text-slate-500 text-xs py-4">Nenhuma conta visível com os filtros aplicados.</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PoolPanel({
+  pool,
+  loading,
+  onRefresh,
+  onGoToAccount,
+}: {
+  pool: InstancePoolSummary[];
+  loading: boolean;
+  onRefresh: () => void;
+  onGoToAccount: (id: number) => void;
+}) {
+  const [filter, setFilter] = useState<PoolFilter>(POOL_FILTER_DEFAULT);
+
+  function toggleFilter(key: keyof PoolFilter) {
+    setFilter(f => ({ ...f, [key]: !f[key] }));
+  }
+
+  const toggleButtons: { key: keyof PoolFilter; label: string; activeColor: string }[] = [
+    { key: "onlyAvailable", label: "Só disponíveis",  activeColor: "bg-emerald-500/20 text-emerald-300 ring-emerald-400/30" },
+    { key: "showLocked",    label: "Bloqueadas",       activeColor: "bg-violet-500/20  text-violet-300  ring-violet-400/30" },
+    { key: "showGlobal",    label: "Globais",          activeColor: "bg-slate-500/20   text-slate-300   ring-slate-400/30" },
+    { key: "showExclusive", label: "Exclusivas",       activeColor: "bg-cyan-500/20    text-cyan-300    ring-cyan-400/30" },
+    { key: "showCooldown",  label: "Cooldown",         activeColor: "bg-cyan-500/20    text-cyan-300    ring-cyan-400/30" },
+    { key: "showQuarantine",label: "Quarentena",       activeColor: "bg-red-500/20     text-red-300     ring-red-400/30" },
+    { key: "showInvalid",   label: "Inválidas",        activeColor: "bg-rose-500/20    text-rose-300    ring-rose-400/30" },
+  ];
+
+  if (loading) {
+    return (
+      <div className="card p-12 text-center text-slate-500 text-sm">Calculando pools...</div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Filters */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[10px] uppercase tracking-wider text-slate-500 mr-1">Filtros:</span>
+        {toggleButtons.map(({ key, label, activeColor }) => {
+          const isActive = filter[key];
+          return (
+            <button
+              key={key}
+              onClick={() => toggleFilter(key)}
+              className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold ring-1 transition-colors ${
+                isActive
+                  ? activeColor
+                  : "bg-white/5 text-slate-500 ring-white/10 hover:bg-white/10 hover:text-slate-400"
+              }`}
+            >
+              {label}
+            </button>
+          );
+        })}
+        <button
+          onClick={onRefresh}
+          className="ml-auto btn-secondary text-[11px] py-1 px-2.5"
+        >
+          ↻ Atualizar
+        </button>
+      </div>
+
+      {/* Global summary row */}
+      {pool.length > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[
+            {
+              label: "Total utilizáveis",
+              value: pool.reduce((s, p) => s + p.usable_count, 0),
+              color: "text-emerald-400",
+            },
+            {
+              label: "Em cooldown",
+              value: pool.reduce((s, p) => s + p.cooldown_count, 0),
+              color: "text-cyan-300",
+            },
+            {
+              label: "Em quarentena",
+              value: pool.reduce((s, p) => s + p.quarantine_count, 0),
+              color: "text-red-400",
+            },
+            {
+              label: "Bloqueadas",
+              value: pool.reduce((s, p) => s + p.locked_by_other_count, 0),
+              color: "text-violet-400",
+            },
+          ].map(({ label, value, color }) => (
+            <div key={label} className="card p-3 flex flex-col gap-0.5">
+              <p className="text-[10px] uppercase tracking-wider text-slate-500">{label}</p>
+              <p className={`text-2xl font-extrabold tabular-nums ${color}`}>{value}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Per instance cards */}
+      {pool.length === 0 ? (
+        <div className="card p-12 text-center text-slate-500 text-sm">
+          Nenhuma instância cadastrada. Configure instâncias no painel principal.
+        </div>
+      ) : (
+        <div className="grid sm:grid-cols-2 gap-4">
+          {pool.map(summary => (
+            <InstancePoolCard
+              key={summary.instance_id}
+              summary={summary}
+              filter={filter}
+              onGoToAccount={onGoToAccount}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -946,7 +1306,9 @@ export default function Contas() {
   const [filterTier, setFilterTier] = useState("");
   const [sortKey, setSortKey] = useState<"health" | "name" | "state" | "tier">("health");
 
-  const [tab, setTab] = useState<"accounts" | "config" | "logs">("accounts");
+  const [pool, setPool] = useState<InstancePoolSummary[]>([]);
+  const [poolLoading, setPoolLoading] = useState(false);
+  const [tab, setTab] = useState<"accounts" | "pool" | "config" | "logs">("accounts");
   const [showForm, setShowForm] = useState(false);
   const [editAccount, setEditAccount] = useState<Account | null>(null);
   const [stateModal, setStateModal] = useState<{ id: number; state: AccountState } | null>(null);
@@ -983,9 +1345,22 @@ export default function Contas() {
     }
   }, []);
 
+  const loadPool = useCallback(async () => {
+    setPoolLoading(true);
+    try {
+      const p = await api<InstancePoolSummary[]>("/api/accounts/pool-by-instance");
+      setPool(p);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setPoolLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadAll();
     loadLogs();
+    loadPool();
     const interval = setInterval(loadAll, 15000);
     logsIntervalRef.current = setInterval(loadLogs, 10000);
     return () => {
@@ -1083,15 +1458,19 @@ export default function Contas() {
         <SummaryBar accounts={accounts} />
 
         {/* Tabs */}
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           {([
             { key: "accounts", label: "👤 Contas" },
+            { key: "pool",     label: "🏊 Pool" },
             { key: "config",   label: "⚙️ Configurações" },
             { key: "logs",     label: `📋 Logs (${logs.length})` },
           ] as const).map(t => (
             <button
               key={t.key}
-              onClick={() => setTab(t.key)}
+              onClick={() => {
+                setTab(t.key);
+                if (t.key === "pool") loadPool();
+              }}
               className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
                 tab === t.key
                   ? "bg-cyan-500/20 text-cyan-300 ring-1 ring-cyan-400/30"
@@ -1177,6 +1556,19 @@ export default function Contas() {
               </div>
             )}
           </div>
+        )}
+
+        {/* ── Pool Tab ── */}
+        {tab === "pool" && (
+          <PoolPanel
+            pool={pool}
+            loading={poolLoading}
+            onRefresh={loadPool}
+            onGoToAccount={(id) => {
+              setTab("accounts");
+              setFilterSearch(accounts.find(a => a.id === id)?.nickname ?? "");
+            }}
+          />
         )}
 
         {/* ── Config Tab ── */}

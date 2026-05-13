@@ -84,6 +84,210 @@ function calcTier(score: number): string {
   return "D";
 }
 
+// ─── Pool por Instância ───────────────────────────────────────────────────────
+
+const UNAVAILABLE_STATES: string[] = [
+  "DEAD", "BANNED", "INVALID_TOKEN",
+  "NEEDS_VERIFICATION", "LOGIN_CHALLENGE", "MANUAL_ACTION_REQUIRED",
+];
+
+accountsRouter.get("/pool-by-instance", asyncHandler(async (_req, res) => {
+  const now = new Date();
+
+  // Score mínimo configurado
+  const cfgRows = await query<{ min_health_score: number }>(
+    `SELECT min_health_score FROM accounts_config WHERE id = 1`,
+  );
+  const minHealth = Number(cfgRows[0]?.min_health_score ?? 40);
+
+  // Todas as instâncias
+  const instances = await query<{ id: number; name: string }>(
+    `SELECT id, name FROM instances ORDER BY id ASC`,
+  );
+
+  // Todas as contas com dados de lock e token
+  const rows = await query<Record<string, unknown>>(`
+    SELECT
+      a.id, a.nickname, a.email, a.state,
+      a.instance_id,
+      a.consecutive_failures, a.failure_count, a.rotation_count,
+      a.activated_at, a.last_active_at, a.cooldown_until, a.quarantine_until,
+      a.account_lock, a.locked_by_instance, a.lock_expires_at,
+      tp.status   AS token_status,
+      li.name     AS locked_by_instance_name
+    FROM accounts a
+    LEFT JOIN token_pool tp ON tp.id  = a.token_pool_id
+    LEFT JOIN instances  li ON li.id  = a.locked_by_instance
+    ORDER BY a.id ASC
+  `);
+
+  // Calcula health para cada conta
+  type RawAccount = {
+    id: number; nickname: string; email: string | null; state: string;
+    instance_id: number | null;
+    consecutive_failures: number; failure_count: number; rotation_count: number;
+    activated_at: string | null; last_active_at: string | null;
+    token_status: string | null; cooldown_until: string | null; quarantine_until: string | null;
+    account_lock: boolean; locked_by_instance: number | null; lock_expires_at: string | null;
+    locked_by_instance_name: string | null;
+    health_score: number; tier: string;
+  };
+
+  const allAccounts: RawAccount[] = rows.map(r => {
+    const score = calcHealthScore({
+      state: r.state as AccountState,
+      consecutive_failures: Number(r.consecutive_failures ?? 0),
+      failure_count: Number(r.failure_count ?? 0),
+      rotation_count: Number(r.rotation_count ?? 0),
+      activated_at: r.activated_at as string | null,
+      last_active_at: r.last_active_at as string | null,
+      token_status: r.token_status as string | null,
+      cooldown_until: r.cooldown_until as string | null,
+      quarantine_until: r.quarantine_until as string | null,
+    });
+    return {
+      id: Number(r.id),
+      nickname: String(r.nickname),
+      email: r.email as string | null,
+      state: String(r.state),
+      instance_id: r.instance_id != null ? Number(r.instance_id) : null,
+      consecutive_failures: Number(r.consecutive_failures ?? 0),
+      failure_count: Number(r.failure_count ?? 0),
+      rotation_count: Number(r.rotation_count ?? 0),
+      activated_at: r.activated_at as string | null,
+      last_active_at: r.last_active_at as string | null,
+      token_status: r.token_status as string | null,
+      cooldown_until: r.cooldown_until as string | null,
+      quarantine_until: r.quarantine_until as string | null,
+      account_lock: Boolean(r.account_lock),
+      locked_by_instance: r.locked_by_instance != null ? Number(r.locked_by_instance) : null,
+      lock_expires_at: r.lock_expires_at as string | null,
+      locked_by_instance_name: r.locked_by_instance_name as string | null,
+      health_score: score,
+      tier: calcTier(score),
+    };
+  });
+
+  // Para cada instância, monta o pool
+  const result = instances.map(inst => {
+    // Contas do pool desta instância = exclusivas OU globais
+    const poolAccounts = allAccounts.filter(a =>
+      a.instance_id === inst.id || a.instance_id === null,
+    );
+
+    type DetailedAccount = RawAccount & {
+      is_exclusive: boolean;
+      is_global: boolean;
+      is_available: boolean;
+      unavailable_reasons: string[];
+      is_active: boolean;
+      in_cooldown: boolean;
+      in_quarantine: boolean;
+      locked_by_other: boolean;
+    };
+
+    const detailed: DetailedAccount[] = poolAccounts.map(a => {
+      const reasons: string[] = [];
+
+      const lockedByOther = a.account_lock
+        && a.lock_expires_at != null
+        && new Date(a.lock_expires_at) > now
+        && a.locked_by_instance != null
+        && a.locked_by_instance !== inst.id;
+
+      const inCooldown = !!a.cooldown_until && new Date(a.cooldown_until) > now;
+      const inQuarantine = !!a.quarantine_until && new Date(a.quarantine_until) > now;
+      const badState = UNAVAILABLE_STATES.includes(a.state);
+      const lowHealth = a.health_score < minHealth;
+
+      if (lockedByOther) {
+        reasons.push(`Bloqueada por ${a.locked_by_instance_name ?? "outra instância"}`);
+      }
+      if (inCooldown) {
+        reasons.push(`Cooldown até ${new Date(a.cooldown_until!).toLocaleTimeString("pt-BR")}`);
+      }
+      if (inQuarantine) {
+        reasons.push(`Quarentena até ${new Date(a.quarantine_until!).toLocaleTimeString("pt-BR")}`);
+      }
+      if (badState) {
+        reasons.push(`Estado: ${a.state}`);
+      }
+      if (lowHealth && !badState) {
+        reasons.push(`Health baixo (${a.health_score}%)`);
+      }
+
+      return {
+        ...a,
+        is_exclusive: a.instance_id === inst.id,
+        is_global: a.instance_id === null,
+        is_available: reasons.length === 0,
+        unavailable_reasons: reasons,
+        is_active: a.state === "ACTIVE",
+        in_cooldown: inCooldown,
+        in_quarantine: inQuarantine,
+        locked_by_other: !!lockedByOther,
+      };
+    });
+
+    const available = detailed.filter(a => a.is_available);
+    const sorted = [...available].sort((a, b) => b.health_score - a.health_score);
+    const best = sorted[0] ?? null;
+
+    const avgHealth = detailed.length > 0
+      ? Math.round(detailed.reduce((s, a) => s + a.health_score, 0) / detailed.length)
+      : 0;
+
+    // Resumo de motivos de indisponibilidade
+    const unavailReasons: Record<string, number> = {};
+    detailed.filter(a => !a.is_available).forEach(a => {
+      a.unavailable_reasons.forEach(r => {
+        const key = r.startsWith("Bloqueada") ? "Bloqueadas por outra instância"
+          : r.startsWith("Cooldown") ? "Em cooldown"
+          : r.startsWith("Quarentena") ? "Em quarentena"
+          : r.startsWith("Estado") ? "Estado inválido"
+          : "Health baixo";
+        unavailReasons[key] = (unavailReasons[key] ?? 0) + 1;
+      });
+    });
+
+    return {
+      instance_id: inst.id,
+      instance_name: inst.name,
+      exclusive_accounts_count: detailed.filter(a => a.is_exclusive).length,
+      global_available_count: detailed.filter(a => a.is_global && a.is_available).length,
+      active_count: detailed.filter(a => a.is_active).length,
+      cooldown_count: detailed.filter(a => a.in_cooldown).length,
+      quarantine_count: detailed.filter(a => a.in_quarantine).length,
+      locked_by_other_count: detailed.filter(a => a.locked_by_other).length,
+      usable_count: available.length,
+      average_health: avgHealth,
+      best_available_account: best
+        ? { id: best.id, nickname: best.nickname, health_score: best.health_score, tier: best.tier }
+        : null,
+      unavailable_reasons_summary: unavailReasons,
+      accounts: detailed.map(a => ({
+        id: a.id,
+        nickname: a.nickname,
+        email: a.email,
+        state: a.state,
+        health_score: a.health_score,
+        tier: a.tier,
+        is_exclusive: a.is_exclusive,
+        is_global: a.is_global,
+        is_available: a.is_available,
+        unavailable_reasons: a.unavailable_reasons,
+        is_active: a.is_active,
+        in_cooldown: a.in_cooldown,
+        in_quarantine: a.in_quarantine,
+        locked_by_other: a.locked_by_other,
+        locked_by_instance_name: a.locked_by_instance_name,
+      })),
+    };
+  });
+
+  res.json(result);
+}));
+
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 accountsRouter.get("/config", asyncHandler(async (_req, res) => {
