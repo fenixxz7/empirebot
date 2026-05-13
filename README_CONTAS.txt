@@ -504,5 +504,274 @@ Cenário: 2 bots, 8 contas no total.
   - Melhor disponível: A03 (95%)
 
 --------------------------------------------------------------------------------
+AUTO-ROTAÇÃO AUTOMÁTICA DE CONTAS
+--------------------------------------------------------------------------------
+
+O sistema de Auto-Rotação substitui a conta ativa de uma instância automaticamente,
+sem intervenção manual, sempre que a conta atual apresentar degradação ou atingir
+os limites configurados.
+
+  GATILHOS QUE ATIVAM A AUTO-ROTAÇÃO:
+  - Health score cai abaixo do mínimo configurado.
+  - Tempo máximo de uso contínuo é atingido.
+  - Rate limit grave detectado.
+  - Sessão morreu (heartbeat falhou).
+  - Token invalidado.
+  - Shadow limit detectado.
+  - Falhas consecutivas atingem o limite configurado.
+  - Conta entra em quarentena.
+  - Conta entra em estado crítico (ERROR, DEAD, BANNED etc).
+
+  QUANDO A ROTAÇÃO NÃO OCORRE:
+  - Conta ainda está dentro do tempo mínimo obrigatório de uso.
+  - Não há conta saudável disponível no pool.
+  - Instância está em lock operacional.
+  - Já existe uma rotação em andamento para essa instância.
+  - Sistema está em Safe Rotation Mode aguardando validação.
+
+--------------------------------------------------------------------------------
+MODO AUTOMÁTICO DE TEMPO
+--------------------------------------------------------------------------------
+
+Se nenhum tempo mínimo/máximo de uso estiver configurado para a conta,
+o sistema decide automaticamente o melhor momento de rotação com base em:
+
+  - Health score atual da conta.
+  - Estabilidade da sessão.
+  - Tempo contínuo de uso acumulado.
+  - Histórico de uso da conta.
+  - Taxa de erros recentes.
+  - Risco operacional calculado.
+  - Qualidade do pool disponível naquele momento.
+
+  Ative este modo na tela de edição da conta com a opção:
+  "Modo automático de tempo de uso".
+
+--------------------------------------------------------------------------------
+SELEÇÃO DA MELHOR CONTA NA ROTAÇÃO
+--------------------------------------------------------------------------------
+
+Ao escolher qual conta vai substituir a atual, o sistema avalia:
+
+  CRITÉRIOS DE SELEÇÃO (em ordem de prioridade):
+  1. Maior health score.
+  2. Menor tempo de uso recente.
+  3. Menor quantidade de falhas acumuladas.
+  4. Ausência de cooldown ativo.
+  5. Ausência de lock de outra instância.
+  6. Ausência de quarentena.
+  7. Prioridade para contas exclusivas da própria instância.
+  8. Fallback para contas globais disponíveis.
+
+  CONTAS QUE NUNCA SÃO SELECIONADAS:
+  - Abaixo do health score mínimo configurado.
+  - Em cooldown.
+  - Em quarentena.
+  - Bloqueadas por lock.
+  - Com estado INVALID_TOKEN, DEAD, BANNED, NEEDS_VERIFICATION, LOGIN_CHALLENGE.
+  - Utilizadas recentemente pela mesma instância (anti-pingpong ativo).
+
+--------------------------------------------------------------------------------
+SAFE ROTATION MODE (ROTAÇÃO SEGURA)
+--------------------------------------------------------------------------------
+
+O Safe Rotation Mode valida a nova conta ANTES de realizar a troca efetiva.
+
+  Fluxo de validação:
+  1. Validar token da nova conta.
+  2. Validar heartbeat (conta responde ao Discord).
+  3. Validar sessão ativa.
+  4. Se TODAS as validações passarem:
+     → Remover conta antiga da instância.
+     → Ativar nova conta.
+  5. Se QUALQUER validação falhar:
+     → Abortar rotação completamente.
+     → Restaurar estado anterior da instância.
+     → Registrar rollback nos logs.
+     → Manter instância operacional com a conta anterior.
+
+  Princípio: Estabilidade acima de velocidade.
+  Nunca trocar por uma conta que ainda não foi validada.
+
+--------------------------------------------------------------------------------
+ROTAÇÃO TRANSACIONAL (FLUXO ATÔMICO)
+--------------------------------------------------------------------------------
+
+A troca de conta funciona como uma transação — ou tudo ocorre com sucesso,
+ou nada é alterado. O fluxo completo é:
+
+  1. Selecionar a melhor conta disponível.
+  2. Criar lock temporário na conta selecionada.
+  3. Validar sessão e token (Safe Rotation Mode).
+  4. Aplicar token da nova conta na instância.
+  5. Validar heartbeat pós-aplicação.
+  6. Marcar nova conta como ACTIVE.
+  7. Liberar conta anterior (remover do estado ACTIVE).
+  8. Aplicar cooldown automático na conta anterior.
+  9. Registrar todos os eventos nos logs operacionais.
+
+  SE QUALQUER ETAPA FALHAR:
+  - Rollback completo de todas as alterações.
+  - Conta anterior é restaurada.
+  - Locks temporários são liberados.
+  - Erro detalhado é registrado.
+  - A instância nunca fica sem conta ativa.
+
+--------------------------------------------------------------------------------
+COOLDOWN INTELIGENTE PÓS-ROTAÇÃO
+--------------------------------------------------------------------------------
+
+Ao final de uma rotação, a conta que saiu de uso entra automaticamente em cooldown:
+
+  ROTAÇÃO NORMAL:
+  - Aplica cooldown padrão (configurável em "Configurações Globais").
+  - Padrão: 45 minutos.
+
+  ROTAÇÃO POR FALHA OU RATE LIMIT:
+  - Aplica cooldown pós-falha (mais longo).
+  - Padrão: 30 minutos extras além do cooldown normal.
+
+  ROTAÇÃO POR QUARENTENA:
+  - Aplica quarentena ao invés de cooldown.
+  - Padrão: 60 minutos. Configurável.
+
+  O sistema ajusta o tempo de cooldown dinamicamente conforme o motivo da saída,
+  protegendo a conta contra sobrecarga imediata após incidentes.
+
+--------------------------------------------------------------------------------
+FILA DE ROTAÇÃO (SERIALIZAÇÃO)
+--------------------------------------------------------------------------------
+
+O sistema mantém uma fila interna de operações de rotação por instância.
+
+  Regras:
+  - Apenas UMA rotação por instância pode ocorrer ao mesmo tempo.
+  - Novas solicitações de rotação aguardam na fila.
+  - Operações simultâneas são serializadas para evitar race conditions.
+  - Múltiplas trocas paralelas na mesma instância são impedidas.
+
+  Isso garante consistência total: o banco de dados nunca fica em estado
+  inconsistente por duas rotações tentando ocorrer ao mesmo tempo.
+
+--------------------------------------------------------------------------------
+ANTI-PINGPONG
+--------------------------------------------------------------------------------
+
+O anti-pingpong evita que o sistema fique trocando repetidamente entre as
+mesmas contas em ciclo (A → B → A → B → ...).
+
+  Mecanismo:
+  - Cada instância mantém um histórico recente de contas utilizadas.
+  - Contas utilizadas recentemente recebem uma penalidade temporária.
+  - Cooldown inteligente impede reutilização imediata.
+  - Janela anti-pingpong: período configurável de exclusão por uso recente.
+
+  Exemplo prático:
+  - BOT1 usa conta A por 2 horas e rotaciona para conta B.
+  - Conta A entra em cooldown.
+  - Mesmo que conta A saia do cooldown antes de conta B falhar,
+    o anti-pingpong impede que BOT1 volte imediatamente para conta A,
+    garantindo que outras contas do pool tenham chance de uso.
+
+--------------------------------------------------------------------------------
+AUTO-FAILOVER
+--------------------------------------------------------------------------------
+
+Se uma conta morrer inesperadamente (queda de sessão, token inválido repentino
+ou heartbeat sem resposta), o sistema aciona o auto-failover imediatamente:
+
+  1. Detecta a falha crítica da conta ativa.
+  2. Seleciona imediatamente a próxima conta saudável disponível.
+  3. Aplica fallback automático sem aguardar o ciclo normal de rotação.
+  4. Mantém a instância online sem interrupção perceptível.
+  5. Registra o evento de failover nos logs com causa e conta selecionada.
+
+  O failover é mais rápido que a rotação normal — prioriza disponibilidade.
+
+--------------------------------------------------------------------------------
+LOGS DA AUTO-ROTAÇÃO
+--------------------------------------------------------------------------------
+
+Todos os eventos da auto-rotação são registrados automaticamente na aba Logs:
+
+  auto_rotation_started    → Rotação automática iniciada.
+  rotation_reason          → Motivo da rotação (health baixo, timeout, falha etc).
+  account_selected         → Conta selecionada para substituição.
+  validation_approved      → Validação da nova conta aprovada (Safe Mode).
+  validation_failed        → Validação falhou — rotação abortada.
+  rollback_executed        → Rollback realizado — estado anterior restaurado.
+  cooldown_applied         → Cooldown aplicado na conta que saiu.
+  failover_executed        → Auto-failover acionado por falha inesperada.
+  lock_created             → Lock temporário criado na nova conta.
+  lock_released            → Lock temporário liberado.
+  heartbeat_validated      → Heartbeat da nova conta validado com sucesso.
+  anti_pingpong_applied    → Conta excluída por janela anti-pingpong.
+
+--------------------------------------------------------------------------------
+INDICADORES VISUAIS DA AUTO-ROTAÇÃO (PAINEL)
+--------------------------------------------------------------------------------
+
+O painel exibe indicadores em tempo real para cada instância:
+
+  Auto Rotation ON/OFF      → Mostra se a auto-rotação está habilitada.
+  Rotation In Progress      → Indica que uma troca está ocorrendo agora.
+  Last Rotation Reason      → Motivo da última rotação executada.
+  Next Eligible Rotation    → Quando a próxima rotação pode ocorrer.
+  Cooldown Remaining        → Tempo restante de cooldown da conta anterior.
+  Failover Active           → Indica se a instância está em modo failover.
+
+  TIMELINE DE ROTAÇÕES:
+  Cada instância exibe um histórico visual das últimas rotações realizadas,
+  mostrando: conta anterior → conta nova, motivo, timestamp, e resultado
+  (sucesso, rollback ou failover).
+
+--------------------------------------------------------------------------------
+EXEMPLOS PRÁTICOS DE TROCA AUTOMÁTICA
+--------------------------------------------------------------------------------
+
+EXEMPLO 1: Health Score caiu abaixo do mínimo
+  - BOT1 usa "Conta A" (health cai de 80% → 35%).
+  - Mínimo configurado: 40%.
+  - Sistema detecta health abaixo do mínimo.
+  - Inicia rotação → seleciona "Conta B" (health 87%).
+  - Valida token e heartbeat da Conta B (Safe Mode).
+  - Aplica Conta B no BOT1. Conta A entra em cooldown.
+  - Log: "auto_rotation_started → health_below_minimum → account_selected: Conta B".
+
+EXEMPLO 2: Tempo máximo de uso atingido
+  - BOT2 usa "Conta C" por 3 horas. Máximo configurado: 2 horas.
+  - Sistema detecta tempo excedido.
+  - Rotação agendada → aguarda fila de rotação.
+  - Seleciona "Conta D" (maior health disponível, sem cooldown).
+  - Anti-pingpong verifica: "Conta D" não foi usada recentemente → aprovada.
+  - Troca executada. Conta C entra em cooldown de 45 minutos.
+
+EXEMPLO 3: Sessão morreu inesperadamente (Failover)
+  - BOT1 perde heartbeat da "Conta E" às 14:32.
+  - Sistema detecta falha crítica imediatamente.
+  - Auto-failover: seleciona "Conta F" (próxima disponível e saudável).
+  - Troca em modo rápido sem esperar validação completa do Safe Mode.
+  - BOT1 volta a operar em segundos. Conta E entra em quarentena.
+  - Log: "failover_executed → session_died → new_account: Conta F".
+
+EXEMPLO 4: Rollback por falha na validação
+  - BOT2 tenta rotacionar de "Conta G" para "Conta H".
+  - Safe Mode: valida token da Conta H → OK.
+  - Safe Mode: valida heartbeat da Conta H → FALHOU (sem resposta).
+  - Sistema aborta rotação. Conta H não é ativada.
+  - Conta G permanece ativa no BOT2. Estado anterior restaurado.
+  - Log: "validation_failed → heartbeat_check → rollback_executed".
+  - Sistema tentará próxima conta elegível no próximo ciclo.
+
+EXEMPLO 5: Anti-pingpong em ação
+  - BOT1 usou "Conta A" por 2h, rotacionou para "Conta B".
+  - 20 minutos depois, Conta B falha → rotação iniciada.
+  - Pool disponível: Conta A (health 82%), Conta C (health 71%).
+  - Anti-pingpong: Conta A foi usada há apenas 20 min → penalidade aplicada.
+  - Sistema seleciona Conta C (71%) mesmo com health inferior ao da Conta A.
+  - Resultado: ciclo de pingpong evitado. Conta A usada novamente só após
+    janela anti-pingpong expirar.
+
+--------------------------------------------------------------------------------
 FIM DO README
 ================================================================================
