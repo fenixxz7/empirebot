@@ -591,6 +591,58 @@ export async function initDatabase(): Promise<void> {
       ON rotation_history (rotated_at DESC)
   `);
 
+  // ── Anti-pingpong persistente ───────────────────────────────────────────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS rotation_memory (
+      id              BIGSERIAL PRIMARY KEY,
+      instance_id     INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+      account_id      INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      used_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      rotation_reason TEXT,
+      rotation_result TEXT
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS rotation_memory_inst_used
+      ON rotation_memory (instance_id, used_at DESC)
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS rotation_memory_acc_used
+      ON rotation_memory (account_id, used_at DESC)
+  `);
+
+  // ── Alertas do Watchdog ─────────────────────────────────────────────────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS watchdog_alerts (
+      id          BIGSERIAL PRIMARY KEY,
+      instance_id INTEGER REFERENCES instances(id) ON DELETE CASCADE,
+      alert_type  TEXT NOT NULL,
+      severity    TEXT NOT NULL DEFAULT 'warn',
+      detail      TEXT,
+      resolved    BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      resolved_at TIMESTAMPTZ
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS watchdog_alerts_ts
+      ON watchdog_alerts (created_at DESC)
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS watchdog_alerts_open
+      ON watchdog_alerts (resolved, created_at DESC)
+  `);
+
+  // ── Novas colunas de sistema em accounts_config ─────────────────────────────
+  await pool.query(`
+    ALTER TABLE accounts_config
+      ADD COLUMN IF NOT EXISTS emergency_mode          BOOLEAN NOT NULL DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS readonly_recovery_mode  BOOLEAN NOT NULL DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS rotation_paused         BOOLEAN NOT NULL DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS smart_cooldown          BOOLEAN NOT NULL DEFAULT TRUE,
+      ADD COLUMN IF NOT EXISTS stability_weight        INTEGER NOT NULL DEFAULT 20
+  `);
+
 }
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);

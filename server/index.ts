@@ -12,6 +12,7 @@ import { manager, setWsServer } from "./worker/manager.js";
 import { errorMiddleware } from "./lib/asyncHandler.js";
 import { SESSION_COOKIE_MAX_AGE_MS, LOG_ROTATION_INTERVAL_MS } from "./lib/timings.js";
 import { startHealthMonitor } from "./engine/auto-rotator.js";
+import { startWatchdog } from "./engine/watchdog.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 5000);
@@ -119,8 +120,9 @@ async function main() {
   rotateLogs();
   setInterval(rotateLogs, LOG_ROTATION_INTERVAL_MS);
 
-  // Inicia o monitor de saúde de contas (auto-rotação)
+  // Inicia o monitor de saúde de contas (auto-rotação) e o watchdog
   startHealthMonitor(30_000);
+  startWatchdog(60_000);
 
   httpServer.listen(PORT, "0.0.0.0", async () => {
     console.log(`[server] listening on http://0.0.0.0:${PORT}`);

@@ -1,777 +1,546 @@
 ================================================================================
-  README — ABA CONTAS (EmpireBot)
+  IMPERIUNS BOT — MÓDULO DE CONTAS (Camada de Estabilidade e Observabilidade)
+================================================================================
+Versão: 2.0 — Stability & Observability Layer
+Data: 2026-05
+
+--------------------------------------------------------------------------------
+ÍNDICE
+--------------------------------------------------------------------------------
+ 1. Visão Geral
+ 2. Arquitetura de Dados
+ 3. Ciclo de Vida de uma Conta
+ 4. Engine de Auto-Rotação (auto-rotator.ts)
+    4.1 Estratégias de Rotação
+    4.2 9 Passos Transacionais
+    4.3 Anti-Pingpong (rotation_memory)
+    4.4 Smart Cooldown
+    4.5 Session Stability Score
+ 5. Failover
+ 6. Rollback Automático
+ 7. Watchdog Global (watchdog.ts)
+    7.1 Checks do Watchdog
+    7.2 Alertas e Severidade
+ 8. Modos de Operação do Sistema
+    8.1 Emergency Mode
+    8.2 Readonly Recovery Mode
+    8.3 Rotation Paused
+    8.4 Watchdog Pause (automático)
+ 9. Painel de Saúde do Sistema (tab 🏥 Sistema)
+    9.1 Status Geral
+    9.2 Controles de Modo
+    9.3 Métricas de Pool
+    9.4 Métricas de Rotação
+    9.5 Saúde por Instância
+    9.6 Alertas do Watchdog
+10. API REST (endpoints)
+11. Tabelas do Banco de Dados
+12. Fluxo Operacional Resumido
+13. Guia de Troubleshooting
+14. Exemplos de Cenários
+
+================================================================================
+1. VISÃO GERAL
+================================================================================
+O módulo de contas gerencia um pool de contas Discord (selfbots) para múltiplas
+instâncias de bot. Cada instância usa exatamente uma conta ativa por vez. O
+sistema rotaciona contas automaticamente com base em saúde, tempo de uso,
+falhas e limitações de rate limit.
+
+A Camada de Estabilidade e Observabilidade (v2.0) adiciona:
+  - Anti-pingpong persistente (evita reuso imediato de conta)
+  - Smart Cooldown (multiplica cooldown por fator dinâmico por motivo)
+  - Session Stability Score (score 0-100 de qualidade da sessão)
+  - Watchdog Global (detecta anomalias e pausa rotação automaticamente)
+  - Emergency Mode / Readonly Recovery Mode / Rotation Paused
+  - Painel de Saúde do Sistema na UI (tab 🏥 Sistema)
+  - Métricas operacionais (rotações/h, failovers/h, rollbacks/h)
+
+================================================================================
+2. ARQUITETURA DE DADOS
 ================================================================================
 
---------------------------------------------------------------------------------
-OBJETIVO DA ABA CONTAS
---------------------------------------------------------------------------------
-
-A aba CONTAS é o gerenciador centralizado de todas as contas Discord usadas pelo
-EmpireBot. Ela funciona como:
-
-  - Account Manager:        Cadastro, edição e remoção de contas.
-  - Session Orchestrator:   Coordena qual conta está ativa em qual instância.
-  - Health Controller:      Calcula a saúde de cada conta em tempo real.
-  - Auto Recovery System:   Detecta falhas e aciona cooldown/quarentena.
-  - Rotation Manager:       Decide quando e para qual conta rotacionar.
-
-A página NÃO duplica as métricas de Entradas, Filas, Partidas e Msgs que já
-aparecem no dashboard principal das instâncias (BOT1, BOT2).
-
---------------------------------------------------------------------------------
-COMO CADASTRAR UMA CONTA
---------------------------------------------------------------------------------
-
-1. Acesse o menu "👤 Contas" no topo do painel.
-2. Clique em "+ Nova conta".
-3. Preencha os campos:
-
-   OBRIGATÓRIO:
-   - Nome / Nickname: nome interno para identificar a conta (ex: "Conta 01").
-
-   OPCIONAIS (mas recomendados):
-   - E-mail: e-mail da conta Discord.
-   - Token: token de autenticação da conta Discord (colar diretamente).
-   - Instância vinculada: BOT1, BOT2 ou "Nenhuma" (pool global).
-
-   CONFIGURAÇÕES AVANÇADAS:
-   - Auto-rotação: permite que o sistema troque esta conta automaticamente.
-   - Auto-refresh: o sistema tenta renovar o token/sessão automaticamente.
-   - Auto-relogin: usa e-mail/senha como fallback de último recurso.
-   - Modo automático de tempo de uso: o bot decide quando trocar a conta.
-   - Tempo mínimo / máximo de uso: define janela de permanência da conta.
-   - Notas: campo livre para observações.
-
-4. Clique em "Salvar".
-
---------------------------------------------------------------------------------
-COMO FUNCIONA: EMAIL + TOKEN
---------------------------------------------------------------------------------
-
-Uma conta pode funcionar apenas com:
-  - E-mail + Token (recomendado e suficiente)
-
-O campo "senha" é OPCIONAL. Ele só é utilizado se "Auto-relogin" estiver ativado
-e apenas como fallback de último recurso — o sistema nunca tenta fazer login
-automático via senha como método principal, pois o Discord pode exigir captcha,
-verificação por e-mail, 2FA ou outros challenges de segurança.
-
-O fluxo de recuperação preferido é sempre:
-  1. Reutilizar a sessão atual.
-  2. Reutilizar cookies da sessão.
-  3. Renovar (refresh) o token via sessão já autenticada.
-  4. Usar e-mail/senha apenas se nenhuma das opções acima funcionar.
-
-Se ocorrer um challenge de segurança:
-  - A conta é marcada automaticamente como NEEDS_VERIFICATION ou LOGIN_CHALLENGE.
-  - O sistema para de tentar logar automaticamente (sem loop infinito).
-  - A conta fica aguardando ação manual.
-
---------------------------------------------------------------------------------
-INSTÂNCIA VINCULADA
---------------------------------------------------------------------------------
-
-Ao cadastrar ou editar uma conta, você pode vinculá-la a uma instância:
-
-  - Nenhuma    → conta global (disponível para qualquer instância).
-  - BOT1       → conta exclusiva do BOT1.
-  - BOT2       → conta exclusiva do BOT2.
-  - (outras)   → qualquer outra instância cadastrada.
-
-Comportamento:
-  - Conta vinculada ao BOT1: só pode ser usada pelo BOT1.
-  - Conta vinculada ao BOT2: só pode ser usada pelo BOT2.
-  - Conta sem vínculo: pode ser usada por qualquer instância disponível.
-
---------------------------------------------------------------------------------
-DIFERENÇA ENTRE CONTA GLOBAL E CONTA VINCULADA
---------------------------------------------------------------------------------
-
-  CONTA GLOBAL (instância = Nenhuma):
-  - Fica no pool compartilhado.
-  - Qualquer instância pode usá-la quando precisar de uma conta.
-  - Útil para ter reservas que qualquer bot pode consumir.
-
-  CONTA VINCULADA (instância = BOT1 ou BOT2):
-  - Pertence exclusivamente àquela instância.
-  - Outra instância nunca poderá usar essa conta.
-  - Útil para separar contas por bot e manter controle preciso.
-
---------------------------------------------------------------------------------
-POOL POR INSTÂNCIA
---------------------------------------------------------------------------------
-
-Quando uma instância precisa de uma conta (para rotação, recuperação etc.),
-a ordem de prioridade de seleção é:
-
-  1. Contas vinculadas à própria instância (pool exclusivo).
-  2. Contas globais disponíveis (sem vínculo, sem lock ativo).
-  3. Nunca usar conta vinculada a OUTRA instância.
-
-Isso garante que BOT1 e BOT2 nunca competem pela mesma conta exclusiva.
-
---------------------------------------------------------------------------------
-COMO FUNCIONA A ROTAÇÃO
---------------------------------------------------------------------------------
-
-O sistema rotaciona contas automaticamente quando:
-  - O health score cai abaixo do mínimo configurado.
-  - A conta atinge o tempo máximo de uso contínuo.
-  - Ocorre rate limit, shadow limit ou falha de token.
-  - A conta acumula muitas falhas consecutivas.
-
-Estratégias disponíveis (configuráveis na aba "Configurações"):
-  - Sequential:          Rotaciona na ordem cadastrada.
-  - Random:              Escolhe aleatoriamente.
-  - Weighted Health:     Prioriza contas mais saudáveis (RECOMENDADO).
-  - Least Recently Used: Prioriza contas menos utilizadas recentemente.
-
-Ao rotacionar:
-  1. A conta atual vai para estado COOLING.
-  2. O sistema seleciona a melhor conta disponível.
-  3. O token da nova conta é aplicado na instância.
-  4. Um lock temporário é criado para evitar conflitos.
-  5. Logs são registrados.
-
---------------------------------------------------------------------------------
-COMO FUNCIONA O HEALTH SCORE
---------------------------------------------------------------------------------
-
-Cada conta recebe um score de 0 a 100, calculado com os seguintes pesos:
-
-  40%  Estabilidade da sessão   (estado atual da conta)
-  25%  Ausência de erros        (falhas consecutivas e totais)
-  20%  Saúde da sessão          (tempo desde a última atividade)
-  10%  Disponibilidade          (cooldown, quarentena ativa?)
-   5%  Status do token          (conectado, rate_limited, inválido?)
-
-Classificação por tier:
-
-  S Tier → 90% ou mais   (cor amarela — excelente)
-  A Tier → 75% a 89%     (cor verde — boa)
-  B Tier → 60% a 74%     (cor azul — razoável)
-  C Tier → 40% a 59%     (cor âmbar — atenção)
-  D Tier → abaixo de 40% (cor vermelha — problema)
-
-O health score é recalculado automaticamente a cada 15 segundos no painel.
-
---------------------------------------------------------------------------------
-COMO FUNCIONAM COOLDOWN E QUARENTENA
---------------------------------------------------------------------------------
-
-  COOLDOWN:
-  - Período de descanso após uso normal ou rotação.
-  - A conta fica no estado COOLING durante este período.
-  - Padrão: 45 minutos. Configurável nas "Configurações Globais".
-
-  COOLDOWN PÓS-FALHA:
-  - Aplicado automaticamente após uma falha.
-  - Padrão: 30 minutos. Configurável nas "Configurações Globais".
-
-  QUARENTENA:
-  - Aplicada após 5 ou mais falhas consecutivas.
-  - Mais longa que o cooldown normal.
-  - Padrão: 60 minutos. Configurável nas "Configurações Globais".
-  - A conta fica bloqueada até o fim da quarentena.
-  - Após a quarentena, o estado retorna a STANDBY.
-
-  ANTI-LOOP:
-  - O sistema detecta ciclos de falha (A falha → B falha → volta A → loop).
-  - Cada conta tem um contador de falhas consecutivas.
-  - Ao atingir o limite, a conta entra em quarentena automática.
-
---------------------------------------------------------------------------------
-ESTADOS DA CONTA
---------------------------------------------------------------------------------
-
-  ACTIVE              → Conta em uso ativo.
-  IDLE                → Conectada mas sem atividade.
-  STANDBY             → Pronta para uso, aguardando.
-  COOLING             → Em cooldown pós-uso.
-  RESERVED            → Reservada para uso futuro.
-  WAITING             → Aguardando recurso externo.
-  REAUTH              → Necessita reautenticação.
-  INVALID_TOKEN       → Token inválido ou expirado.
-  NEEDS_VERIFICATION  → Discord solicitou verificação.
-  LOGIN_CHALLENGE     → Challenge de segurança detectado.
-  MANUAL_ACTION_REQ   → Requer ação manual do operador.
-  LIMITED             → Conta com limitações ativas.
-  ERROR               → Erro genérico.
-  DEAD                → Conta morta (falha crítica).
-  BANNED              → Conta banida pelo Discord.
-
---------------------------------------------------------------------------------
-COMO FUNCIONAM OS LOGS
---------------------------------------------------------------------------------
-
-Todos os eventos da conta são registrados na aba "📋 Logs":
-
-  created          → Conta criada.
-  activated        → Conta ativada.
-  deactivated      → Conta pausada manualmente.
-  state_change     → Mudança de estado (ex: STANDBY → ACTIVE).
-  rotation         → Rotação executada.
-  failure          → Falha registrada.
-  reset            → Contadores resetados.
-  instance_link    → Vínculo de instância alterado.
-  token_applied    → Token aplicado em uma instância.
-  lock_acquired    → Lock adquirido por uma instância.
-  lock_released    → Lock liberado.
-
-Filtros disponíveis nos logs:
-  - Por conta (nome)
-  - Por tipo de evento
-  - Por busca livre de texto
-  - Limpar filtros
-
-Os logs são atualizados a cada 10 segundos automaticamente.
-
---------------------------------------------------------------------------------
-TOKENS INDEPENDENTES POR INSTÂNCIA
---------------------------------------------------------------------------------
-
-Cada instância (BOT1, BOT2) tem seu próprio pool de tokens completamente
-independente. Isso significa:
-
-  - Remover um token do BOT1 NÃO remove o mesmo token do BOT2.
-  - O mesmo valor de token pode existir em BOT1 e BOT2 como registros separados.
-  - Cada instância gerencia sua própria lista de tokens ativos.
-  - Edições em uma instância não afetam a outra.
-
-Ao ATIVAR uma conta que tem token próprio e instância vinculada:
-  1. O sistema verifica se o token já está no pool daquela instância.
-  2. Se não estiver, adiciona automaticamente ao pool da instância.
-  3. O token NÃO é adicionado em outras instâncias.
-
-Na aba principal (ConfigForm de cada instância), ao remover um token:
-  - O token é removido APENAS da lista daquela instância.
-  - Outras instâncias continuam com seus tokens intactos.
-
---------------------------------------------------------------------------------
-LOCK DE CONTA (PREVENÇÃO DE CONFLITO)
---------------------------------------------------------------------------------
-
-Quando uma conta é ativada, ela recebe um LOCK automático de 2 horas.
-
-Campos do lock:
-  - account_lock:       true/false (lock ativo).
-  - locked_by_instance: ID da instância que está usando a conta.
-  - locked_at:          Quando o lock foi criado.
-  - lock_expires_at:    Quando o lock expira automaticamente.
-
-Regras:
-  - Uma conta com lock ativo só pode ser usada pela instância que detém o lock.
-  - Se outra instância tentar usar a conta, recebe um erro de conflito.
-  - Se a instância parar de responder, o lock expira automaticamente.
-  - É possível liberar o lock manualmente clicando em "Reset" no card da conta.
-
---------------------------------------------------------------------------------
-CUIDADOS IMPORTANTES DE USO
---------------------------------------------------------------------------------
-
-1. NUNCA ative a mesma conta em duas instâncias simultaneamente.
-   O sistema previne isso via lock, mas fique atento.
-
-2. Contas marcadas como BANNED ou DEAD devem ser removidas.
-   Continuar tentando usá-las pode gerar problemas.
-
-3. O campo "senha" é OPCIONAL e de alto risco.
-   Só ative "Auto-relogin" se necessário. O Discord pode detectar logins
-   automáticos e acionar verificações que bloqueiam a conta permanentemente.
-
-4. Tokens são armazenados em texto puro no banco de dados.
-   Proteja o acesso ao servidor e ao banco de dados.
-
-5. Contas em NEEDS_VERIFICATION ou LOGIN_CHALLENGE precisam de ação manual.
-   O sistema não vai tentar resolver automaticamente — acesse o Discord
-   manualmente para resolver o challenge antes de reativar a conta.
-
-6. O sistema de cooldown existe para proteger as contas.
-   Não force o uso de contas em cooldown sem necessidade.
-
---------------------------------------------------------------------------------
-EXEMPLOS PRÁTICOS
---------------------------------------------------------------------------------
-
-EXEMPLO 1: Conta dedicada ao BOT1 com token manual
-  - Nickname: "Conta BOT1 #1"
-  - Email: conta1@email.com
-  - Token: [colar o token do Discord]
-  - Instância: BOT1
-  - Auto-rotação: Sim
-  - Ao ativar: token é automaticamente adicionado ao pool do BOT1.
-
-EXEMPLO 2: Conta de reserva global
-  - Nickname: "Reserva 01"
-  - Email: reserva01@email.com
-  - Token: [colar o token do Discord]
-  - Instância: Nenhuma
-  - Auto-rotação: Sim
-  - Comportamento: qualquer instância pode usar esta conta quando precisar.
-
-EXEMPLO 3: Pool de 10 contas para 2 instâncias
-  - 5 contas vinculadas ao BOT1
-  - 5 contas vinculadas ao BOT2
-  - Máx. contas ativas (configuração): 2 por instância
-  - Resultado: cada bot roda com 1 conta ativa e tem 4 de reserva própria.
-
-EXEMPLO 4: Remover token apenas do BOT1 sem afetar o BOT2
-  - Na aba principal do painel, acesse a aba do BOT1.
-  - Na seção "Selecionar tokens", clique em "Remover".
-  - Marque o token desejado e confirme.
-  - Resultado: token removido APENAS do BOT1. O BOT2 continua intacto.
-
---------------------------------------------------------------------------------
-POOL POR INSTÂNCIA — ABA 🏊 POOL
---------------------------------------------------------------------------------
-
-A aba "🏊 Pool" mostra, em tempo real, o estado do pool de contas para cada
-instância cadastrada. Ela responde à pergunta central:
-
-  "Quantas contas cada bot tem disponíveis AGORA para entrar em fila?"
-
---------------------------------------------------------------------------------
-O QUE SÃO CONTAS GLOBAIS
---------------------------------------------------------------------------------
-
-Contas globais são contas sem instância vinculada (campo "Instância" = Nenhuma).
-
-  - Qualquer instância pode usar uma conta global, desde que esteja disponível.
-  - São compartilhadas entre todos os bots.
-  - Aparecem no pool de TODAS as instâncias.
-
-Exemplo prático:
-  - Você tem 10 contas globais.
-  - BOT1 e BOT2 ambos enxergam essas 10 contas no pool.
-  - Mas uma conta só pode ser usada por UM bot por vez (lock ativo).
-
---------------------------------------------------------------------------------
-O QUE SÃO CONTAS EXCLUSIVAS
---------------------------------------------------------------------------------
-
-Contas exclusivas são contas vinculadas a uma instância específica
-(campo "Instância" = BOT1, BOT2, etc).
-
-  - Só aparecem no pool da instância à qual estão vinculadas.
-  - Nenhuma outra instância pode usá-las.
-  - Identificadas com badge "EXCLUSIVA" na lista expandida.
-
-Exemplo prático:
-  - "Conta BOT1 #1" está vinculada ao BOT1.
-  - Ela aparece APENAS no pool do BOT1.
-  - O BOT2 nunca verá ou usará essa conta.
-
---------------------------------------------------------------------------------
-COMO CALCULAR O POOL DE UMA INSTÂNCIA
---------------------------------------------------------------------------------
-
-Pool de BOT1 = Contas vinculadas ao BOT1 + Contas globais disponíveis
-
-Um conta é UTILIZÁVEL (conta no "usáveis") se:
-  ✓ Está no pool da instância (exclusiva ou global)
-  ✓ Estado não é DEAD, BANNED, INVALID_TOKEN, NEEDS_VERIFICATION,
-    LOGIN_CHALLENGE ou MANUAL_ACTION_REQUIRED
-  ✓ Não está em cooldown (cooldown_until > agora)
-  ✓ Não está em quarentena (quarantine_until > agora)
-  ✓ Não está bloqueada por outra instância
-  ✓ Health score ≥ mínimo configurado (padrão: 40%)
-
---------------------------------------------------------------------------------
-MOTIVOS DE INDISPONIBILIDADE
---------------------------------------------------------------------------------
-
-Cada conta indisponível mostra o(s) motivo(s) na lista expandida:
-
-  "Bloqueada por BOT2"
-    → Conta com lock ativo adquirido pelo BOT2. Será liberada automaticamente
-      quando o lock expirar (padrão: 2 horas após ativação).
-
-  "Cooldown até HH:MM"
-    → Conta em período de descanso. Ficará disponível ao fim do cooldown.
-
-  "Quarentena até HH:MM"
-    → Conta com muitas falhas consecutivas, em quarentena forçada.
-      Ficará disponível ao fim da quarentena.
-
-  "Estado: DEAD / BANNED / INVALID_TOKEN / ..."
-    → Estado crítico que impede uso imediato.
-    → DEAD: conta com falha crítica irrecuperável.
-    → BANNED: conta banida pelo Discord.
-    → INVALID_TOKEN: token expirado ou inválido.
-    → NEEDS_VERIFICATION: Discord solicitou verificação manual.
-    → LOGIN_CHALLENGE: challenge de segurança ativo.
-    → MANUAL_ACTION_REQUIRED: requer intervenção do operador.
-
-  "Health baixo (X%)"
-    → Health score abaixo do mínimo configurado.
-    → Configure o mínimo em "⚙️ Configurações" → "Health mínimo para rotação".
-
---------------------------------------------------------------------------------
-COMO INTERPRETAR OS CARDS
---------------------------------------------------------------------------------
-
-Cada card de instância exibe:
-
-  [Nome da Instância]                         [X usáveis]
-  ──────────────────────────────────────────────────────
-  Exclusivas   │ Globais disp. │ Ativas agora
-  Cooldown     │ Quarentena    │ Bloq. outra
-
-  [Barra de health médio do pool]
-  [Barra de utilização do pool (% utilizável)]
-
-  [Melhor disponível → clique para ir ao card da conta]
-
-  [▼ Ver todas as contas (N)]  ← expande a lista completa
-
-Cores do contador "usáveis":
-  Verde  → 2 ou mais contas utilizáveis (pool saudável)
-  Âmbar  → 1 conta utilizável (atenção — pool crítico)
-  Vermelho → 0 contas utilizáveis (bot sem conta para usar)
-
---------------------------------------------------------------------------------
-FILTROS DA ABA POOL
---------------------------------------------------------------------------------
-
-Os filtros controlam quais contas aparecem na lista expandida de cada instância:
-
-  [Só disponíveis]  → Oculta contas indisponíveis. Mostra apenas as utilizáveis.
-  [Bloqueadas]      → Mostra/oculta contas com lock de outra instância.
-  [Globais]         → Mostra/oculta contas sem instância vinculada.
-  [Exclusivas]      → Mostra/oculta contas vinculadas àquela instância.
-  [Cooldown]        → Mostra/oculta contas em cooldown.
-  [Quarentena]      → Mostra/oculta contas em quarentena.
-  [Inválidas]       → Mostra/oculta contas com estado crítico (DEAD, BANNED, etc).
-
-Os filtros NÃO afetam os contadores do card — apenas a lista expandida.
-
-Botão [↻ Atualizar]:
-  → Recalcula o pool manualmente. O pool também é calculado ao abrir a aba.
-
---------------------------------------------------------------------------------
-BARRA DE RESUMO GLOBAL
---------------------------------------------------------------------------------
-
-No topo da aba Pool, uma barra de 4 cards mostra os totais de TODAS as instâncias:
-
-  Total utilizáveis    → soma de contas utilizáveis em todas as instâncias
-  Em cooldown          → soma de contas em cooldown em todas as instâncias
-  Em quarentena        → soma de contas em quarentena
-  Bloqueadas           → soma de contas bloqueadas por outra instância
-
---------------------------------------------------------------------------------
-MELHOR CONTA DISPONÍVEL
---------------------------------------------------------------------------------
-
-O card destaca automaticamente a conta com maior health score entre as
-utilizáveis daquela instância. Clicar no bloco verde leva ao card da conta
-na aba "👤 Contas", com o nome da conta já preenchido no filtro de busca.
-
---------------------------------------------------------------------------------
-EXEMPLO COMPLETO — INTERPRETAÇÃO DE UM CENÁRIO REAL
---------------------------------------------------------------------------------
-
-Cenário: 2 bots, 8 contas no total.
-
-  Contas:
-  - "A01" → vinculada BOT1, estado ACTIVE,  health 88%
-  - "A02" → vinculada BOT1, estado COOLING, health 60%  ← em cooldown
-  - "A03" → vinculada BOT2, estado STANDBY, health 95%
-  - "A04" → vinculada BOT2, estado ACTIVE,  health 72%
-  - "G01" → global,         estado STANDBY, health 91%  ← lock por BOT1
-  - "G02" → global,         estado STANDBY, health 82%
-  - "G03" → global,         estado DEAD,    health  0%
-  - "G04" → global,         estado STANDBY, health 45%
-
-  Pool do BOT1:
-  - Exclusivas: A01, A02 (2)
-  - Globais no pool: G01, G02, G03, G04 (4)
-  - Utilizáveis: A01 (ativa, 88%), G02 (standby, 82%), G04 (45%) = 3
-  - Não utilizáveis:
-    → A02: cooldown
-    → G01: bloqueada pelo BOT1 (ele mesmo tem o lock — ainda conta como lock)
-    → G03: DEAD
-  - Health médio: (88+60+91+82+0+45) / 6 = 61%
-  - Melhor disponível: A01 (88%)
-
-  Pool do BOT2:
-  - Exclusivas: A03, A04 (2)
-  - Globais no pool: G01, G02, G03, G04 (4) — G01 tem lock do BOT1!
-  - Utilizáveis: A03 (95%), A04 (72%), G02 (82%), G04 (45%) = 4
-  - Não utilizáveis:
-    → G01: bloqueada por BOT1
-    → G03: DEAD
-  - Melhor disponível: A03 (95%)
-
---------------------------------------------------------------------------------
-AUTO-ROTAÇÃO AUTOMÁTICA DE CONTAS
---------------------------------------------------------------------------------
-
-O sistema de Auto-Rotação substitui a conta ativa de uma instância automaticamente,
-sem intervenção manual, sempre que a conta atual apresentar degradação ou atingir
-os limites configurados.
-
-  GATILHOS QUE ATIVAM A AUTO-ROTAÇÃO:
-  - Health score cai abaixo do mínimo configurado.
-  - Tempo máximo de uso contínuo é atingido.
-  - Rate limit grave detectado.
-  - Sessão morreu (heartbeat falhou).
-  - Token invalidado.
-  - Shadow limit detectado.
-  - Falhas consecutivas atingem o limite configurado.
-  - Conta entra em quarentena.
-  - Conta entra em estado crítico (ERROR, DEAD, BANNED etc).
-
-  QUANDO A ROTAÇÃO NÃO OCORRE:
-  - Conta ainda está dentro do tempo mínimo obrigatório de uso.
-  - Não há conta saudável disponível no pool.
-  - Instância está em lock operacional.
-  - Já existe uma rotação em andamento para essa instância.
-  - Sistema está em Safe Rotation Mode aguardando validação.
-
---------------------------------------------------------------------------------
-MODO AUTOMÁTICO DE TEMPO
---------------------------------------------------------------------------------
-
-Se nenhum tempo mínimo/máximo de uso estiver configurado para a conta,
-o sistema decide automaticamente o melhor momento de rotação com base em:
-
-  - Health score atual da conta.
-  - Estabilidade da sessão.
-  - Tempo contínuo de uso acumulado.
-  - Histórico de uso da conta.
-  - Taxa de erros recentes.
-  - Risco operacional calculado.
-  - Qualidade do pool disponível naquele momento.
-
-  Ative este modo na tela de edição da conta com a opção:
-  "Modo automático de tempo de uso".
-
---------------------------------------------------------------------------------
-SELEÇÃO DA MELHOR CONTA NA ROTAÇÃO
---------------------------------------------------------------------------------
-
-Ao escolher qual conta vai substituir a atual, o sistema avalia:
-
-  CRITÉRIOS DE SELEÇÃO (em ordem de prioridade):
-  1. Maior health score.
-  2. Menor tempo de uso recente.
-  3. Menor quantidade de falhas acumuladas.
-  4. Ausência de cooldown ativo.
-  5. Ausência de lock de outra instância.
-  6. Ausência de quarentena.
-  7. Prioridade para contas exclusivas da própria instância.
-  8. Fallback para contas globais disponíveis.
-
-  CONTAS QUE NUNCA SÃO SELECIONADAS:
-  - Abaixo do health score mínimo configurado.
-  - Em cooldown.
-  - Em quarentena.
-  - Bloqueadas por lock.
-  - Com estado INVALID_TOKEN, DEAD, BANNED, NEEDS_VERIFICATION, LOGIN_CHALLENGE.
-  - Utilizadas recentemente pela mesma instância (anti-pingpong ativo).
-
---------------------------------------------------------------------------------
-SAFE ROTATION MODE (ROTAÇÃO SEGURA)
---------------------------------------------------------------------------------
-
-O Safe Rotation Mode valida a nova conta ANTES de realizar a troca efetiva.
-
-  Fluxo de validação:
-  1. Validar token da nova conta.
-  2. Validar heartbeat (conta responde ao Discord).
-  3. Validar sessão ativa.
-  4. Se TODAS as validações passarem:
-     → Remover conta antiga da instância.
-     → Ativar nova conta.
-  5. Se QUALQUER validação falhar:
-     → Abortar rotação completamente.
-     → Restaurar estado anterior da instância.
-     → Registrar rollback nos logs.
-     → Manter instância operacional com a conta anterior.
-
-  Princípio: Estabilidade acima de velocidade.
-  Nunca trocar por uma conta que ainda não foi validada.
-
---------------------------------------------------------------------------------
-ROTAÇÃO TRANSACIONAL (FLUXO ATÔMICO)
---------------------------------------------------------------------------------
-
-A troca de conta funciona como uma transação — ou tudo ocorre com sucesso,
-ou nada é alterado. O fluxo completo é:
-
-  1. Selecionar a melhor conta disponível.
-  2. Criar lock temporário na conta selecionada.
-  3. Validar sessão e token (Safe Rotation Mode).
-  4. Aplicar token da nova conta na instância.
-  5. Validar heartbeat pós-aplicação.
-  6. Marcar nova conta como ACTIVE.
-  7. Liberar conta anterior (remover do estado ACTIVE).
-  8. Aplicar cooldown automático na conta anterior.
-  9. Registrar todos os eventos nos logs operacionais.
-
-  SE QUALQUER ETAPA FALHAR:
-  - Rollback completo de todas as alterações.
-  - Conta anterior é restaurada.
-  - Locks temporários são liberados.
-  - Erro detalhado é registrado.
-  - A instância nunca fica sem conta ativa.
-
---------------------------------------------------------------------------------
-COOLDOWN INTELIGENTE PÓS-ROTAÇÃO
---------------------------------------------------------------------------------
-
-Ao final de uma rotação, a conta que saiu de uso entra automaticamente em cooldown:
-
-  ROTAÇÃO NORMAL:
-  - Aplica cooldown padrão (configurável em "Configurações Globais").
-  - Padrão: 45 minutos.
-
-  ROTAÇÃO POR FALHA OU RATE LIMIT:
-  - Aplica cooldown pós-falha (mais longo).
-  - Padrão: 30 minutos extras além do cooldown normal.
-
-  ROTAÇÃO POR QUARENTENA:
-  - Aplica quarentena ao invés de cooldown.
-  - Padrão: 60 minutos. Configurável.
-
-  O sistema ajusta o tempo de cooldown dinamicamente conforme o motivo da saída,
-  protegendo a conta contra sobrecarga imediata após incidentes.
-
---------------------------------------------------------------------------------
-FILA DE ROTAÇÃO (SERIALIZAÇÃO)
---------------------------------------------------------------------------------
-
-O sistema mantém uma fila interna de operações de rotação por instância.
-
-  Regras:
-  - Apenas UMA rotação por instância pode ocorrer ao mesmo tempo.
-  - Novas solicitações de rotação aguardam na fila.
-  - Operações simultâneas são serializadas para evitar race conditions.
-  - Múltiplas trocas paralelas na mesma instância são impedidas.
-
-  Isso garante consistência total: o banco de dados nunca fica em estado
-  inconsistente por duas rotações tentando ocorrer ao mesmo tempo.
-
---------------------------------------------------------------------------------
-ANTI-PINGPONG
---------------------------------------------------------------------------------
-
-O anti-pingpong evita que o sistema fique trocando repetidamente entre as
-mesmas contas em ciclo (A → B → A → B → ...).
-
-  Mecanismo:
-  - Cada instância mantém um histórico recente de contas utilizadas.
-  - Contas utilizadas recentemente recebem uma penalidade temporária.
-  - Cooldown inteligente impede reutilização imediata.
-  - Janela anti-pingpong: período configurável de exclusão por uso recente.
-
-  Exemplo prático:
-  - BOT1 usa conta A por 2 horas e rotaciona para conta B.
-  - Conta A entra em cooldown.
-  - Mesmo que conta A saia do cooldown antes de conta B falhar,
-    o anti-pingpong impede que BOT1 volte imediatamente para conta A,
-    garantindo que outras contas do pool tenham chance de uso.
-
---------------------------------------------------------------------------------
-AUTO-FAILOVER
---------------------------------------------------------------------------------
-
-Se uma conta morrer inesperadamente (queda de sessão, token inválido repentino
-ou heartbeat sem resposta), o sistema aciona o auto-failover imediatamente:
-
-  1. Detecta a falha crítica da conta ativa.
-  2. Seleciona imediatamente a próxima conta saudável disponível.
-  3. Aplica fallback automático sem aguardar o ciclo normal de rotação.
-  4. Mantém a instância online sem interrupção perceptível.
-  5. Registra o evento de failover nos logs com causa e conta selecionada.
-
-  O failover é mais rápido que a rotação normal — prioriza disponibilidade.
-
---------------------------------------------------------------------------------
-LOGS DA AUTO-ROTAÇÃO
---------------------------------------------------------------------------------
-
-Todos os eventos da auto-rotação são registrados automaticamente na aba Logs:
-
-  auto_rotation_started    → Rotação automática iniciada.
-  rotation_reason          → Motivo da rotação (health baixo, timeout, falha etc).
-  account_selected         → Conta selecionada para substituição.
-  validation_approved      → Validação da nova conta aprovada (Safe Mode).
-  validation_failed        → Validação falhou — rotação abortada.
-  rollback_executed        → Rollback realizado — estado anterior restaurado.
-  cooldown_applied         → Cooldown aplicado na conta que saiu.
-  failover_executed        → Auto-failover acionado por falha inesperada.
-  lock_created             → Lock temporário criado na nova conta.
-  lock_released            → Lock temporário liberado.
-  heartbeat_validated      → Heartbeat da nova conta validado com sucesso.
-  anti_pingpong_applied    → Conta excluída por janela anti-pingpong.
-
---------------------------------------------------------------------------------
-INDICADORES VISUAIS DA AUTO-ROTAÇÃO (PAINEL)
---------------------------------------------------------------------------------
-
-O painel exibe indicadores em tempo real para cada instância:
-
-  Auto Rotation ON/OFF      → Mostra se a auto-rotação está habilitada.
-  Rotation In Progress      → Indica que uma troca está ocorrendo agora.
-  Last Rotation Reason      → Motivo da última rotação executada.
-  Next Eligible Rotation    → Quando a próxima rotação pode ocorrer.
-  Cooldown Remaining        → Tempo restante de cooldown da conta anterior.
-  Failover Active           → Indica se a instância está em modo failover.
-
-  TIMELINE DE ROTAÇÕES:
-  Cada instância exibe um histórico visual das últimas rotações realizadas,
-  mostrando: conta anterior → conta nova, motivo, timestamp, e resultado
-  (sucesso, rollback ou failover).
-
---------------------------------------------------------------------------------
-EXEMPLOS PRÁTICOS DE TROCA AUTOMÁTICA
---------------------------------------------------------------------------------
-
-EXEMPLO 1: Health Score caiu abaixo do mínimo
-  - BOT1 usa "Conta A" (health cai de 80% → 35%).
-  - Mínimo configurado: 40%.
-  - Sistema detecta health abaixo do mínimo.
-  - Inicia rotação → seleciona "Conta B" (health 87%).
-  - Valida token e heartbeat da Conta B (Safe Mode).
-  - Aplica Conta B no BOT1. Conta A entra em cooldown.
-  - Log: "auto_rotation_started → health_below_minimum → account_selected: Conta B".
-
-EXEMPLO 2: Tempo máximo de uso atingido
-  - BOT2 usa "Conta C" por 3 horas. Máximo configurado: 2 horas.
-  - Sistema detecta tempo excedido.
-  - Rotação agendada → aguarda fila de rotação.
-  - Seleciona "Conta D" (maior health disponível, sem cooldown).
-  - Anti-pingpong verifica: "Conta D" não foi usada recentemente → aprovada.
-  - Troca executada. Conta C entra em cooldown de 45 minutos.
-
-EXEMPLO 3: Sessão morreu inesperadamente (Failover)
-  - BOT1 perde heartbeat da "Conta E" às 14:32.
-  - Sistema detecta falha crítica imediatamente.
-  - Auto-failover: seleciona "Conta F" (próxima disponível e saudável).
-  - Troca em modo rápido sem esperar validação completa do Safe Mode.
-  - BOT1 volta a operar em segundos. Conta E entra em quarentena.
-  - Log: "failover_executed → session_died → new_account: Conta F".
-
-EXEMPLO 4: Rollback por falha na validação
-  - BOT2 tenta rotacionar de "Conta G" para "Conta H".
-  - Safe Mode: valida token da Conta H → OK.
-  - Safe Mode: valida heartbeat da Conta H → FALHOU (sem resposta).
-  - Sistema aborta rotação. Conta H não é ativada.
-  - Conta G permanece ativa no BOT2. Estado anterior restaurado.
-  - Log: "validation_failed → heartbeat_check → rollback_executed".
-  - Sistema tentará próxima conta elegível no próximo ciclo.
-
-EXEMPLO 5: Anti-pingpong em ação
-  - BOT1 usou "Conta A" por 2h, rotacionou para "Conta B".
-  - 20 minutos depois, Conta B falha → rotação iniciada.
-  - Pool disponível: Conta A (health 82%), Conta C (health 71%).
-  - Anti-pingpong: Conta A foi usada há apenas 20 min → penalidade aplicada.
-  - Sistema seleciona Conta C (71%) mesmo com health inferior ao da Conta A.
-  - Resultado: ciclo de pingpong evitado. Conta A usada novamente só após
-    janela anti-pingpong expirar.
-
---------------------------------------------------------------------------------
-FIM DO README
+Tabelas principais:
+  accounts              — Pool de contas com estado, saúde, locks, cooldowns
+  instances             — Instâncias de bot (BOT1, BOT2, etc.)
+  accounts_config       — Configuração global única (id=1)
+  account_logs          — Log de eventos por conta
+
+Tabelas de observabilidade (v2.0):
+  rotation_history      — Histórico completo de todas as rotações
+  rotation_memory       — Anti-pingpong persistente (last_used_at por inst+conta)
+  watchdog_alerts       — Alertas do watchdog com severidade e status de resolução
+
+Campos novos em accounts_config (v2.0):
+  emergency_mode          BOOLEAN  — Bloqueia rotações normais (só failover)
+  readonly_recovery_mode  BOOLEAN  — Bloqueia TUDO (modo de recuperação)
+  rotation_paused         BOOLEAN  — Pausa manual de rotações
+  smart_cooldown          BOOLEAN  — Habilita multiplicadores dinâmicos de cooldown
+  stability_weight        INTEGER  — Peso do stability score na seleção (0–100)
+
+Estados possíveis de uma conta (accounts.state):
+  IDLE                — Disponível, nunca usada ou em standby
+  ACTIVE              — Sendo usada por uma instância (com lock)
+  COOLING             — Em cooldown após rotação
+  STANDBY             — Aguardando uso
+  WAITING             — Aguardando confirmação de ação
+  LOCKED              — Bloqueada manualmente
+  SUSPENDED           — Suspensa temporariamente
+  BANNED              — Banida (permanente ou longa duração)
+  DEAD                — Inacessível/inativa definitivamente
+  ERROR               — Erro persistente desconhecido
+  INVALID_TOKEN       — Token inválido ou expirado
+  NEEDS_VERIFICATION  — Requer verificação manual
+  LOGIN_CHALLENGE     — Desafio de login (captcha, 2FA, etc.)
+  MANUAL_ACTION_REQUIRED — Requer ação manual urgente
+
+================================================================================
+3. CICLO DE VIDA DE UMA CONTA
+================================================================================
+
+  IDLE ──────────────────────────────────► ACTIVE (rotação seleciona a conta)
+   │                                          │
+   │                                          ├──[rotação normal]──► COOLING
+   │                                          │                          │
+   │                                          ├──[falha/ban]──────► BANNED/ERROR
+   │                                          │
+   │                                          └──[token inválido]──► INVALID_TOKEN
+   │
+  COOLING ──[cooldown_until expirado]────► IDLE
+  BANNED  ──[revisão manual]─────────────► IDLE (se recuperável)
+  ERROR   ──[auto-retry ou manual]────────► IDLE
+
+Locks:
+  - Conta ACTIVE tem: account_lock=TRUE, locked_by_instance=<id>,
+    lock_expires_at=<ts>
+  - Locks expirados são liberados automaticamente no início de cada GET /api/accounts
+  - O health monitor também libera locks expirados periodicamente
+  - O Watchdog verifica locks órfãos (ativos há >30min sem rotação recente)
+
+================================================================================
+4. ENGINE DE AUTO-ROTAÇÃO (auto-rotator.ts)
+================================================================================
+
+Motivos de rotação (RotationReason):
+  manual                — Acionado manualmente pelo painel
+  scheduled             — Rotação periódica programada (max_continuous_ms)
+  rate_limit            — Rate limit detectado no Discord
+  session_dead          — Sessão morta/desconectada
+  token_invalid         — Token inválido
+  shadow_limit          — Limite de sombra (shadowban)
+  health_degraded       — Saúde abaixo do mínimo configurado
+  consecutive_failures  — Muitas falhas consecutivas
+  heartbeat_failed      — Heartbeat Discord falhou
+  quarantine            — Conta em quarentena expirada
+  critical_state        — Estado crítico detectado
+  failover              — Failover de emergência
+
+4.1 ESTRATÉGIAS DE ROTAÇÃO
+---------------------------
+  round_robin       — Rotação circular simples
+  weighted_health   — Peso pelo health_score (padrão recomendado)
+  least_used        — Conta menos utilizada (menor rotation_count)
+  random            — Aleatório
+  priority          — Por campo priority DESC
+
+4.2 9 PASSOS TRANSACIONAIS
+---------------------------
+Cada rotação executa os seguintes passos em sequência, com rollback completo
+em caso de falha em qualquer etapa:
+
+  1. Seleção de candidato — Query com filtros de estado, cooldown, quarentena,
+     anti-pingpong, e pontuação por estratégia + stability_weight.
+  2. Verificação de anti-pingpong — Conta não pode ser reusada dentro de
+     min(cooldown_ms, 5 minutos) pelo anti-pingpong em memória e BD.
+  3. Tentativa de lock — UPDATE com lock otimista (account_lock = FALSE → TRUE).
+     Se lock falhar (conta pega por outra rotação concorrente), tenta próximo.
+  4. Rollback guard — Registra lock_expires_at e prepara ponto de rollback.
+  5. Ativação da nova conta — state = 'ACTIVE', locked_by_instance, lock_expires_at.
+  6. Liberação da conta antiga com smart cooldown — state = 'COOLING', cooldown_until.
+  7. Registro de anti-pingpong — Atualiza rotation_memory (instância + conta + ts).
+  8. Atualização de estado e histórico — rotation_history INSERT, lastRotationReason.
+  9. Notificação — Log de conclusão com conta nova e tempo de rotação.
+
+4.3 ANTI-PINGPONG (rotation_memory)
+-------------------------------------
+Problema evitado: Sistema rotaciona conta A → B → A → B em loop.
+
+Solução:
+  - Em memória: Map de (instanceId, accountId) → timestamp de último uso.
+  - Persistente: Tabela rotation_memory com last_used_at (sobrevive a restarts).
+  - Ao selecionar candidato: filtra contas usadas recentemente (dentro do
+    cooldown ou 5 minutos, o que for maior).
+  - Ao iniciar (startHealthMonitor): carrega rotation_memory do BD em memória.
+  - A cada ciclo (30s): re-sincroniza flags do BD (syncSystemFlagsFromDb).
+
+4.4 SMART COOLDOWN
+-------------------
+Quando smart_cooldown = TRUE (padrão), o cooldown após rotação não é fixo.
+É calculado com multiplicadores dinâmicos por motivo:
+
+  Motivo                  Multiplicador
+  ───────────────────────────────────────
+  rate_limit              3.0×
+  token_invalid           2.5×
+  shadow_limit            2.5×
+  session_dead            2.0×
+  heartbeat_failed        2.0×
+  consecutive_failures    1.5×  (+ 0.3× por falha extra acima de 3, cap 5.0×)
+  health_degraded         1.3×
+  quarantine              1.2×
+  critical_state          1.5×
+  manual / outros         1.0×
+
+  Se consecutive_failures > 3: multiplica por (1.5 + 0.3 × (falhas - 3)), cap 5.0×.
+  Se smart_cooldown = FALSE: usa cooldown_after_use_ms fixo sem multiplicadores.
+
+4.5 SESSION STABILITY SCORE
+-----------------------------
+Calculado sob demanda (calcStabilityScore) com base em:
+  - Proporção de rotações bem-sucedidas nas últimas 24h
+  - Penalidade por falhas consecutivas
+  - Penalidade por eventos de erro recentes
+
+Score 0–100. Usado como critério de desempate na seleção de candidatos quando
+stability_weight > 0 na configuração.
+
+================================================================================
+5. FAILOVER
+================================================================================
+Quando uma sessão Discord morre inesperadamente (não por rotação programada),
+o worker chama triggerFailover(instanceId, oldAccountId).
+
+Diferenças do failover vs. rotação normal:
+  - NÃO é bloqueado por Emergency Mode (pode rodar mesmo em emergência)
+  - NÃO é bloqueado por Rotation Paused ou Watchdog Pause
+  - Readonly Recovery Mode bloqueia ATÉ o failover
+  - Registrado no rotation_history com result='failover'
+  - O failover conta para detecção de failovers excessivos no Watchdog
+
+================================================================================
+6. ROLLBACK AUTOMÁTICO
+================================================================================
+Se qualquer passo da rotação falhar após o lock ser obtido:
+  - A conta nova tem seu lock liberado imediatamente
+  - A conta antiga tem seu estado restaurado (state = 'ACTIVE', lock recolocado
+    com lock_expires_at estendido)
+  - O evento é registrado como result='rollback' no rotation_history
+  - Um log de erro é gerado no account_logs
+  - Alta taxa de rollbacks (>3/h) gera alerta do Watchdog
+
+================================================================================
+7. WATCHDOG GLOBAL (watchdog.ts)
+================================================================================
+O Watchdog roda a cada 60 segundos (startWatchdog) e verifica 7 condições.
+Quando detecta problema, insere alerta em watchdog_alerts e pode pausar
+automaticamente a rotação via setWatchdogPause().
+
+7.1 CHECKS DO WATCHDOG
+------------------------
+  orphan_lock (severity: high)
+    Lock ativo há mais de 30min sem rotação recente → libera lock automaticamente
+    e gera alerta.
+
+  rotation_loop (severity: critical)
+    Mais de 5 rotações em 1 hora para uma mesma instância → pausa watchdog
+    e gera alerta crítico.
+
+  excessive_failovers (severity: critical)
+    Mais de 3 failovers em 30min → pausa watchdog e gera alerta crítico.
+
+  account_oscillation (severity: high)
+    Mesma conta ativada/desativada 3+ vezes em 1h → alerta de alta severidade
+    (possível loop de conta específica sem anti-pingpong efetivo).
+
+  pool_empty (severity: critical)
+    Pool sem nenhuma conta usável → alerta crítico.
+
+  pool_critical (severity: high)
+    Pool com menos de 20% de contas usáveis → alerta de alta severidade.
+
+  high_rollback_rate (severity: high)
+    Mais de 3 rollbacks em 1h → alerta de alta severidade (possível problema
+    de concorrência, DB ou lock starvation).
+
+7.2 ALERTAS E SEVERIDADE
+--------------------------
+Severidades:
+  critical  — Situação que impede operação. Exige ação imediata.
+  high      — Situação degradada. Investigar em breve.
+  medium    — Anomalia. Monitorar.
+  low       — Informativo.
+
+Para resolver um alerta: clicar "Resolver" no painel 🏥 Sistema, ou via API:
+  POST /api/accounts/watchdog-alerts/:id/resolve
+
+O Watchdog Pause é liberado automaticamente quando a condição que o causou
+não for mais detectada no próximo ciclo (60s). Também pode-se usar o toggle
+"Rotação Pausada" no painel para controle manual.
+
+================================================================================
+8. MODOS DE OPERAÇÃO DO SISTEMA
+================================================================================
+
+8.1 EMERGENCY MODE (🚨 Modo Emergência)
+  Ativado quando: situação crítica que exige intervenção mas não pode parar tudo.
+  Efeito:
+    - Rotações normais e programadas BLOQUEADAS
+    - Failovers AINDA PERMITIDOS (para recuperar sessões mortas)
+    - Watchdog continua rodando
+  Como desativar: Painel 🏥 Sistema → toggle "Modo Emergência" → OFF
+
+8.2 READONLY RECOVERY MODE (🔒 Somente Leitura)
+  Ativado quando: manutenção completa sem nenhuma rotação.
+  Efeito:
+    - TODAS as rotações bloqueadas (inclusive failover)
+    - Sistema em modo de leitura para análise segura
+  Cuidado: Sessions mortas NÃO serão recuperadas automaticamente!
+  Como desativar: Painel 🏥 Sistema → toggle "Somente Leitura" → OFF
+  Emergência: UPDATE accounts_config SET readonly_recovery_mode=FALSE WHERE id=1;
+
+8.3 ROTATION PAUSED (⏸ Rotação Pausada)
+  Pausa manual temporária das rotações automáticas. Failovers continuam.
+  Útil para manutenção curta (ex: atualização de tokens).
+  Como retomar: Painel 🏥 Sistema → toggle "Rotação Pausada" → OFF
+
+8.4 WATCHDOG PAUSE (automático)
+  Ativado automaticamente quando o Watchdog detecta rotation_loop ou
+  excessive_failovers. Bloqueia rotações mas permite failovers.
+  Liberado automaticamente no próximo ciclo do watchdog (60s) se a condição
+  não persistir. Visível no painel como badge "Watchdog Pause".
+
+Prioridade de bloqueio (maior → menor):
+  readonly_recovery_mode > emergency_mode > (rotation_paused | watchdog_paused)
+
+================================================================================
+9. PAINEL DE SAÚDE DO SISTEMA (tab 🏥 Sistema)
+================================================================================
+Acesso: Painel → aba Contas → tab "🏥 Sistema"
+
+9.1 STATUS GERAL
+  Badge no topo indica o status consolidado:
+    SAUDÁVEL       (verde)        — Sistema operando normalmente
+    DEGRADADO      (âmbar)        — Failovers ou pool parcialmente comprometido
+    CRÍTICO        (vermelho)     — Falhas graves, pool vazio ou muitos failovers
+    EMERGÊNCIA     (vermelho esc) — Emergency Mode ativo
+    SOMENTE LEITURA (roxo)        — Readonly Recovery Mode ativo
+
+  Critérios de cálculo (em prioridade):
+    EMERGÊNCIA     → emergency_mode = true
+    SOMENTE LEITURA → readonly_recovery_mode = true
+    CRÍTICO        → failovers ≥ 3/h OU health_approx < 30 OU pool usável = 0
+    DEGRADADO      → failovers ≥ 1/h OU health_approx < 60
+                     OU (usável/total < 30%) OU rollbacks ≥ 2/h
+    SAUDÁVEL       → nenhuma condição acima
+
+9.2 CONTROLES DE MODO
+  Botões de toggle para cada flag. Efeito imediato (atualiza DB + memória).
+  Vermelho = ativo (estado de atenção), ciano = ativo (normal).
+
+9.3 MÉTRICAS DE POOL
+  Cards: Total / Ativas / Usáveis / Cooldown / Quarentena
+  Percentuais calculados em relação ao total do pool.
+  Barra de composição visual (verde=ativas, âmbar=cooldown, vermelho=quarentena).
+
+9.4 MÉTRICAS DE ROTAÇÃO
+  Cards: Rotações/1h | Failovers/1h | Rollbacks/1h | Rotações/24h | Abortadas/24h
+  Cores indicam severidade conforme limites do Watchdog.
+
+9.5 SAÚDE POR INSTÂNCIA
+  Card por instância com badge de status e métricas individuais de rotação/failover.
+
+9.6 ALERTAS DO WATCHDOG
+  Lista de alertas com alertas abertos destacados.
+  Botão "Resolver" disponível para cada alerta aberto.
+  Alertas resolvidos ficam visíveis mas esmaecidos para auditoria.
+
+================================================================================
+10. API REST (endpoints)
+================================================================================
+Base: /api/accounts (todos requerem autenticação via sessão/cookie)
+
+Configuração:
+  GET  /config                      — Configuração global (inclui novos campos v2)
+  PUT  /config                      — Salva configuração (campos novos incluídos)
+
+Rotação:
+  GET  /rotation-status             — Status atual de rotação por instância
+  GET  /rotation-history            — Histórico (?limit=50)
+  POST /rotation-trigger/:id        — Dispara rotação manual para instância :id
+
+Sistema e Saúde:
+  GET  /system-health               — Status consolidado do sistema:
+                                      { status, flags, pool, rotation_metrics,
+                                        instances[], watchdog_alerts[] }
+  POST /system-flags                — Atualiza flags de modo de operação
+    Body (todos opcionais):
+      { emergency_mode?: boolean,
+        readonly_recovery_mode?: boolean,
+        rotation_paused?: boolean,
+        smart_cooldown?: boolean,
+        stability_weight?: number }
+
+Watchdog:
+  GET  /watchdog-alerts             — Lista alertas (?open=true, ?limit=50)
+  POST /watchdog-alerts/:id/resolve — Resolve alerta específico
+
+Contas (CRUD):
+  GET  /                            — Lista contas (?instanceId, ?state, ?search)
+  POST /                            — Cria conta
+  PUT  /:id                         — Atualiza conta
+  DELETE /:id                       — Remove conta
+  POST /:id/action                  — Ação: rotate, refresh, relogin, quarantine,
+                                      unquarantine, release_lock, set_state
+  GET  /logs                        — Logs de eventos (?accountId, ?instanceId,
+                                      ?type, ?limit)
+  GET  /pool-by-instance            — Resumo do pool por instância
+
+================================================================================
+11. TABELAS DO BANCO DE DADOS
+================================================================================
+
+rotation_history
+  id              SERIAL PRIMARY KEY
+  instance_id     INT (FK instances)
+  old_account_id  INT NULL (FK accounts)
+  new_account_id  INT NULL (FK accounts)
+  reason          TEXT (RotationReason)
+  result          TEXT ('success','failover','rollback','aborted')
+  duration_ms     INT
+  detail          TEXT
+  rotated_at      TIMESTAMPTZ DEFAULT NOW()
+
+rotation_memory  (anti-pingpong persistente)
+  id              SERIAL PRIMARY KEY
+  instance_id     INT NOT NULL
+  account_id      INT NOT NULL
+  last_used_at    TIMESTAMPTZ NOT NULL
+  UNIQUE(instance_id, account_id)
+
+watchdog_alerts
+  id              SERIAL PRIMARY KEY
+  instance_id     INT NULL (FK instances ON DELETE SET NULL)
+  alert_type      TEXT (orphan_lock | rotation_loop | excessive_failovers |
+                        account_oscillation | pool_empty | pool_critical |
+                        high_rollback_rate)
+  severity        TEXT (critical | high | medium | low)
+  detail          TEXT NULL
+  resolved        BOOLEAN DEFAULT FALSE
+  created_at      TIMESTAMPTZ DEFAULT NOW()
+  resolved_at     TIMESTAMPTZ NULL
+
+accounts_config  (campos adicionados em v2.0)
+  emergency_mode          BOOLEAN DEFAULT FALSE
+  readonly_recovery_mode  BOOLEAN DEFAULT FALSE
+  rotation_paused         BOOLEAN DEFAULT FALSE
+  smart_cooldown          BOOLEAN DEFAULT TRUE
+  stability_weight        INTEGER DEFAULT 20
+
+================================================================================
+12. FLUXO OPERACIONAL RESUMIDO
+================================================================================
+
+[Health Monitor — cada 30s]
+  └► syncSystemFlagsFromDb()         ← re-lê flags do BD (sem restart)
+  └► runHealthCheck()
+      ├─ Se readonly/paused/watchdog_paused → skip
+      ├─ Busca contas ACTIVE por instância
+      ├─ Para cada conta ativa: verifica max_continuous_ms, health_score, estado
+      └─ Se trigger necessário → triggerRotation(instanceId, reason, oldId)
+
+[Watchdog — cada 60s]
+  └► runWatchdogChecks()
+      ├─ orphan_lock        → libera lock + alerta high
+      ├─ rotation_loop      → setWatchdogPause(true) + alerta critical
+      ├─ excessive_failovers→ setWatchdogPause(true) + alerta critical
+      ├─ account_oscillation→ alerta high
+      ├─ pool_empty         → alerta critical
+      ├─ pool_critical      → alerta high
+      └─ high_rollback_rate → alerta high
+
+[triggerRotation(instanceId, reason, oldId, isFailover=false)]
+  ├─ Verifica bloqueios: readonly > emergency > paused|watchdog_paused
+  ├─ Fila por instância (uma rotação por vez por instância)
+  └─ executeRotation()
+      ├─ [1] Seleciona candidato (anti-pingpong + stability score)
+      ├─ [2] Verifica anti-pingpong duplo (memória + BD)
+      ├─ [3] Lock otimista (CAS na tabela accounts)
+      ├─ [4] Rollback guard
+      ├─ [5] Ativa nova conta
+      ├─ [6] Libera antiga com smart cooldown
+      ├─ [7] Registra anti-pingpong (memória + BD)
+      ├─ [8] Insere rotation_history
+      └─ [9] Notifica e loga conclusão
+
+================================================================================
+13. GUIA DE TROUBLESHOOTING
+================================================================================
+
+SINTOMA: Rotações não acontecem mesmo com auto_rotation=true
+  Verificar:
+    1. Tab 🏥 Sistema → algum modo de bloqueio ativo? (Emergency/Readonly/Paused)
+    2. Badge "Watchdog Pause" visível no topo do painel?
+    3. Pool com contas usáveis? (Métricas de Pool → Usáveis = 0 = crítico)
+    4. Logs do servidor: "[auto-rotator] bloqueado:" indica qual flag está ativa
+
+SINTOMA: Muitos failovers em pouco tempo
+  Verificar:
+    1. 🏥 Sistema → Alertas → "Failovers Excessivos" presente?
+    2. Pool tem contas com tokens válidos?
+    3. Conexão Discord estável? Verificar logs do worker
+    4. Se watchdog_paused ativo: aguardar 60s para o Watchdog retomar
+
+SINTOMA: Pool entrando em quarentena rapidamente
+  Verificar:
+    1. Taxa de rollbacks alta? → problema de concorrência ou DB
+    2. Contas com consecutive_failures elevado → revisar e atualizar tokens
+    3. Smart Cooldown aplicando cooldowns muito longos → reduzir
+       cooldown_after_use_ms na configuração
+
+SINTOMA: Alerta "Loop de Rotação" e watchdog pausou
+  O que aconteceu: >5 rotações/hora em uma instância.
+  Ação:
+    1. Investigar causa: tokens ruins? health_score baixo?
+    2. Corrigir contas problemáticas
+    3. Watchdog retoma automaticamente em 60s
+    4. Resolver o alerta no painel
+
+SINTOMA: "Somente Leitura" ativo e impossível desativar
+  Solução direta no BD:
+    UPDATE accounts_config SET readonly_recovery_mode = FALSE WHERE id = 1;
+  Depois reiniciar o servidor para re-sincronizar flags em memória, OU
+  aguardar até 30s para o próximo ciclo de syncSystemFlagsFromDb().
+
+================================================================================
+14. EXEMPLOS DE CENÁRIOS
+================================================================================
+
+Cenário A: Manutenção programada de 5 minutos
+  1. 🏥 Sistema → ative "Rotação Pausada"
+  2. Realize a manutenção
+  3. 🏥 Sistema → desative "Rotação Pausada"
+  → Failovers continuam funcionando durante a manutenção
+
+Cenário B: Conta com token inválido causando loops
+  1. Watchdog detecta rotation_loop → pausa automaticamente
+  2. Alerta aparece em 🏥 Sistema → Alertas do Watchdog
+  3. Vá em 👤 Contas, filtre pela conta problemática
+  4. Mude o estado para INVALID_TOKEN ou MANUAL_ACTION_REQUIRED
+  5. Atualize o token se disponível
+  6. Watchdog resume em 60s → resolver alerta no painel
+
+Cenário C: Pool crítico (menos de 20% usável)
+  1. Alerta "Pool Crítico" (severity: high) criado pelo Watchdog
+  2. Status muda para DEGRADADO ou CRÍTICO no painel
+  3. Revise contas em quarentena/cooldown: alguma pode ser liberada?
+  4. Se necessário: adicionar novas contas via 👤 Contas → + Nova Conta
+
+Cenário D: Suspeita de banimento em massa
+  1. Ative "Modo Emergência" (permite só failovers para manter sessões vivas)
+  2. Analise logs: que tipo de atividade causou o banimento?
+  3. Identifique e marque contas afetadas como BANNED
+  4. Desative "Modo Emergência" para retomar rotações normais
+
+================================================================================
+FIM DO DOCUMENTO — Imperiuns Bot v2.0 Stability & Observability Layer
 ================================================================================

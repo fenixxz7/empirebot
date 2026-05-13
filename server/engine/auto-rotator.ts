@@ -69,7 +69,49 @@ export interface RotationStatus {
   auto_rotation_enabled: boolean;
 }
 
-// ─── Anti-pingpong tracking (in-memory) ───────────────────────────────────────
+// ─── System State ─────────────────────────────────────────────────────────────
+
+let _emergencyMode = false;
+let _readonlyRecoveryMode = false;
+let _rotationPaused = false;
+let _watchdogPaused = false;
+
+export function setEmergencyMode(v: boolean)      { _emergencyMode = v; }
+export function setReadonlyMode(v: boolean)        { _readonlyRecoveryMode = v; }
+export function setRotationPaused(v: boolean)      { _rotationPaused = v; }
+export function setWatchdogPause(v: boolean)       { _watchdogPaused = v; }
+
+export function isRotationBlocked(): boolean {
+  return _emergencyMode || _readonlyRecoveryMode || _rotationPaused || _watchdogPaused;
+}
+
+export function getSystemState() {
+  return {
+    emergency_mode:          _emergencyMode,
+    readonly_recovery_mode:  _readonlyRecoveryMode,
+    rotation_paused:         _rotationPaused,
+    watchdog_paused:         _watchdogPaused,
+    blocked:                 isRotationBlocked(),
+  };
+}
+
+// Sincroniza flags com o banco ao iniciar
+async function syncSystemFlagsFromDb(): Promise<void> {
+  try {
+    const rows = await query<{
+      emergency_mode: boolean;
+      readonly_recovery_mode: boolean;
+      rotation_paused: boolean;
+    }>(`SELECT emergency_mode, readonly_recovery_mode, rotation_paused FROM accounts_config WHERE id = 1`);
+    if (rows[0]) {
+      _emergencyMode         = Boolean(rows[0].emergency_mode);
+      _readonlyRecoveryMode  = Boolean(rows[0].readonly_recovery_mode);
+      _rotationPaused        = Boolean(rows[0].rotation_paused);
+    }
+  } catch {}
+}
+
+// ─── Anti-pingpong tracking (memória + persistência DB) ───────────────────────
 
 const recentUsageByInstance = new Map<number, Map<number, number>>();
 const ANTI_PINGPONG_WINDOW_MS = 30 * 60 * 1000;
@@ -79,6 +121,12 @@ function recordUsage(instanceId: number, accountId: number) {
     recentUsageByInstance.set(instanceId, new Map());
   }
   recentUsageByInstance.get(instanceId)!.set(accountId, Date.now());
+
+  // Persiste no banco (fire-and-forget)
+  query(
+    `INSERT INTO rotation_memory (instance_id, account_id) VALUES ($1, $2)`,
+    [instanceId, accountId]
+  ).catch(() => {});
 }
 
 function wasUsedRecently(instanceId: number, accountId: number): boolean {
@@ -96,6 +144,38 @@ function pruneOldUsage() {
       if (ts < cutoff) map.delete(accId);
     }
     if (map.size === 0) recentUsageByInstance.delete(instId);
+  }
+  // Limpa registros antigos do banco (fire-and-forget)
+  query(
+    `DELETE FROM rotation_memory WHERE used_at < NOW() - INTERVAL '${Math.ceil(ANTI_PINGPONG_WINDOW_MS / 60000)} minutes'`
+  ).catch(() => {});
+}
+
+// Carrega anti-pingpong persistido no DB ao iniciar (sobrevive a reinicializações)
+async function loadAntiPingpongFromDb(): Promise<void> {
+  try {
+    const rows = await query<{ instance_id: number; account_id: number; used_at: string }>(
+      `SELECT instance_id, account_id, used_at
+       FROM rotation_memory
+       WHERE used_at > NOW() - INTERVAL '${Math.ceil(ANTI_PINGPONG_WINDOW_MS / 60000)} minutes'
+       ORDER BY used_at ASC`
+    );
+    for (const row of rows) {
+      const instId = Number(row.instance_id);
+      const accId  = Number(row.account_id);
+      const ts     = new Date(row.used_at).getTime();
+      if (!recentUsageByInstance.has(instId)) {
+        recentUsageByInstance.set(instId, new Map());
+      }
+      // Mantém o mais recente
+      const existing = recentUsageByInstance.get(instId)!.get(accId) ?? 0;
+      if (ts > existing) recentUsageByInstance.get(instId)!.set(accId, ts);
+    }
+    if (rows.length > 0) {
+      console.log(`[auto-rotator] anti-pingpong restaurado: ${rows.length} registro(s) do DB`);
+    }
+  } catch (err) {
+    console.error("[auto-rotator] loadAntiPingpongFromDb error:", err);
   }
 }
 
@@ -154,6 +234,66 @@ function calcHealthScore(a: {
   return Math.max(0, Math.min(100, Math.round(
     (sessionScore * 0.40) + (errorScore * 0.25) + (ageScore * 0.20) + (availScore * 0.10)
   )));
+}
+
+// ─── Smart Cooldown ───────────────────────────────────────────────────────────
+
+const SMART_COOLDOWN_MULTIPLIERS: Record<RotationReason, number> = {
+  manual:                0.5,
+  health_below_minimum:  1.0,
+  max_continuous_time:   1.0,
+  rate_limit:            2.0,
+  consecutive_failures:  1.5,
+  token_invalid:         3.0,
+  session_dead:          2.0,
+  shadow_limit:          2.5,
+  heartbeat_failed:      2.0,
+  quarantine:            1.5,
+  critical_state:        3.0,
+  failover:              3.0,
+};
+
+function calcSmartCooldown(
+  reason: RotationReason,
+  consecutiveFailures: number,
+  baseCooldownMs: number,
+  useSmartCooldown = true
+): number {
+  if (!useSmartCooldown) return baseCooldownMs;
+  const mult = SMART_COOLDOWN_MULTIPLIERS[reason] ?? 1.0;
+  // Falhas consecutivas aumentam o cooldown progressivamente (até 2.5x adicional)
+  const failureMult = 1 + Math.min(consecutiveFailures * 0.15, 1.5);
+  return Math.round(baseCooldownMs * mult * failureMult);
+}
+
+// ─── Session Stability Score ──────────────────────────────────────────────────
+
+export async function calcStabilityScore(accountId: number): Promise<number> {
+  try {
+    const rows = await query<{
+      rotations_24h: string;
+      rollbacks_24h: string;
+      failovers_24h: string;
+    }>(`
+      SELECT
+        COUNT(*) FILTER (WHERE rotated_at > NOW() - INTERVAL '24 hours')                              AS rotations_24h,
+        COUNT(*) FILTER (WHERE result = 'rollback' AND rotated_at > NOW() - INTERVAL '24 hours')      AS rollbacks_24h,
+        COUNT(*) FILTER (WHERE result = 'failover' AND rotated_at > NOW() - INTERVAL '24 hours')      AS failovers_24h
+      FROM rotation_history
+      WHERE old_account_id = $1 OR new_account_id = $1
+    `, [accountId]);
+
+    const r = rows[0];
+    if (!r) return 100;
+
+    let score = 100;
+    score -= Math.min(Number(r.rotations_24h) * 8, 40);  // -8 por rotação, max -40
+    score -= Math.min(Number(r.rollbacks_24h) * 15, 30); // -15 por rollback, max -30
+    score -= Math.min(Number(r.failovers_24h) * 20, 50); // -20 por failover, max -50
+    return Math.max(0, score);
+  } catch {
+    return 100;
+  }
 }
 
 // ─── Logging helpers ──────────────────────────────────────────────────────────
@@ -305,6 +445,20 @@ async function executeRotation(
     return;
   }
 
+  // Readonly Recovery Mode bloqueia tudo; Emergency Mode bloqueia exceto failover
+  if (_readonlyRecoveryMode) {
+    console.log(`[auto-rotator] inst=${instanceId} bloqueado: Readonly Recovery Mode ativo`);
+    return;
+  }
+  if (_emergencyMode && !isFailover) {
+    console.log(`[auto-rotator] inst=${instanceId} bloqueado: Emergency Mode ativo (somente failover permitido)`);
+    return;
+  }
+  if ((_rotationPaused || _watchdogPaused) && !isFailover) {
+    console.log(`[auto-rotator] inst=${instanceId} bloqueado: rotação pausada`);
+    return;
+  }
+
   rotationInProgress.add(instanceId);
   if (isFailover) failoverActive.add(instanceId);
 
@@ -313,7 +467,8 @@ async function executeRotation(
     cooldown_after_use_ms: number;
     cooldown_after_fail_ms: number;
     quarantine_ms: number;
-  }>(`SELECT min_health_score, cooldown_after_use_ms, cooldown_after_fail_ms, quarantine_ms
+    smart_cooldown: boolean;
+  }>(`SELECT min_health_score, cooldown_after_use_ms, cooldown_after_fail_ms, quarantine_ms, smart_cooldown
       FROM accounts_config WHERE id = 1`);
 
   const cfg = cfgRows[0] ?? {
@@ -321,6 +476,7 @@ async function executeRotation(
     cooldown_after_use_ms: 2700000,
     cooldown_after_fail_ms: 1800000,
     quarantine_ms: 3600000,
+    smart_cooldown: true,
   };
 
   await logAccount(oldAccountId, instanceId, "auto_rotation_started",
@@ -437,16 +593,14 @@ async function executeRotation(
       WHERE id = $1
     `, [candidate.id, instanceId, lockExpires]);
 
-    // Passo 6: Libera conta antiga com cooldown inteligente
+    // Passo 6: Libera conta antiga com smart cooldown
     if (oldAccountId) {
-      const isFailureReason = [
-        "rate_limit", "session_dead", "token_invalid", "shadow_limit",
-        "consecutive_failures", "heartbeat_failed", "quarantine", "critical_state",
-      ].includes(reason);
-
-      const cooldownMs = isFailureReason
-        ? cfg.cooldown_after_fail_ms + cfg.cooldown_after_use_ms
-        : cfg.cooldown_after_use_ms;
+      // Busca consecutive_failures da conta antiga para o smart cooldown
+      const oldAccRows = await query<{ consecutive_failures: number }>(
+        `SELECT consecutive_failures FROM accounts WHERE id = $1`, [oldAccountId]
+      );
+      const oldConsFailures = oldAccRows[0]?.consecutive_failures ?? 0;
+      const cooldownMs = calcSmartCooldown(reason, oldConsFailures, cfg.cooldown_after_use_ms, cfg.smart_cooldown);
       const cooldownUntil = new Date(Date.now() + cooldownMs).toISOString();
 
       await query(`
@@ -551,7 +705,13 @@ let healthCheckTimer: NodeJS.Timeout | null = null;
 
 export function startHealthMonitor(intervalMs = 30_000): void {
   if (healthCheckTimer) return;
+  // Carrega estado persistido do DB ao iniciar
+  Promise.all([
+    loadAntiPingpongFromDb(),
+    syncSystemFlagsFromDb(),
+  ]).catch(err => console.error("[auto-rotator] init error:", err));
   healthCheckTimer = setInterval(() => {
+    syncSystemFlagsFromDb().catch(() => {}); // Re-sincroniza flags a cada ciclo
     runHealthCheck().catch(err =>
       console.error("[auto-rotator] health check error:", err)
     );
@@ -574,7 +734,7 @@ async function runHealthCheck(): Promise<void> {
   }>(`SELECT auto_rotation, min_health_score, max_continuous_ms FROM accounts_config WHERE id = 1`);
 
   const cfg = cfgRows[0];
-  if (!cfg?.auto_rotation) return;
+  if (!cfg?.auto_rotation || _readonlyRecoveryMode || _rotationPaused || _watchdogPaused) return;
 
   const activeAccounts = await query<Record<string, unknown>>(`
     SELECT

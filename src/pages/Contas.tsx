@@ -75,6 +75,58 @@ interface AccountsConfig {
   auto_refresh: boolean;
   auto_relogin: boolean;
   rotation_strategy: RotationStrategy;
+  emergency_mode: boolean;
+  readonly_recovery_mode: boolean;
+  rotation_paused: boolean;
+  smart_cooldown: boolean;
+  stability_weight: number;
+}
+
+// ─── System Health Types ──────────────────────────────────────────────────────
+
+interface SystemHealthData {
+  status: "healthy" | "degraded" | "critical" | "emergency" | "readonly";
+  emergency_mode: boolean;
+  readonly_recovery_mode: boolean;
+  rotation_paused: boolean;
+  watchdog_paused: boolean;
+  smart_cooldown: boolean;
+  stability_weight: number;
+  pool: {
+    total: number;
+    active: number;
+    cooldown: number;
+    quarantine: number;
+    usable: number;
+    health_approx: number;
+    utilization_pct: number;
+    cooldown_pressure_pct: number;
+    quarantine_pressure_pct: number;
+  };
+  rotation_metrics: {
+    rotations_1h: number;
+    failovers_1h: number;
+    rollbacks_1h: number;
+    rotations_24h: number;
+    aborted_24h: number;
+  };
+  instances: {
+    instance_id: number;
+    instance_name: string;
+    status: "healthy" | "degraded" | "critical";
+    rotations_1h: number;
+    failovers_1h: number;
+    rollbacks_24h: number;
+  }[];
+  watchdog_alerts: {
+    id: number;
+    instance_id: number | null;
+    alert_type: string;
+    severity: string;
+    detail: string | null;
+    resolved: boolean;
+    created_at: string;
+  }[];
 }
 
 interface TokenPoolItem {
@@ -1078,6 +1130,11 @@ const DEFAULT_CONFIG: AccountsConfig = {
   auto_refresh: true,
   auto_relogin: false,
   rotation_strategy: "weighted_health",
+  emergency_mode: false,
+  readonly_recovery_mode: false,
+  rotation_paused: false,
+  smart_cooldown: true,
+  stability_weight: 20,
 };
 
 function ConfigPanel({ config, onSave }: { config: AccountsConfig; onSave: (c: AccountsConfig) => Promise<void> }) {
@@ -1437,6 +1494,270 @@ function RotationStatusCard({
   );
 }
 
+// ─── System Health Panel ───────────────────────────────────────────────────────
+
+function SystemHealthPanel({
+  health,
+  loading,
+  flagSaving,
+  onRefresh,
+  onFlag,
+  onResolveAlert,
+}: {
+  health: SystemHealthData | null;
+  loading: boolean;
+  flagSaving: boolean;
+  onRefresh: () => void;
+  onFlag: (f: Partial<Pick<SystemHealthData, "emergency_mode" | "readonly_recovery_mode" | "rotation_paused" | "smart_cooldown">>) => void;
+  onResolveAlert: (id: number) => void;
+}) {
+  if (loading && !health) {
+    return <div className="text-center py-16 text-slate-400">Carregando saúde do sistema...</div>;
+  }
+  if (!health) {
+    return (
+      <div className="text-center py-16 text-slate-400">
+        <p>Sem dados de saúde.</p>
+        <button onClick={onRefresh} className="mt-3 px-4 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded text-sm">
+          Carregar
+        </button>
+      </div>
+    );
+  }
+
+  const STATUS_MAP = {
+    healthy:   { label: "SAUDÁVEL",      cls: "bg-emerald-500/20 text-emerald-300 ring-emerald-400/30" },
+    degraded:  { label: "DEGRADADO",     cls: "bg-amber-500/20  text-amber-300  ring-amber-400/30"  },
+    critical:  { label: "CRÍTICO",       cls: "bg-red-500/20    text-red-300    ring-red-400/30"    },
+    emergency: { label: "EMERGÊNCIA",    cls: "bg-red-900/40    text-red-200    ring-red-500/50"    },
+    readonly:  { label: "SOMENTE LEITURA", cls: "bg-purple-500/20 text-purple-300 ring-purple-400/30" },
+  };
+  const st = STATUS_MAP[health.status] ?? STATUS_MAP.healthy;
+
+  const openAlerts = health.watchdog_alerts.filter(a => !a.resolved);
+  const SEVERITY_COLORS: Record<string, string> = {
+    critical: "text-red-300 border-red-500/40",
+    high:     "text-orange-300 border-orange-500/40",
+    medium:   "text-amber-300 border-amber-500/40",
+    low:      "text-slate-400 border-white/10",
+  };
+  const ALERT_LABELS: Record<string, string> = {
+    orphan_lock:         "Lock Órfão",
+    rotation_loop:       "Loop de Rotação",
+    excessive_failovers: "Failovers Excessivos",
+    account_oscillation: "Oscilação de Conta",
+    pool_empty:          "Pool Vazio",
+    pool_critical:       "Pool Crítico",
+    high_rollback_rate:  "Alta Taxa de Rollback",
+  };
+
+  const FlagToggle = ({
+    active, label, onToggle, danger = false
+  }: { active: boolean; label: string; onToggle: () => void; danger?: boolean }) => (
+    <button
+      disabled={flagSaving}
+      onClick={onToggle}
+      className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold ring-1 transition-colors ${
+        active
+          ? danger
+            ? "bg-red-500/20 text-red-300 ring-red-400/30"
+            : "bg-cyan-500/20 text-cyan-300 ring-cyan-400/30"
+          : "bg-white/5 text-slate-400 ring-white/10 hover:bg-white/10"
+      } ${flagSaving ? "opacity-50 cursor-not-allowed" : ""}`}
+    >
+      <span className={`w-2 h-2 rounded-full ${active ? (danger ? "bg-red-400" : "bg-cyan-400") : "bg-slate-600"}`} />
+      {label}
+    </button>
+  );
+
+  const MetricCard = ({ label, value, sub, color = "text-cyan-300" }: { label: string; value: string | number; sub?: string; color?: string }) => (
+    <div className="bg-white/5 rounded-xl p-4 ring-1 ring-white/10">
+      <p className="text-xs text-slate-500 uppercase tracking-wider">{label}</p>
+      <p className={`text-2xl font-bold mt-1 ${color}`}>{value}</p>
+      {sub && <p className="text-xs text-slate-500 mt-0.5">{sub}</p>}
+    </div>
+  );
+
+  const BarSegment = ({ pct, color }: { pct: number; color: string }) =>
+    pct > 0 ? <div className={`${color} h-full`} style={{ width: `${pct}%` }} /> : null;
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <span className={`px-4 py-1.5 rounded-full text-sm font-bold ring-1 ${st.cls}`}>{st.label}</span>
+          {health.watchdog_paused && (
+            <span className="px-3 py-1 rounded-full text-xs font-semibold bg-orange-500/20 text-orange-300 ring-1 ring-orange-400/30">
+              Watchdog Pause
+            </span>
+          )}
+          {openAlerts.length > 0 && (
+            <span className="px-3 py-1 rounded-full text-xs font-semibold bg-red-500/20 text-red-300 ring-1 ring-red-400/30">
+              {openAlerts.length} alerta{openAlerts.length !== 1 ? "s" : ""} aberto{openAlerts.length !== 1 ? "s" : ""}
+            </span>
+          )}
+        </div>
+        <button
+          onClick={onRefresh}
+          disabled={loading}
+          className="px-3 py-1.5 bg-white/5 hover:bg-white/10 text-slate-300 rounded-lg text-xs ring-1 ring-white/10 transition-colors"
+        >
+          {loading ? "..." : "↻ Atualizar"}
+        </button>
+      </div>
+
+      {/* Mode Controls */}
+      <div className="bg-slate-800/60 rounded-xl p-4 ring-1 ring-white/10 space-y-3">
+        <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Modos de Operação</p>
+        <div className="flex flex-wrap gap-3">
+          <FlagToggle
+            active={health.emergency_mode}
+            label="🚨 Modo Emergência"
+            danger
+            onToggle={() => onFlag({ emergency_mode: !health.emergency_mode })}
+          />
+          <FlagToggle
+            active={health.readonly_recovery_mode}
+            label="🔒 Somente Leitura"
+            danger
+            onToggle={() => onFlag({ readonly_recovery_mode: !health.readonly_recovery_mode })}
+          />
+          <FlagToggle
+            active={health.rotation_paused}
+            label="⏸ Rotação Pausada"
+            onToggle={() => onFlag({ rotation_paused: !health.rotation_paused })}
+          />
+          <FlagToggle
+            active={health.smart_cooldown}
+            label="🧠 Smart Cooldown"
+            onToggle={() => onFlag({ smart_cooldown: !health.smart_cooldown })}
+          />
+        </div>
+        {health.emergency_mode && (
+          <p className="text-xs text-red-300/80 mt-1">
+            ⚠ Modo Emergência: apenas failovers são permitidos. Rotações normais bloqueadas.
+          </p>
+        )}
+        {health.readonly_recovery_mode && (
+          <p className="text-xs text-purple-300/80 mt-1">
+            🔒 Somente Leitura: todas as rotações estão bloqueadas até desativação manual.
+          </p>
+        )}
+      </div>
+
+      {/* Pool Stats */}
+      <div className="bg-slate-800/60 rounded-xl p-4 ring-1 ring-white/10 space-y-4">
+        <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Pool de Contas</p>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          <MetricCard label="Total" value={health.pool.total} />
+          <MetricCard label="Ativas" value={health.pool.active} color="text-emerald-300" sub={`${health.pool.utilization_pct}% do pool`} />
+          <MetricCard label="Usáveis" value={health.pool.usable} color="text-cyan-300" />
+          <MetricCard label="Cooldown" value={health.pool.cooldown} color="text-amber-300" sub={`${health.pool.cooldown_pressure_pct}% do pool`} />
+          <MetricCard label="Quarentena" value={health.pool.quarantine} color="text-red-300" sub={`${health.pool.quarantine_pressure_pct}% do pool`} />
+        </div>
+        {/* Pool composition bar */}
+        <div className="w-full h-3 rounded-full overflow-hidden bg-white/5 flex">
+          <BarSegment pct={health.pool.utilization_pct} color="bg-emerald-500" />
+          <BarSegment pct={health.pool.cooldown_pressure_pct} color="bg-amber-500/80" />
+          <BarSegment pct={health.pool.quarantine_pressure_pct} color="bg-red-500/80" />
+        </div>
+        <div className="flex gap-4 text-xs text-slate-500">
+          <span><span className="inline-block w-2 h-2 rounded-full bg-emerald-500 mr-1" />Ativas</span>
+          <span><span className="inline-block w-2 h-2 rounded-full bg-amber-500 mr-1" />Cooldown</span>
+          <span><span className="inline-block w-2 h-2 rounded-full bg-red-500 mr-1" />Quarentena</span>
+        </div>
+      </div>
+
+      {/* Rotation Metrics */}
+      <div className="bg-slate-800/60 rounded-xl p-4 ring-1 ring-white/10 space-y-3">
+        <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Métricas de Rotação</p>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          <MetricCard label="Rotações/1h" value={health.rotation_metrics.rotations_1h} />
+          <MetricCard label="Failovers/1h" value={health.rotation_metrics.failovers_1h}
+            color={health.rotation_metrics.failovers_1h >= 3 ? "text-red-300" : health.rotation_metrics.failovers_1h >= 1 ? "text-amber-300" : "text-cyan-300"} />
+          <MetricCard label="Rollbacks/1h" value={health.rotation_metrics.rollbacks_1h}
+            color={health.rotation_metrics.rollbacks_1h >= 2 ? "text-amber-300" : "text-cyan-300"} />
+          <MetricCard label="Rotações/24h" value={health.rotation_metrics.rotations_24h} />
+          <MetricCard label="Abortadas/24h" value={health.rotation_metrics.aborted_24h}
+            color={health.rotation_metrics.aborted_24h >= 3 ? "text-amber-300" : "text-cyan-300"} />
+        </div>
+      </div>
+
+      {/* Per-instance health */}
+      {health.instances.length > 0 && (
+        <div className="bg-slate-800/60 rounded-xl p-4 ring-1 ring-white/10 space-y-3">
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Saúde por Instância</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {health.instances.map(inst => {
+              const instSt = STATUS_MAP[inst.status] ?? STATUS_MAP.healthy;
+              return (
+                <div key={inst.instance_id} className="bg-white/5 rounded-lg p-3 ring-1 ring-white/10 flex items-start gap-3">
+                  <span className={`mt-0.5 px-2 py-0.5 rounded text-xs font-bold ring-1 ${instSt.cls}`}>{instSt.label}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-slate-200 truncate">{inst.instance_name}</p>
+                    <div className="flex gap-3 mt-1 text-xs text-slate-400">
+                      <span>🔄 {inst.rotations_1h}/h</span>
+                      <span>⚡ {inst.failovers_1h} fail</span>
+                      <span>↩ {inst.rollbacks_24h} rollback</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Watchdog Alerts */}
+      <div className="bg-slate-800/60 rounded-xl p-4 ring-1 ring-white/10 space-y-3">
+        <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">
+          Alertas do Watchdog{openAlerts.length > 0 ? ` (${openAlerts.length} aberto${openAlerts.length !== 1 ? "s" : ""})` : ""}
+        </p>
+        {health.watchdog_alerts.length === 0 ? (
+          <p className="text-sm text-slate-500 text-center py-4">Nenhum alerta registrado.</p>
+        ) : (
+          <div className="space-y-2 max-h-80 overflow-y-auto">
+            {health.watchdog_alerts.map(alert => (
+              <div
+                key={alert.id}
+                className={`flex items-start gap-3 p-3 rounded-lg border ${
+                  alert.resolved ? "opacity-50 border-white/5" : (SEVERITY_COLORS[alert.severity] ?? SEVERITY_COLORS.low)
+                }`}
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-semibold">
+                      {ALERT_LABELS[alert.alert_type] ?? alert.alert_type}
+                    </span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded ring-1 ${SEVERITY_COLORS[alert.severity] ?? SEVERITY_COLORS.low}`}>
+                      {alert.severity.toUpperCase()}
+                    </span>
+                    {alert.resolved && <span className="text-xs text-slate-500">resolvido</span>}
+                    {alert.instance_id != null && (
+                      <span className="text-xs text-slate-500">inst#{alert.instance_id}</span>
+                    )}
+                  </div>
+                  {alert.detail && <p className="text-xs text-slate-400 mt-1 break-all">{alert.detail}</p>}
+                  <p className="text-xs text-slate-600 mt-1">{new Date(alert.created_at).toLocaleString("pt-BR")}</p>
+                </div>
+                {!alert.resolved && (
+                  <button
+                    onClick={() => onResolveAlert(alert.id)}
+                    className="shrink-0 text-xs px-2 py-1 bg-white/5 hover:bg-white/10 text-slate-400 rounded ring-1 ring-white/10 transition-colors"
+                  >
+                    Resolver
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function RotationPanel({
   status,
   history,
@@ -1572,7 +1893,11 @@ export default function Contas() {
   const [rotationLoading, setRotationLoading] = useState(false);
   const [triggeringInstance, setTriggeringInstance] = useState<number | null>(null);
 
-  const [tab, setTab] = useState<"accounts" | "pool" | "config" | "logs" | "rotation">("accounts");
+  const [systemHealth, setSystemHealth] = useState<SystemHealthData | null>(null);
+  const [systemHealthLoading, setSystemHealthLoading] = useState(false);
+  const [systemFlagSaving, setSystemFlagSaving] = useState(false);
+
+  const [tab, setTab] = useState<"accounts" | "pool" | "config" | "logs" | "rotation" | "sistema">("accounts");
   const [showForm, setShowForm] = useState(false);
   const [editAccount, setEditAccount] = useState<Account | null>(null);
   const [stateModal, setStateModal] = useState<{ id: number; state: AccountState } | null>(null);
@@ -1636,6 +1961,39 @@ export default function Contas() {
       setRotationLoading(false);
     }
   }, []);
+
+  const loadSystemHealth = useCallback(async () => {
+    setSystemHealthLoading(true);
+    try {
+      const h = await api<SystemHealthData>("/api/accounts/system-health");
+      setSystemHealth(h);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSystemHealthLoading(false);
+    }
+  }, []);
+
+  const handleSystemFlag = useCallback(async (flags: Partial<Pick<SystemHealthData, "emergency_mode" | "readonly_recovery_mode" | "rotation_paused" | "smart_cooldown">>) => {
+    setSystemFlagSaving(true);
+    try {
+      await api("/api/accounts/system-flags", { method: "POST", body: JSON.stringify(flags) });
+      await loadSystemHealth();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSystemFlagSaving(false);
+    }
+  }, [loadSystemHealth]);
+
+  const handleResolveAlert = useCallback(async (id: number) => {
+    try {
+      await api(`/api/accounts/watchdog-alerts/${id}/resolve`, { method: "POST" });
+      await loadSystemHealth();
+    } catch (e) {
+      console.error(e);
+    }
+  }, [loadSystemHealth]);
 
   const handleTriggerRotation = useCallback(async (instanceId: number) => {
     setTriggeringInstance(instanceId);
@@ -1758,6 +2116,7 @@ export default function Contas() {
             { key: "accounts", label: "👤 Contas" },
             { key: "pool",     label: "🏊 Pool" },
             { key: "rotation", label: "🔄 Rotação" },
+            { key: "sistema",  label: "🏥 Sistema" },
             { key: "config",   label: "⚙️ Configurações" },
             { key: "logs",     label: `📋 Logs (${logs.length})` },
           ] as const).map(t => (
@@ -1767,6 +2126,7 @@ export default function Contas() {
                 setTab(t.key);
                 if (t.key === "pool") loadPool();
                 if (t.key === "rotation") loadRotation();
+                if (t.key === "sistema") loadSystemHealth();
               }}
               className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
                 tab === t.key
@@ -1877,6 +2237,18 @@ export default function Contas() {
             onRefresh={loadRotation}
             onTrigger={handleTriggerRotation}
             triggeringInstance={triggeringInstance}
+          />
+        )}
+
+        {/* ── Sistema Tab ── */}
+        {tab === "sistema" && (
+          <SystemHealthPanel
+            health={systemHealth}
+            loading={systemHealthLoading}
+            flagSaving={systemFlagSaving}
+            onRefresh={loadSystemHealth}
+            onFlag={handleSystemFlag}
+            onResolveAlert={handleResolveAlert}
           />
         )}
 

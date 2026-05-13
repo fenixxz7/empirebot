@@ -941,6 +941,203 @@ accountsRouter.post("/rotation-trigger/:instanceId", asyncHandler(async (req, re
   res.json({ ok: true, queued: true });
 }));
 
+// ─── System Health ─────────────────────────────────────────────────────────────
+
+accountsRouter.get("/system-health", asyncHandler(async (_req, res) => {
+  const { getSystemState, calcStabilityScore } = await import("../engine/auto-rotator.js");
+  const { getWatchdogAlerts } = await import("../engine/watchdog.js");
+
+  const [cfgRows, poolRows, rotMetricsRows, instMetricsRows, alerts, instances] = await Promise.all([
+    query<Record<string, unknown>>(`SELECT * FROM accounts_config WHERE id = 1`),
+    query<Record<string, unknown>>(`
+      SELECT
+        COUNT(*)                                             AS total,
+        COUNT(*) FILTER (WHERE state = 'ACTIVE')            AS active,
+        COUNT(*) FILTER (WHERE state = 'COOLING'
+          OR (cooldown_until IS NOT NULL AND cooldown_until > NOW())) AS cooldown,
+        COUNT(*) FILTER (WHERE quarantine_until IS NOT NULL AND quarantine_until > NOW()) AS quarantine,
+        COUNT(*) FILTER (
+          WHERE state NOT IN ('DEAD','BANNED','INVALID_TOKEN','NEEDS_VERIFICATION',
+                              'LOGIN_CHALLENGE','MANUAL_ACTION_REQUIRED','ERROR')
+            AND (cooldown_until IS NULL OR cooldown_until < NOW())
+            AND (quarantine_until IS NULL OR quarantine_until < NOW())
+        )                                                   AS usable,
+        ROUND(AVG(CASE
+          WHEN state = 'ACTIVE' THEN 80
+          WHEN state IN ('IDLE','STANDBY','WAITING') THEN 60
+          WHEN state = 'COOLING' THEN 40
+          WHEN state IN ('DEAD','BANNED','ERROR','INVALID_TOKEN') THEN 0
+          ELSE 30
+        END))                                               AS health_approx
+      FROM accounts
+    `),
+    query<Record<string, unknown>>(`
+      SELECT
+        COUNT(*) FILTER (WHERE rotated_at > NOW() - INTERVAL '1 hour')              AS rotations_1h,
+        COUNT(*) FILTER (WHERE result = 'failover'
+          AND rotated_at > NOW() - INTERVAL '1 hour')                              AS failovers_1h,
+        COUNT(*) FILTER (WHERE result = 'rollback'
+          AND rotated_at > NOW() - INTERVAL '1 hour')                              AS rollbacks_1h,
+        COUNT(*) FILTER (WHERE rotated_at > NOW() - INTERVAL '24 hours')           AS rotations_24h,
+        COUNT(*) FILTER (WHERE result = 'aborted'
+          AND rotated_at > NOW() - INTERVAL '24 hours')                            AS aborted_24h
+      FROM rotation_history
+    `),
+    query<Record<string, unknown>>(`
+      SELECT
+        rh.instance_id,
+        i.name AS instance_name,
+        COUNT(*) FILTER (WHERE rh.rotated_at > NOW() - INTERVAL '1 hour')          AS rotations_1h,
+        COUNT(*) FILTER (WHERE rh.result = 'failover'
+          AND rh.rotated_at > NOW() - INTERVAL '1 hour')                           AS failovers_1h,
+        COUNT(*) FILTER (WHERE rh.result = 'rollback'
+          AND rh.rotated_at > NOW() - INTERVAL '24 hours')                         AS rollbacks_24h
+      FROM rotation_history rh
+      INNER JOIN instances i ON i.id = rh.instance_id
+      WHERE rh.rotated_at > NOW() - INTERVAL '24 hours'
+      GROUP BY rh.instance_id, i.name
+    `),
+    getWatchdogAlerts(20, true),
+    query<{ id: number; name: string }>(`SELECT id, name FROM instances ORDER BY id`),
+  ]);
+
+  const cfg = cfgRows[0] ?? {};
+  const pool = poolRows[0] ?? {};
+  const rot = rotMetricsRows[0] ?? {};
+  const sysState = getSystemState();
+
+  const totalPool = Number(pool.total ?? 0);
+  const usablePool = Number(pool.usable ?? 0);
+  const activePool = Number(pool.active ?? 0);
+  const cooldownPool = Number(pool.cooldown ?? 0);
+  const quarantinePool = Number(pool.quarantine ?? 0);
+
+  const healthApprox = Number(pool.health_approx ?? 50);
+  const failovers1h = Number(rot.failovers_1h ?? 0);
+  const rollbacks1h = Number(rot.rollbacks_1h ?? 0);
+  const rotations1h = Number(rot.rotations_1h ?? 0);
+
+  let status: string;
+  if (cfg.emergency_mode) {
+    status = "emergency";
+  } else if (cfg.readonly_recovery_mode) {
+    status = "readonly";
+  } else if (failovers1h >= 3 || healthApprox < 30 || usablePool === 0) {
+    status = "critical";
+  } else if (failovers1h >= 1 || healthApprox < 60 || (totalPool > 0 && usablePool / totalPool < 0.3) || rollbacks1h >= 2) {
+    status = "degraded";
+  } else {
+    status = "healthy";
+  }
+
+  // Merge instâncias que não têm rotação ainda
+  const instMetricsMap = new Map(instMetricsRows.map(r => [Number(r.instance_id), r]));
+  const instancesHealth = instances.map(inst => {
+    const m = instMetricsMap.get(inst.id);
+    const rotH = Number(m?.rotations_1h ?? 0);
+    const failH = Number(m?.failovers_1h ?? 0);
+    const rollH = Number(m?.rollbacks_24h ?? 0);
+    let instStatus = "healthy";
+    if (failH >= 2) instStatus = "critical";
+    else if (failH >= 1 || rollH >= 2 || rotH >= ROTATION_LOOP_THRESHOLD_EXPORT) instStatus = "degraded";
+    return {
+      instance_id: inst.id,
+      instance_name: inst.name,
+      status: instStatus,
+      rotations_1h: rotH,
+      failovers_1h: failH,
+      rollbacks_24h: rollH,
+    };
+  });
+
+  res.json({
+    status,
+    emergency_mode:          Boolean(cfg.emergency_mode),
+    readonly_recovery_mode:  Boolean(cfg.readonly_recovery_mode),
+    rotation_paused:         Boolean(cfg.rotation_paused) || sysState.watchdog_paused,
+    watchdog_paused:         sysState.watchdog_paused,
+    smart_cooldown:          Boolean(cfg.smart_cooldown ?? true),
+    stability_weight:        Number(cfg.stability_weight ?? 20),
+    pool: {
+      total:                    totalPool,
+      active:                   activePool,
+      cooldown:                 cooldownPool,
+      quarantine:               quarantinePool,
+      usable:                   usablePool,
+      health_approx:            healthApprox,
+      utilization_pct:          totalPool > 0 ? Math.round(activePool / totalPool * 100) : 0,
+      cooldown_pressure_pct:    totalPool > 0 ? Math.round(cooldownPool / totalPool * 100) : 0,
+      quarantine_pressure_pct:  totalPool > 0 ? Math.round(quarantinePool / totalPool * 100) : 0,
+    },
+    rotation_metrics: {
+      rotations_1h:  rotations1h,
+      failovers_1h:  failovers1h,
+      rollbacks_1h:  rollbacks1h,
+      rotations_24h: Number(rot.rotations_24h ?? 0),
+      aborted_24h:   Number(rot.aborted_24h ?? 0),
+    },
+    instances: instancesHealth,
+    watchdog_alerts: alerts,
+  });
+}));
+
+// Threshold export para reuso no route
+const ROTATION_LOOP_THRESHOLD_EXPORT = 5;
+
+// ─── System Flags ─────────────────────────────────────────────────────────────
+
+accountsRouter.post("/system-flags", asyncHandler(async (req, res) => {
+  const b = req.body as {
+    emergency_mode?: boolean;
+    readonly_recovery_mode?: boolean;
+    rotation_paused?: boolean;
+    smart_cooldown?: boolean;
+    stability_weight?: number;
+  };
+
+  const updates: string[] = [];
+  const params: unknown[] = [];
+
+  if (b.emergency_mode !== undefined)         { params.push(b.emergency_mode);        updates.push(`emergency_mode = $${params.length}`); }
+  if (b.readonly_recovery_mode !== undefined) { params.push(b.readonly_recovery_mode);updates.push(`readonly_recovery_mode = $${params.length}`); }
+  if (b.rotation_paused !== undefined)        { params.push(b.rotation_paused);        updates.push(`rotation_paused = $${params.length}`); }
+  if (b.smart_cooldown !== undefined)         { params.push(b.smart_cooldown);         updates.push(`smart_cooldown = $${params.length}`); }
+  if (b.stability_weight !== undefined)       { params.push(b.stability_weight);       updates.push(`stability_weight = $${params.length}`); }
+
+  if (updates.length > 0) {
+    await query(`UPDATE accounts_config SET ${updates.join(", ")} WHERE id = 1`, params);
+  }
+
+  // Sincroniza flags em memória imediatamente
+  const { setEmergencyMode, setReadonlyMode, setRotationPaused } = await import("../engine/auto-rotator.js");
+  if (b.emergency_mode !== undefined)         setEmergencyMode(b.emergency_mode);
+  if (b.readonly_recovery_mode !== undefined) setReadonlyMode(b.readonly_recovery_mode);
+  if (b.rotation_paused !== undefined)        setRotationPaused(b.rotation_paused);
+
+  await query(
+    `INSERT INTO account_logs (account_id, instance_id, event_type, detail) VALUES (NULL,NULL,'system_flags_changed',$1)`,
+    [JSON.stringify({ ...b })]
+  );
+
+  res.json({ ok: true });
+}));
+
+// ─── Watchdog Alerts ──────────────────────────────────────────────────────────
+
+accountsRouter.get("/watchdog-alerts", asyncHandler(async (req, res) => {
+  const { getWatchdogAlerts } = await import("../engine/watchdog.js");
+  const onlyOpen = req.query.open === "true";
+  const limit = Math.min(Number(req.query.limit ?? 50), 200);
+  const alerts = await getWatchdogAlerts(limit, onlyOpen);
+  res.json(alerts);
+}));
+
+accountsRouter.post("/watchdog-alerts/:id/resolve", asyncHandler(async (req, res) => {
+  const { resolveWatchdogAlert } = await import("../engine/watchdog.js");
+  await resolveWatchdogAlert(Number(req.params.id));
+  res.json({ ok: true });
+}));
+
 // ─── Logs ─────────────────────────────────────────────────────────────────────
 
 accountsRouter.get("/logs", asyncHandler(async (req, res) => {
