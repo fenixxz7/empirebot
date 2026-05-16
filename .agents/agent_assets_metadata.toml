@@ -24,3 +24,9 @@ id = "vtGU2u-MiwLqQh46XH2JW"
 uri = "file://exports/empirebot-docker.tar.gz"
 type = "unspecified"
 title = "EmpireBot — Pacote Docker pra VPS"
+
+[[outputs]]
+id = "CFe-fePZ6FhOUL8dlVfp5"
+uri = "file://exports/bot-essencial.zip"
+type = "unspecified"
+title = "bot-essencial.zip"
