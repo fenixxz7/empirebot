@@ -1,5 +1,6 @@
 import { query } from "../db/pool.js";
 import { DiscordRest } from "../discord/rest.js";
+import { recordDetectedType } from "../lib/orgDetection.js";
 
 export interface MatchToken {
   tokenId: number;
@@ -35,6 +36,9 @@ const MATCH_PATTERNS = [
   /^partida[\s]\d+$/i,
   /^aguardando\d+$/i,
 ];
+
+/** Tipos Discord que correspondem a threads (não canal de texto simples/privado). */
+const THREAD_EVENT_TYPES = new Set([10, 11, 12]);
 
 
 // Discord channel types
@@ -488,9 +492,10 @@ export class MatchHandler {
       mode: string | null;
       category: string | null;
       embed_valor: string | null;
+      match_type: string | null;
     }>(
       `SELECT aq.org_id, o.name AS org_name, aq.mode, aq.category,
-              oc.embed_valor
+              oc.embed_valor, o.match_type
        FROM active_queues aq
        JOIN orgs o ON o.id = aq.org_id
        LEFT JOIN org_channels oc ON oc.org_id = aq.org_id AND oc.mode = aq.mode
@@ -500,6 +505,25 @@ export class MatchHandler {
     );
 
     const orgCtx = activeQueue[0] ?? null;
+
+    // === Detecção de tipo de partida em tempo real ===
+    const detectedType = THREAD_EVENT_TYPES.has(event.type) ? "thread" : "private_channel";
+    if (orgCtx) {
+      recordDetectedType(this.instanceId, {
+        orgId: orgCtx.org_id,
+        orgName: orgCtx.org_name,
+        detectedType,
+        configuredType: orgCtx.match_type ?? "thread",
+        channelId: event.id,
+        channelName: event.name,
+        detectedAt: Date.now(),
+      });
+      if (orgCtx.match_type && orgCtx.match_type !== "mixed" && orgCtx.match_type !== detectedType) {
+        await this.host.log(this.instanceId, "WARN", "match",
+          `[diag] org "${orgCtx.org_name}" configurada como "${orgCtx.match_type}" mas detectou ${detectedType} (canal #${event.name} tipo Discord=${event.type}) — verifique o match_type no painel`);
+      }
+    }
+    const pipelineLabel = `[${orgCtx?.match_type ?? detectedType} pipeline]`;
 
     // Log diagnóstico: informa status da activeQueue e contexto da detecção.
     // Aparece em TODOS os matches para facilitar debugging pós-troca-de-org.
@@ -526,7 +550,7 @@ export class MatchHandler {
       }
       await this.host.log(
         this.instanceId, "INFO", "match",
-        `[diag] #${event.name} ch=${event.id} guild=${guildId ?? "?"} tipo=${event.type} — ${aqStatus}`,
+        `${pipelineLabel} [diag] #${event.name} ch=${event.id} guild=${guildId ?? "?"} tipo=${event.type} — ${aqStatus}`,
       );
     }
 

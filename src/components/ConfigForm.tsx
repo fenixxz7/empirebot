@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Org, OrgChannel } from "@shared/types";
+import type { Org, OrgChannel, MatchType } from "@shared/types";
 import { api } from "@/lib/api";
 
 type Category = "Mobile" | "Misto" | "Emulador" | "Tatico" | "Full-Soco";
@@ -11,6 +11,12 @@ const ALL_CATEGORIES: Category[] = [
   "Tatico",
   "Full-Soco",
 ];
+
+const MATCH_TYPE_BADGES: Record<MatchType, { emoji: string; label: string; cls: string }> = {
+  thread:          { emoji: "📍", label: "thread",  cls: "text-sky-300 bg-sky-400/10 ring-sky-400/30" },
+  private_channel: { emoji: "📺", label: "private", cls: "text-violet-300 bg-violet-400/10 ring-violet-400/30" },
+  mixed:           { emoji: "🔀", label: "mixed",   cls: "text-amber-300 bg-amber-400/10 ring-amber-400/30" },
+};
 
 type TokenPoolEntry = {
   id: number;
@@ -164,6 +170,13 @@ export function ConfigForm({
   const [deleteSet, setDeleteSet] = useState<Set<number>>(new Set());
   const [busyOrgs, setBusyOrgs] = useState(false);
   const [rediscovering, setRediscovering] = useState(false);
+  const [typeFilter, setTypeFilter] = useState<"all" | MatchType>("all");
+  const [detectedTypes, setDetectedTypes] = useState<Map<number, string>>(new Map());
+  const [typeMetrics, setTypeMetrics] = useState<{
+    active_queues: Record<string, number>;
+    matches: Record<string, number>;
+    orgs: Record<string, number>;
+  } | null>(null);
   const [newOrgName, setNewOrgName] = useState("");
   const [newOrgGuild, setNewOrgGuild] = useState("");
   const [newOrgPriority, setNewOrgPriority] = useState(1);
@@ -235,12 +248,37 @@ export function ConfigForm({
   async function reloadOrgs() {
     const rows = await api<Org[]>(`/api/orgs?instance_id=${instanceId}`);
     setOrgs(rows);
+    const detected = await api<Array<{ org_id: number; detected_type: string }>>(`/api/orgs/detected-types`).catch(() => []);
+    setDetectedTypes(new Map(detected.map((d) => [d.org_id, d.detected_type])));
   }
 
   useEffect(() => {
     reloadOrgs().catch(console.error);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instanceId]);
+
+  useEffect(() => {
+    function fetchMetrics() {
+      api<{ active_queues: Record<string, number>; matches: Record<string, number>; orgs: Record<string, number> }>(
+        `/api/orgs/type-metrics?instance_id=${instanceId}`,
+      ).then(setTypeMetrics).catch(() => {});
+    }
+    fetchMetrics();
+    const t = setInterval(fetchMetrics, 30_000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instanceId]);
+
+  const typeCounts = useMemo(() => ({
+    thread: orgs.filter((o) => (o.match_type ?? "thread") === "thread").length,
+    private_channel: orgs.filter((o) => o.match_type === "private_channel").length,
+    mixed: orgs.filter((o) => o.match_type === "mixed").length,
+  }), [orgs]);
+
+  const filteredOrgs = useMemo(() =>
+    typeFilter === "all" ? orgs : orgs.filter((o) => (o.match_type ?? "thread") === typeFilter),
+    [orgs, typeFilter],
+  );
 
   function toggleCat(c: Category) {
     setAllowedCats((prev) => {
@@ -1151,11 +1189,39 @@ export function ConfigForm({
       </Section>
 
       <Section title="Selecionar orgs">
+        {/* Filtro por tipo de partida */}
+        <div className="flex flex-wrap gap-1.5 mb-3">
+          {(["all", "thread", "private_channel", "mixed"] as const).map((ft) => {
+            const count = ft === "all" ? orgs.length
+              : ft === "thread" ? typeCounts.thread
+              : ft === "private_channel" ? typeCounts.private_channel
+              : typeCounts.mixed;
+            const badge = ft !== "all" ? MATCH_TYPE_BADGES[ft] : null;
+            return (
+              <button
+                key={ft}
+                type="button"
+                onClick={() => setTypeFilter(ft)}
+                className={`px-2.5 py-1 rounded-full text-xs font-medium ring-1 transition-colors ${
+                  typeFilter === ft
+                    ? "bg-accent/20 text-accent ring-accent/50"
+                    : "bg-white/5 text-slate-400 ring-white/10 hover:ring-white/30"
+                }`}
+              >
+                {badge ? `${badge.emoji} ${badge.label}` : "Todas"} ({count})
+              </button>
+            );
+          })}
+        </div>
+
         <div className="rounded-xl bg-navy-950/60 border border-white/10 p-3 space-y-1.5">
           {orgs.length === 0 && (
             <div className="text-sm text-slate-500">Nenhuma org cadastrada.</div>
           )}
-          {orgs.map((o) => (
+          {orgs.length > 0 && filteredOrgs.length === 0 && (
+            <div className="text-sm text-slate-500">Nenhuma org do tipo selecionado.</div>
+          )}
+          {filteredOrgs.map((o) => (
             <OrgRow
               key={o.id}
               org={o}
@@ -1170,10 +1236,38 @@ export function ConfigForm({
                 await reloadOrgs();
               }}
               onClearChannels={() => reloadOrgs()}
+              onMatchTypeChange={async (t) => {
+                await api(`/api/orgs/${o.id}`, { method: "PATCH", body: JSON.stringify({ match_type: t }) });
+                await reloadOrgs();
+              }}
+              detectedMatchType={detectedTypes.get(o.id) ?? null}
               expanded={o.id === openOrgId}
             />
           ))}
         </div>
+
+        {/* Métricas por tipo de partida */}
+        {typeMetrics && (
+          <div className="mt-3 grid grid-cols-3 gap-2">
+            {(["thread", "private_channel", "mixed"] as const).map((mt) => {
+              const b = MATCH_TYPE_BADGES[mt];
+              return (
+                <div
+                  key={mt}
+                  className={`rounded-lg p-2.5 ring-1 ${b.cls}`}
+                  style={{ background: "rgba(0,0,0,0.18)" }}
+                >
+                  <div className="text-xs font-semibold">{b.emoji} {b.label}</div>
+                  <div className="text-[10px] mt-1.5 space-y-0.5 text-left opacity-80">
+                    <div>{typeMetrics.orgs[mt] ?? 0} org(s)</div>
+                    <div>{typeMetrics.active_queues[mt] ?? 0} fila(s) ativa(s)</div>
+                    <div>{typeMetrics.matches[mt] ?? 0} partida(s)</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         {orgsMode === "normal" && (
           <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -1487,6 +1581,8 @@ function OrgRow({
   onShowChannels,
   onPriorityChange,
   onClearChannels,
+  onMatchTypeChange,
+  detectedMatchType,
   expanded,
 }: {
   org: Org;
@@ -1498,6 +1594,8 @@ function OrgRow({
   onShowChannels: () => void;
   onPriorityChange: (p: number) => void;
   onClearChannels: () => void;
+  onMatchTypeChange: (t: string) => void;
+  detectedMatchType?: string | null;
   expanded: boolean;
 }) {
   const [channels, setChannels] = useState<OrgChannel[] | null>(null);
@@ -1550,6 +1648,38 @@ function OrgRow({
           />
         )}
         <span className="text-sm text-slate-200">{org.name}</span>
+        {/* Badge de tipo de partida + dropdown de edição */}
+        {mode === "normal" && (() => {
+          const mt = (org.match_type ?? "thread") as MatchType;
+          const b = MATCH_TYPE_BADGES[mt];
+          const mismatch =
+            detectedMatchType &&
+            detectedMatchType !== mt &&
+            mt !== "mixed";
+          return (
+            <span className="flex items-center gap-1">
+              <select
+                value={mt}
+                onChange={(e) => onMatchTypeChange(e.target.value)}
+                title="Tipo de partida desta org"
+                className={`text-[10px] px-1.5 py-0.5 rounded-full ring-1 cursor-pointer font-medium ${b.cls}`}
+                style={{ background: "transparent", border: "none", outline: "none", appearance: "none" }}
+              >
+                <option value="thread">📍 thread</option>
+                <option value="private_channel">📺 private</option>
+                <option value="mixed">🔀 mixed</option>
+              </select>
+              {mismatch && (
+                <span
+                  title={`Detectado: ${detectedMatchType} (diferente do configurado: ${mt})`}
+                  className="text-[9px] font-bold text-amber-400 ring-1 ring-amber-400/40 bg-amber-400/10 px-1 py-0.5 rounded cursor-help"
+                >
+                  ≠{detectedMatchType === "thread" ? "📍" : "📺"}
+                </span>
+              )}
+            </span>
+          );
+        })()}
         {org.guild_id ? (
           <span className="text-[10px] text-slate-500 font-mono">
             {org.guild_id.slice(0, 6)}…{org.guild_id.slice(-4)}

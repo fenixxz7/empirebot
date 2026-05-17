@@ -438,6 +438,18 @@ export async function initDatabase(): Promise<void> {
     WHERE UPPER(name) = 'SHARK'
   `);
 
+  // Histórico/auditoria de mudanças de match_type por org
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS org_match_type_history (
+      id SERIAL PRIMARY KEY,
+      org_id INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+      old_type TEXT,
+      new_type TEXT NOT NULL,
+      changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      origin TEXT NOT NULL DEFAULT 'panel'
+    )
+  `);
+
   // Garante que ninguém ficou com fila "fantasma" entre boots
   await pool.query(`DELETE FROM active_queues`);
 

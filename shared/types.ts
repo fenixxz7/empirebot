@@ -1,5 +1,7 @@
 export type Category = "Mobile" | "Misto" | "Emulador" | "Tatico" | "Full-Soco";
 
+export type MatchType = "thread" | "private_channel" | "mixed";
+
 export const ALL_CATEGORIES: Category[] = [
   "Mobile",
   "Misto",
@@ -16,6 +18,9 @@ export interface Org {
   max_queues: number;
   enabled: boolean;
   priority: number;
+  match_type: MatchType;
+  /** Tipo detectado em tempo real pelo handler — pode diferir do configurado */
+  detected_match_type?: "thread" | "private_channel" | null;
   channels_count?: number;
   last_scanned_at?: string | null;
 }
