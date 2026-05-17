@@ -1,6 +1,7 @@
 import { query } from "../db/pool.js";
 import { DiscordRest, type DiscordMessage } from "../discord/rest.js";
 import { DiscoveryRateBudget } from "../discord/discovery.js";
+import { ACTIVE_QUEUE_TTL_THREAD_MS, ACTIVE_QUEUE_TTL_PRIVATE_MS } from "../lib/timings.js";
 
 export interface ActiveToken {
   tokenId: number;
@@ -84,7 +85,6 @@ interface BufferedCandidate {
   lastSeenAt: number;
   expiresAt: number;
 }
-import { ACTIVE_QUEUE_TTL_MS } from "../lib/timings.js";
 
 // === RATE WINDOW (janela de 60s — caps configuráveis via instance_configs) ===
 const RATE_WINDOW_MS = 60_000;             // janela de 60s (fixa)
@@ -195,6 +195,9 @@ export class QueueRunner {
   // Orgs em penalidade cold (ghost_rate > 50% → pausa 5min)
   private coldOrgs = new Map<number, number>(); // orgId → thawAt
   private lastEfficiencyLog = 0;
+  /** Limite de cliques comprometido no primeiro clique da sessão por org —
+   *  evita o bug "clicks concluídos 9/5" causado por variação de isHotOrg entre ticks. */
+  private orgClickLimits = new Map<number, number>();
 
   constructor(
     private readonly instanceId: number,
@@ -240,6 +243,7 @@ export class QueueRunner {
     this.orgGhostTs.clear();
     this.coldOrgs.clear();
     this.lastEfficiencyLog = 0;
+    this.orgClickLimits.clear();
     this.timer = setTimeout(() => this.tick(), STARTUP_GRACE_MS);
   }
 
@@ -342,8 +346,8 @@ export class QueueRunner {
       this.orgGhostTs.get(orgId) ?? [],
       10 * 60_000,
     );
-    // Só aplica cold se há dados suficientes (≥5 joins na janela)
-    if (m.joins >= 5 && m.ghost_rate > 0.5) {
+    // Só aplica cold se há dados suficientes (≥10 joins na janela) e ghost_rate expressivo
+    if (m.joins >= 10 && m.ghost_rate > 0.7) {
       const thawAt = Date.now() + 5 * 60_000;
       const existing = this.coldOrgs.get(orgId) ?? 0;
       if (thawAt > existing) {
@@ -376,7 +380,7 @@ export class QueueRunner {
       if (m.joins === 0) continue;
       const cold = this.isOrgCold(orgId) ? " [COLD]" : "";
       lines.push(
-        `org${orgId}: joins=${m.joins} match=${m.matches} ghost=${m.ghosts} conv=${Math.round(m.conversion_rate * 100)}% ghost_rate=${Math.round(m.ghost_rate * 100)}%${cold}`,
+        `org${orgId}: joins=${m.joins} match=${m.matches} ghost=${m.ghosts} conv=${Math.round(m.conversion_rate * 100)}% ghost_rate=${Math.min(100, Math.round(m.ghost_rate * 100))}%${cold}`,
       );
     }
     const softLim = cfg.optimizeForConversion ? ` soft=${cfg.aqSoftLimit} hard=${cfg.aqHardLimit}` : "";
@@ -469,11 +473,18 @@ export class QueueRunner {
     if (now - this.lastSweepAt < 30_000) return;
     this.lastSweepAt = now;
     const removed = await query<{ id: number; org_id: number; channel_id: string }>(
-      `DELETE FROM active_queues
-       WHERE instance_id = $1
-         AND joined_at < NOW() - ($2 || ' milliseconds')::interval
-       RETURNING id, org_id, channel_id`,
-      [this.instanceId, String(ACTIVE_QUEUE_TTL_MS)],
+      `DELETE FROM active_queues aq
+       USING orgs o
+       WHERE aq.org_id = o.id
+         AND aq.instance_id = $1
+         AND aq.joined_at < NOW() - (
+           CASE o.match_type
+             WHEN 'private_channel' THEN ($2 || ' milliseconds')::interval
+             ELSE ($3 || ' milliseconds')::interval
+           END
+         )
+       RETURNING aq.id, aq.org_id, aq.channel_id`,
+      [this.instanceId, String(ACTIVE_QUEUE_TTL_PRIVATE_MS), String(ACTIVE_QUEUE_TTL_THREAD_MS)],
     );
     if (removed.length > 0) {
       // Registra fantasmas por org para cálculo de ghost_rate
@@ -493,7 +504,7 @@ export class QueueRunner {
         this.instanceId,
         "INFO",
         "engine",
-        `Sweep: removidas ${removed.length} fila(s) fantasma (>4min sem virar partida).`,
+        `Sweep: removidas ${removed.length} fila(s) fantasma (thread>15min / private>5min sem partida).`,
       );
       // Força round-robin a recomeçar do topo e limpa cursores de modo
       this.orgCursor = 0;
@@ -1171,22 +1182,28 @@ export class QueueRunner {
         const count = prev + 1;
         this.orgClickCounts.set(orgId, count);
 
-        // Modo org quente: se ainda há muitas filas elegíveis e nenhuma recusa
-        // recente, permite cliques extras antes de avançar para a próxima org.
-        const isHotOrg = cfg.hotOrgExtraClicks > 0
-          && candidateEligibleCount >= 5
-          && !this.isOrgInLimitCooldown(orgId).blocked;
-        const effectiveLimit = isHotOrg
-          ? cfg.clicksPerOrg + cfg.hotOrgExtraClicks
-          : cfg.clicksPerOrg;
+        // Committed limit: definido no 1º clique da sessão e mantido estável
+        // até o reset. Evita o bug "clicks concluídos 9/5" causado pela condição
+        // isHotOrg oscilar entre ticks enquanto o count acumula.
+        if (count === 1) {
+          const isHotFirst = cfg.hotOrgExtraClicks > 0
+            && candidateEligibleCount >= 5
+            && !this.isOrgInLimitCooldown(orgId).blocked;
+          this.orgClickLimits.set(
+            orgId,
+            isHotFirst ? cfg.clicksPerOrg + cfg.hotOrgExtraClicks : cfg.clicksPerOrg,
+          );
+        }
+        const effectiveLimit = this.orgClickLimits.get(orgId) ?? cfg.clicksPerOrg;
 
         if (count >= effectiveLimit) {
           this.orgClickCounts.set(orgId, 0);
+          this.orgClickLimits.delete(orgId);
           const orgIdx = cfg.selected_org_ids.indexOf(orgId);
           if (orgIdx >= 0) {
             this.orgCursor = (orgIdx + 1) % totalOrgs;
           }
-          const hotLabel = isHotOrg ? ` (modo quente +${cfg.hotOrgExtraClicks})` : "";
+          const hotLabel = effectiveLimit > cfg.clicksPerOrg ? ` (modo quente +${cfg.hotOrgExtraClicks})` : "";
           void this.manager.log(this.instanceId, "INFO", "engine",
             `Próxima org — clicks concluídos ${count}/${effectiveLimit}${hotLabel} em "${candidate.org_name}".`);
         } else {

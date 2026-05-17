@@ -423,6 +423,21 @@ export async function initDatabase(): Promise<void> {
     `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS active_queue_hard_limit INTEGER NOT NULL DEFAULT 180`,
   );
 
+  // Tipo de partida por org: thread (padrão) | private_channel | mixed
+  await pool.query(
+    `ALTER TABLE orgs ADD COLUMN IF NOT EXISTS match_type TEXT NOT NULL DEFAULT 'thread'`,
+  );
+  // Seed: orgs conhecidas como canal privado (canais aparecem rápido → TTL 5min)
+  await pool.query(`
+    UPDATE orgs SET match_type = 'private_channel'
+    WHERE UPPER(name) IN ('TOKYO','KING','ALFA','GOLD','CORUJA','FAIT','ASTRA')
+  `);
+  // SHARK usa misto (tem threads E canais privados)
+  await pool.query(`
+    UPDATE orgs SET match_type = 'mixed'
+    WHERE UPPER(name) = 'SHARK'
+  `);
+
   // Garante que ninguém ficou com fila "fantasma" entre boots
   await pool.query(`DELETE FROM active_queues`);
 

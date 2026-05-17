@@ -31,6 +31,9 @@ const MATCH_PATTERNS = [
   /^partida-\d+$/i,
   /^sua[\s_-]partida[\s_-]\d+$/i,
   /^aguardando-\d+$/i,
+  /^aguardando[\s_]\d+$/i,
+  /^partida[\s]\d+$/i,
+  /^aguardando\d+$/i,
 ];
 
 
@@ -398,6 +401,9 @@ export class MatchHandler {
       return;
     }
     if (!isMatchChannel(event.name)) return;
+
+    // Ignora threads arquivadas ou travadas — são partidas antigas reutilizadas
+    if (event.thread_metadata?.archived || event.thread_metadata?.locked) return;
 
     const key = `${this.instanceId}:${event.id}`;
 

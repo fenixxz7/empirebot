@@ -9,6 +9,9 @@ const MATCH_PATTERNS = [
   /^partida-\d+$/i,
   /^sua[\s_-]partida[\s_-]\d+$/i,
   /^aguardando-\d+$/i,
+  /^aguardando[\s_]\d+$/i,
+  /^partida[\s]\d+$/i,
+  /^aguardando\d+$/i,
 ];
 
 const TEXT_TYPES = new Set([0]);
@@ -142,6 +145,7 @@ export class MatchPoller {
             if (!THREAD_TYPES.has(t.type)) continue;
             if (!isMatchName(t.name)) continue;
             if (seen.has(t.id)) continue;
+            if (t.thread_metadata?.archived || t.thread_metadata?.locked) continue;
             seen.add(t.id);
             foundThreads += 1;
             await this.host.log(

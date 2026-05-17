@@ -10,8 +10,14 @@ export const MINUTE_MS = 60 * SECOND_MS;
 export const HOUR_MS = 60 * MINUTE_MS;
 export const DAY_MS = 24 * HOUR_MS;
 
-/** TTL de uma fila ativa antes do sweep considerar abandonada. */
-export const ACTIVE_QUEUE_TTL_MS = 4 * MINUTE_MS;
+/** TTL de uma fila ativa (org tipo thread) — threads demoram mais para aparecer. */
+export const ACTIVE_QUEUE_TTL_THREAD_MS = 15 * MINUTE_MS;
+
+/** TTL de uma fila ativa (org tipo canal privado) — canais privados chegam rápido. */
+export const ACTIVE_QUEUE_TTL_PRIVATE_MS = 5 * MINUTE_MS;
+
+/** TTL legado — mantido para compatibilidade, aponta para private_channel. */
+export const ACTIVE_QUEUE_TTL_MS = ACTIVE_QUEUE_TTL_PRIVATE_MS;
 
 /** Cooldown após receber automod (Discord 200000). */
 export const COOLDOWN_AUTOMOD_MS = 10 * MINUTE_MS;

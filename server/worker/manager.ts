@@ -436,6 +436,7 @@ class Manager {
           const threads: any[] = eventData?.threads ?? [];
           const matchTokens = this.buildMatchTokens(instanceId, e.tokenId);
           for (const t of threads) {
+            if (t?.thread_metadata?.archived || t?.thread_metadata?.locked) continue;
             matchHandler.onChannelCreate(t, matchTokens).catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
           }
           return;
@@ -467,6 +468,7 @@ class Manager {
           if (threads.length > 0) {
             const matchTokens = this.buildMatchTokens(instanceId, e.tokenId);
             for (const t of threads) {
+              if (t?.thread_metadata?.archived || t?.thread_metadata?.locked) continue;
               matchHandler.onChannelCreate(t, matchTokens).catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
             }
           }
