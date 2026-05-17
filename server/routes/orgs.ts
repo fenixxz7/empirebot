@@ -3,7 +3,7 @@ import { z } from "zod";
 import { query } from "../db/pool.js";
 import { validate } from "../lib/validate.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
-import { listDetectedTypes } from "../lib/orgDetection.js";
+import { listDetectedTypes, getGhostsByType, getUncorrelatedCount } from "../lib/orgDetection.js";
 
 export const orgsRouter = Router();
 
@@ -75,10 +75,18 @@ orgsRouter.get("/type-metrics", asyncHandler(async (req, res) => {
     return m;
   }
 
+  // Dados em memória do módulo de detecção (sem custo de DB)
+  const ghosts = instanceId ? getGhostsByType(instanceId) : {};
+  const uncorrelated = instanceId ? getUncorrelatedCount(instanceId) : 0;
+
   res.json({
     active_queues: toMap(aqRows),
     matches: toMap(matchRows),
     orgs: toMap(orgRows),
+    /** Ghosts (sweep TTL) acumulados desde o último restart, por match_type */
+    ghosts,
+    /** Partidas detectadas sem activeQueue correspondente (sem correlação de org) */
+    uncorrelated,
   });
 }));
 

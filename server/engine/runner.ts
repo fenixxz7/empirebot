@@ -2,6 +2,7 @@ import { query } from "../db/pool.js";
 import { DiscordRest, type DiscordMessage } from "../discord/rest.js";
 import { DiscoveryRateBudget } from "../discord/discovery.js";
 import { ACTIVE_QUEUE_TTL_THREAD_MS, ACTIVE_QUEUE_TTL_PRIVATE_MS } from "../lib/timings.js";
+import { recordGhostByType } from "../lib/orgDetection.js";
 
 export interface ActiveToken {
   tokenId: number;
@@ -492,6 +493,31 @@ export class QueueRunner {
         this.recordGhost(r.org_id);
       }
       this.activeRowsCacheTs = 0; // invalida cache — sweep removeu entradas
+
+      // Busca nome + match_type das orgs varridas para log detalhado e métricas
+      const sweepOrgIds = [...new Set(removed.map((r) => r.org_id))];
+      const orgInfoRows = await query<{ id: number; name: string; match_type: string }>(
+        `SELECT id, name, match_type FROM orgs WHERE id = ANY($1)`,
+        [sweepOrgIds],
+      ).catch(() => [] as Array<{ id: number; name: string; match_type: string }>);
+      const orgInfoMap = new Map(orgInfoRows.map((o) => [o.id, o]));
+
+      // Registra ghost por tipo no módulo de detecção (para métricas /type-metrics)
+      for (const r of removed) {
+        const mt = orgInfoMap.get(r.org_id)?.match_type ?? "thread";
+        recordGhostByType(this.instanceId, mt);
+      }
+
+      // Log detalhado por entry varrida: org + tipo + fragmento do channel_id
+      const TYPE_EMOJI: Record<string, string> = {
+        thread: "📍", private_channel: "📺", mixed: "🔀",
+      };
+      const orgLines = removed.map((r) => {
+        const info = orgInfoMap.get(r.org_id);
+        const mt = info?.match_type ?? "thread";
+        return `${info?.name ?? `org${r.org_id}`}[${TYPE_EMOJI[mt] ?? ""}${mt}]·ch…${r.channel_id.slice(-6)}`;
+      });
+
       const remaining = await query<{ c: string }>(
         `SELECT COUNT(*)::text AS c FROM active_queues WHERE instance_id = $1`,
         [this.instanceId],
@@ -504,7 +530,7 @@ export class QueueRunner {
         this.instanceId,
         "INFO",
         "engine",
-        `Sweep: removidas ${removed.length} fila(s) fantasma (thread>15min / private>5min sem partida).`,
+        `Sweep: ${removed.length} ghost(s) — ${orgLines.join(" | ")}`,
       );
       // Força round-robin a recomeçar do topo e limpa cursores de modo
       this.orgCursor = 0;

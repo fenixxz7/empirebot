@@ -4,7 +4,37 @@
  * Chave: `${instanceId}:${orgId}`
  */
 
-export type DetectedMatchType = 'thread' | 'private_channel';
+export type DetectedMatchType = "thread" | "private_channel";
+
+// ─── Contadores de ghost por tipo ────────────────────────────────────────────
+// Chave: `${instanceId}:${matchType}`
+const ghostsByType = new Map<string, number>();
+
+export function recordGhostByType(instanceId: number, matchType: string): void {
+  const key = `${instanceId}:${matchType}`;
+  ghostsByType.set(key, (ghostsByType.get(key) ?? 0) + 1);
+}
+
+export function getGhostsByType(instanceId: number): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [key, count] of ghostsByType.entries()) {
+    const [iid, mt] = key.split(":");
+    if (Number(iid) === instanceId) out[mt] = (out[mt] ?? 0) + count;
+  }
+  return out;
+}
+
+// ─── Contadores de sem-correlação (match sem activeQueue) ────────────────────
+const uncorrelatedByInstance = new Map<number, number>();
+
+/** Registra uma partida detectada que não encontrou activeQueue correspondente. */
+export function recordUncorrelated(instanceId: number): void {
+  uncorrelatedByInstance.set(instanceId, (uncorrelatedByInstance.get(instanceId) ?? 0) + 1);
+}
+
+export function getUncorrelatedCount(instanceId: number): number {
+  return uncorrelatedByInstance.get(instanceId) ?? 0;
+}
 
 export interface OrgDetectionEvent {
   orgId: number;

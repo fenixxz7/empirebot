@@ -176,6 +176,8 @@ export function ConfigForm({
     active_queues: Record<string, number>;
     matches: Record<string, number>;
     orgs: Record<string, number>;
+    ghosts: Record<string, number>;
+    uncorrelated: number;
   } | null>(null);
   const [newOrgName, setNewOrgName] = useState("");
   const [newOrgGuild, setNewOrgGuild] = useState("");
@@ -259,7 +261,7 @@ export function ConfigForm({
 
   useEffect(() => {
     function fetchMetrics() {
-      api<{ active_queues: Record<string, number>; matches: Record<string, number>; orgs: Record<string, number> }>(
+      api<{ active_queues: Record<string, number>; matches: Record<string, number>; orgs: Record<string, number>; ghosts: Record<string, number>; uncorrelated: number }>(
         `/api/orgs/type-metrics?instance_id=${instanceId}`,
       ).then(setTypeMetrics).catch(() => {});
     }
@@ -1262,6 +1264,7 @@ export function ConfigForm({
                     <div>{typeMetrics.orgs[mt] ?? 0} org(s)</div>
                     <div>{typeMetrics.active_queues[mt] ?? 0} fila(s) ativa(s)</div>
                     <div>{typeMetrics.matches[mt] ?? 0} partida(s)</div>
+                    <div className="text-rose-300/80">{typeMetrics.ghosts[mt] ?? 0} ghost(s)</div>
                   </div>
                 </div>
               );

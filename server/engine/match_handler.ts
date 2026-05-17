@@ -1,6 +1,6 @@
 import { query } from "../db/pool.js";
 import { DiscordRest } from "../discord/rest.js";
-import { recordDetectedType } from "../lib/orgDetection.js";
+import { recordDetectedType, recordUncorrelated } from "../lib/orgDetection.js";
 
 export interface MatchToken {
   tokenId: number;
@@ -525,6 +525,11 @@ export class MatchHandler {
     }
     const pipelineLabel = `[${orgCtx?.match_type ?? detectedType} pipeline]`;
 
+    // Registra partida sem correlação (detectada mas sem activeQueue)
+    if (!orgCtx) {
+      recordUncorrelated(this.instanceId);
+    }
+
     // Log diagnóstico: informa status da activeQueue e contexto da detecção.
     // Aparece em TODOS os matches para facilitar debugging pós-troca-de-org.
     {
@@ -627,7 +632,7 @@ export class MatchHandler {
       this.instanceId,
       "INFO",
       "match",
-      `Partida detectada: #${event.name}${orgCtx ? ` · ${orgCtx.org_name} · ${orgCtx.mode ?? "?"}` : ""}${adversaryId ? ` · adversário <@${adversaryId}>` : " · adversário não identificado"}`,
+      `${pipelineLabel} Partida: #${event.name} · corr=${orgCtx ? `SIM(${orgCtx.org_name}·${orgCtx.mode ?? "?"})` : "NÃO(sem activeQueue)"} · detected=${detectedType} · adversário=${adversaryId ? `<@${adversaryId}>` : "não identificado"}`,
     );
 
     // Incrementa contador de partidas
