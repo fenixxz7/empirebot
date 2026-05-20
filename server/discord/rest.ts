@@ -299,6 +299,8 @@ export interface DiscordChannel {
   permission_overwrites?: Array<{ id: string; type: number; allow?: string; deny?: string }>;
   thread_metadata?: { archived?: boolean; locked?: boolean };
   member?: { user_id?: string };
+  /** ID da última mensagem no canal — presente em canais/threads que já receberam mensagens */
+  last_message_id?: string | null;
 }
 
 export interface DiscordEmbed {

@@ -25,6 +25,10 @@ interface ChannelCreateEvent {
   permission_overwrites?: Array<{ id: string; type: number }>;
   thread_metadata?: { archived?: boolean; locked?: boolean };
   member?: { user_id?: string };
+  /** ID da última mensagem no canal — usado para diferenciar partidas em canais reciclados */
+  last_message_id?: string | null;
+  /** ID da mensagem que disparou este match (alias de last_message_id, enviado pelo poller) */
+  trigger_msg_id?: string | null;
 }
 
 const MATCH_PATTERNS = [
@@ -409,26 +413,29 @@ export class MatchHandler {
     // Ignora threads arquivadas ou travadas — são partidas antigas reutilizadas
     if (event.thread_metadata?.archived || event.thread_metadata?.locked) return;
 
-    const key = `${this.instanceId}:${event.id}`;
+    // Computa match_key: canais reciclados têm last_message_id diferente → nova match_key
+    const triggerMsgId = event.trigger_msg_id ?? event.last_message_id ?? null;
+    const matchKey = triggerMsgId && triggerMsgId !== event.id
+      ? `${event.id}:${triggerMsgId}`
+      : event.id;
+    const key = `${this.instanceId}:${matchKey}`;
 
-    // Se já está processando esse canal, aguarda até 12s para o primeiro
+    // Se já está processando esse match_key, aguarda até 12s para o primeiro
     // processamento terminar e depois verifica se precisa reenviar.
-    // Antes retornava silenciosamente — isso causava perda do envio quando
-    // CHANNEL_CREATE e MESSAGE_CREATE chegavam quase simultâneos.
     if (this.processing.has(key)) {
       const waited = await this._waitForProcessing(key, 12_000);
       if (!waited) return; // ainda bloqueado após timeout — descarta
 
-      // Verifica se o primeiro processamento enviou a mensagem
+      // Verifica se o primeiro processamento enviou a mensagem (por match_key)
       const existing = await query<{ msg_sent: boolean }>(
-        `SELECT msg_sent FROM matches WHERE instance_id = $1 AND channel_id = $2`,
-        [this.instanceId, event.id],
+        `SELECT msg_sent FROM matches WHERE instance_id = $1 AND match_key = $2`,
+        [this.instanceId, matchKey],
       ).catch(() => [] as Array<{ msg_sent: boolean }>);
       if (existing[0]?.msg_sent) return; // já enviado — nada a fazer
 
       // Não foi enviado — tenta novamente com os tokens desta chamada
       await this.host.log(this.instanceId, "INFO", "match",
-        `#${event.name} — reprocessando após primeiro ciclo (msg_sent=false)`);
+        `#${event.name} — reprocessando após primeiro ciclo (msg_sent=false) match_key=${matchKey}`);
     }
 
     if (this.processing.has(key)) return; // dupla checagem após await
@@ -467,16 +474,22 @@ export class MatchHandler {
   ): Promise<void> {
     const guildId = event.guild_id ?? null;
 
-    // Idempotência — já processamos?
-    const existing = await query<{ id: string; msg_sent: boolean }>(
-      `SELECT id, msg_sent FROM matches WHERE instance_id = $1 AND channel_id = $2`,
-      [this.instanceId, event.id],
+    // Computa match_key (canais reciclados: mesmo channel_id, last_message_id diferente)
+    const triggerMsgId = event.trigger_msg_id ?? event.last_message_id ?? null;
+    const matchKey = triggerMsgId && triggerMsgId !== event.id
+      ? `${event.id}:${triggerMsgId}`
+      : event.id;
+    const reusedChannel = matchKey !== event.id;
+
+    // Idempotência por match_key — canais reciclados geram match_key diferente, não são bloqueados
+    const existing = await query<{ match_key: string; msg_sent: boolean }>(
+      `SELECT match_key, msg_sent FROM matches WHERE instance_id = $1 AND match_key = $2`,
+      [this.instanceId, matchKey],
     );
     if (existing.length > 0 && existing[0]!.msg_sent) {
-      // Log diagnóstico: idempotência — partida já foi processada
       await this.host.log(
         this.instanceId, "INFO", "match",
-        `[diag] #${event.name} (ch=${event.id}) ignorado — msg_sent=TRUE (partida já processada anteriormente)`,
+        `[diag] #${event.name} ignorado — ignored_reason=already_sent match_key=${matchKey} channel_id=${event.id} reused_channel=${reusedChannel}`,
       );
       return;
     }
@@ -487,19 +500,26 @@ export class MatchHandler {
     // então partidas de COROLLA chegando 2–3min após o engine avançar AINDA encontram
     // a linha correspondente aqui (desde que dentro do TTL de 4min).
     const activeQueue = await query<{
+      aq_id: number;
       org_id: number;
       org_name: string;
       mode: string | null;
       category: string | null;
       embed_valor: string | null;
       match_type: string | null;
+      age_seconds: number;
+      candidate_count: number;
     }>(
-      `SELECT aq.org_id, o.name AS org_name, aq.mode, aq.category,
-              oc.embed_valor, o.match_type
+      `SELECT aq.id AS aq_id, aq.org_id, o.name AS org_name, aq.mode, aq.category,
+              oc.embed_valor, o.match_type,
+              EXTRACT(EPOCH FROM (NOW() - aq.joined_at))::int AS age_seconds,
+              COUNT(*) OVER () AS candidate_count
        FROM active_queues aq
        JOIN orgs o ON o.id = aq.org_id
        LEFT JOIN org_channels oc ON oc.org_id = aq.org_id AND oc.mode = aq.mode
        WHERE aq.instance_id = $1 AND o.guild_id = $2
+         AND aq.joined_at > NOW() - INTERVAL '4 minutes'
+       ORDER BY aq.joined_at DESC
        LIMIT 1`,
       [this.instanceId, guildId],
     );
@@ -531,31 +551,32 @@ export class MatchHandler {
     }
 
     // Log diagnóstico: informa status da activeQueue e contexto da detecção.
-    // Aparece em TODOS os matches para facilitar debugging pós-troca-de-org.
     {
       let aqStatus: string;
       if (orgCtx) {
-        aqStatus = `activeQueue=SIM (org="${orgCtx.org_name}" org_id=${orgCtx.org_id} mode=${orgCtx.mode ?? "?"})`;
+        aqStatus = `activeQueue=SIM (aq_id=${orgCtx.aq_id} org="${orgCtx.org_name}" org_id=${orgCtx.org_id} mode=${orgCtx.mode ?? "?"} category=${orgCtx.category ?? "?"} idade=${orgCtx.age_seconds}s candidatos=${orgCtx.candidate_count})`;
       } else if (guildId) {
-        // Fallback: tenta encontrar a org pelo guild_id mesmo sem active_queue
-        const orgFallback = await query<{ id: number; name: string }>(
-          `SELECT o.id, o.name
+        // Busca org aproximada + total de filas (sem filtro de TTL) para diagnóstico
+        const orgFallback = await query<{ id: number; name: string; total_queues: string }>(
+          `SELECT o.id, o.name, COUNT(aq.id)::text AS total_queues
            FROM orgs o
            JOIN instance_orgs io ON io.org_id = o.id AND io.instance_id = $1
+           LEFT JOIN active_queues aq ON aq.org_id = o.id AND aq.instance_id = $1
            WHERE o.guild_id = $2
+           GROUP BY o.id, o.name
            LIMIT 1`,
           [this.instanceId, guildId],
-        ).catch(() => [] as Array<{ id: number; name: string }>);
+        ).catch(() => [] as Array<{ id: number; name: string; total_queues: string }>);
         const orgApprox = orgFallback[0];
         aqStatus = orgApprox
-          ? `activeQueue=NÃO (guild=${guildId} — org aproximada="${orgApprox.name}" id=${orgApprox.id} — nenhuma active_queue dentro do TTL para essa org)`
-          : `activeQueue=NÃO (guild=${guildId} — guild_id não encontrado em nenhuma org desta instância)`;
+          ? `activeQueue=NÃO (guild=${guildId} org_aprox="${orgApprox.name}" id=${orgApprox.id} filas_total=${orgApprox.total_queues} — ignored_reason=no_active_queue fora do TTL 4min)`
+          : `activeQueue=NÃO (guild=${guildId} — ignored_reason=no_active_queue guild_id não encontrado nesta instância)`;
       } else {
-        aqStatus = `activeQueue=NÃO (guild_id ausente no evento — canal possivelmente thread sem contexto de guild)`;
+        aqStatus = `activeQueue=NÃO (guild_id ausente — ignored_reason=no_active_queue)`;
       }
       await this.host.log(
         this.instanceId, "INFO", "match",
-        `${pipelineLabel} [diag] #${event.name} ch=${event.id} guild=${guildId ?? "?"} tipo=${event.type} — ${aqStatus}`,
+        `${pipelineLabel} [diag] #${event.name} ch=${event.id} match_key=${matchKey} reused=${reusedChannel} trigger_msg=${triggerMsgId ?? "none"} guild=${guildId ?? "?"} tipo=${event.type} — ${aqStatus}`,
       );
     }
 
@@ -605,9 +626,10 @@ export class MatchHandler {
     await query(
       `INSERT INTO matches
          (instance_id, channel_id, channel_name, guild_id,
-          org_id, org_name, mode, category, embed_valor, adversary_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-       ON CONFLICT (instance_id, channel_id) DO UPDATE
+          org_id, org_name, mode, category, embed_valor, adversary_id,
+          match_key, trigger_msg_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       ON CONFLICT (instance_id, match_key) DO UPDATE
          SET adversary_id = EXCLUDED.adversary_id,
              org_id = COALESCE(EXCLUDED.org_id, matches.org_id),
              org_name = COALESCE(EXCLUDED.org_name, matches.org_name),
@@ -625,6 +647,8 @@ export class MatchHandler {
         orgCtx?.category ?? null,
         orgCtx?.embed_valor ?? null,
         adversaryId,
+        matchKey,
+        reusedChannel ? triggerMsgId : null,
       ],
     );
 
@@ -632,7 +656,7 @@ export class MatchHandler {
       this.instanceId,
       "INFO",
       "match",
-      `${pipelineLabel} Partida: #${event.name} · corr=${orgCtx ? `SIM(${orgCtx.org_name}·${orgCtx.mode ?? "?"})` : "NÃO(sem activeQueue)"} · detected=${detectedType} · adversário=${adversaryId ? `<@${adversaryId}>` : "não identificado"}`,
+      `${pipelineLabel} Partida: #${event.name} · match_key=${matchKey} · reused=${reusedChannel} · corr=${orgCtx ? `SIM(aq_id=${orgCtx.aq_id} ${orgCtx.org_name}·${orgCtx.mode ?? "?"})` : "NÃO(sem activeQueue)"} · detected=${detectedType} · adversário=${adversaryId ? `<@${adversaryId}>` : "não identificado"}`,
     );
 
     // Incrementa contador de partidas
@@ -647,13 +671,8 @@ export class MatchHandler {
     // Libera slot da fila ativa nessa guild (o match aconteceu, slot livre)
     if (guildId && orgCtx) {
       await query(
-        `DELETE FROM active_queues
-         WHERE id = (
-           SELECT id FROM active_queues
-           WHERE instance_id = $1 AND org_id = $2
-           LIMIT 1
-         )`,
-        [this.instanceId, orgCtx.org_id],
+        `DELETE FROM active_queues WHERE instance_id = $1 AND id = $2`,
+        [this.instanceId, orgCtx.aq_id],
       );
       // Atualiza na_fila
       const remaining = await query<{ c: string }>(
@@ -976,7 +995,7 @@ export class MatchHandler {
         this.instanceId,
         "INFO",
         "match",
-        `Mensagem na partida enviada em #${event.name} · org=${orgCtx?.org_name ?? "desconhecida"} · para ${adversaryId ? `<@${adversaryId}>` : "(sem adversário)"} · token #${sender.position}${imgTag}`,
+        `Mensagem na partida enviada em #${event.name} · match_key=${matchKey} · reused=${reusedChannel} · org=${orgCtx?.org_name ?? "desconhecida"} · para ${adversaryId ? `<@${adversaryId}>` : "(sem adversário)"} · token #${sender.position}${imgTag}`,
       );
       return;
     }

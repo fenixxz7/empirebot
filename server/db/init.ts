@@ -676,6 +676,30 @@ export async function initDatabase(): Promise<void> {
       ADD COLUMN IF NOT EXISTS stability_weight        INTEGER NOT NULL DEFAULT 20
   `);
 
+  // ── match_key: identidade única de partida (suporta canais reciclados) ──────
+  // Canais reciclados = mesmo channel_id pode hospedar múltiplas partidas.
+  // match_key = channel_id quando é canal novo (sem last_message_id),
+  // match_key = channel_id:last_message_id quando canal é reutilizado.
+  // Backfill: linhas antigas usam apenas channel_id como match_key.
+  await pool.query(`ALTER TABLE matches ADD COLUMN IF NOT EXISTS trigger_msg_id TEXT`);
+  await pool.query(`ALTER TABLE matches ADD COLUMN IF NOT EXISTS match_key TEXT`);
+  await pool.query(`UPDATE matches SET match_key = channel_id WHERE match_key IS NULL`);
+  await pool.query(`
+    DO $$ BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'matches_instance_match_key_key'
+      ) THEN
+        ALTER TABLE matches DROP CONSTRAINT IF EXISTS matches_instance_id_channel_id_key;
+        ALTER TABLE matches ADD CONSTRAINT matches_instance_match_key_key
+          UNIQUE (instance_id, match_key);
+      END IF;
+    END $$
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_matches_instance_channel
+      ON matches (instance_id, channel_id)
+  `);
+
 }
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);
