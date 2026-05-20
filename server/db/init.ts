@@ -453,7 +453,7 @@ export async function initDatabase(): Promise<void> {
   // Garante que ninguém ficou com fila "fantasma" entre boots
   await pool.query(`DELETE FROM active_queues`);
 
-  for (const botName of ["BOT1", "BOT2"]) {
+  for (const botName of ["BOT1", "BOT2", "BOT3"]) {
     const instances = await query<{ id: number }>(
       `INSERT INTO instances (name, running)
        VALUES ($1, FALSE)
@@ -471,6 +471,12 @@ export async function initDatabase(): Promise<void> {
 
     await query(
       `INSERT INTO stats (instance_id) VALUES ($1)
+       ON CONFLICT (instance_id) DO NOTHING`,
+      [instanceId]
+    );
+
+    await query(
+      `INSERT INTO dm_config (instance_id) VALUES ($1)
        ON CONFLICT (instance_id) DO NOTHING`,
       [instanceId]
     );

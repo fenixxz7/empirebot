@@ -33,7 +33,7 @@ Painel em português para automatizar a entrada em filas de Free Fire em servido
 
 ## Architecture decisions
 
-- **Multi-Instance Support:** The system seeds two bots (BOT1, BOT2) with separate configurations and runtimes, manageable via UI tabs.
+- **Multi-Instance Support:** The system seeds bots (BOT1, BOT2, BOT3) with separate configurations and runtimes, manageable via UI tabs. To add more bots, just add names to the array in `server/db/init.ts`.
 - **Real-time Stats:** WebSocket (`ws`) is used for real-time streaming of bot statistics and logs to the panel.
 - **Dynamic Queue Discovery:** The system automatically discovers and registers queue channels and interactive buttons within Discord organizations based on configured criteria.
 - **Anti-ban Measures:** Various humanization techniques (typing indicators, randomized delays, jitter, long breaks, rate limit backoff) are implemented to prevent Discord account bans.
@@ -56,7 +56,7 @@ Painel em português para automatizar a entrada em filas de Free Fire em servido
 - Comunicação em português.
 - Sem login no painel (uso pessoal em VPS).
 - Tokens são guardados em texto puro no Postgres (decisão explícita do usuário neste momento).
-- BOT1 e BOT2 ambos ativos (abas no topo do painel).
+- BOT1, BOT2 e BOT3 todos ativos (abas no topo do painel).
 - Orgs: o usuário vai mandar os IDs reais; quando vier, atualizar o seed em `server/db/init.ts` e cadastrar via `guild_id`.
 
 ## Gotchas
