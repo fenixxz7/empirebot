@@ -247,6 +247,32 @@ export class DiscordRest {
    * Clica num botão de mensagem como o usuário (selfbot).
    * Usa o endpoint genérico de interactions do Discord.
    */
+  /** GET /invites/:code — preview do servidor antes de entrar */
+  getInvite(code: string) {
+    return this.request<{ guild?: { id: string; name: string }; code?: number }>(
+      "GET",
+      `/invites/${code}?with_counts=true`,
+    );
+  }
+
+  /** POST /invites/:code — entra no servidor */
+  acceptInvite(code: string) {
+    return this.request<{ guild?: { id: string; name: string }; guild_id?: string }>(
+      "POST",
+      `/invites/${code}`,
+      {},
+    );
+  }
+
+  /** POST /invites/:code com captcha resolvido */
+  acceptInviteWithCaptcha(code: string, captchaToken: string) {
+    return this.request<{ guild?: { id: string; name: string }; guild_id?: string }>(
+      "POST",
+      `/invites/${code}`,
+      { captcha_key: captchaToken },
+    );
+  }
+
   clickButton(opts: {
     guildId: string;
     channelId: string;

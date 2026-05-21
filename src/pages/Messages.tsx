@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
+import { TabNav } from "@/components/TabNav";
 
 interface Instance { id: number; name: string; }
 interface DmConfig {
@@ -193,6 +194,9 @@ export default function Messages() {
   return (
     <div className="min-h-screen bg-[#0d1117] text-white">
       <div className="max-w-3xl mx-auto px-4 py-8 space-y-5">
+
+        {/* Main mode tabs */}
+        <TabNav active="dm" />
 
         {/* Header */}
         <div className="card p-5">

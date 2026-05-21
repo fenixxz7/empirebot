@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import Stats from "./pages/Stats";
 import Messages from "./pages/Messages";
+import OrgJoiner from "./pages/OrgJoiner";
 import Login from "./pages/Login";
 import AccessKeys from "./pages/AccessKeys";
 import AuditLog from "./pages/AuditLog";
@@ -58,6 +59,7 @@ function Root() {
   const path = window.location.pathname;
   if (path.startsWith("/stats")) return <Stats />;
   if (path.startsWith("/messages")) return <Messages />;
+  if (path.startsWith("/org-joiner")) return <OrgJoiner />;
   if (path.startsWith("/contas")) return <Contas />;
   if (path.startsWith("/acessos")) {
     return auth.isAdmin ? <AccessKeys /> : <App isAdmin={false} onLogout={handleLogout} />;

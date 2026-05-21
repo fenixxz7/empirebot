@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { InstanceState } from "@shared/types";
 import { api } from "@/lib/api";
 import { Header } from "@/components/Header";
+import { TabNav } from "@/components/TabNav";
 import { ControlPanel } from "@/components/ControlPanel";
 import { StatsGrid } from "@/components/StatsGrid";
 import { ConfigForm } from "@/components/ConfigForm";
@@ -109,6 +110,9 @@ export function App({ isAdmin = false, onLogout }: { isAdmin?: boolean; onLogout
   return (
     <div className="min-h-screen px-3 sm:px-5 lg:px-8 py-4 sm:py-6">
       <div className="mx-auto max-w-4xl space-y-2.5">
+
+        {/* Main mode tabs */}
+        <TabNav active="fila" />
 
         {/* Instance tabs */}
         {instances.length > 1 && (

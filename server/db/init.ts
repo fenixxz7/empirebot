@@ -450,6 +450,40 @@ export async function initDatabase(): Promise<void> {
     )
   `);
 
+  // ── BOT ORG — Org Joiner ─────────────────────────────────────────────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS org_joiner_config (
+      instance_id   INTEGER PRIMARY KEY REFERENCES instances(id) ON DELETE CASCADE,
+      token_value   TEXT,
+      nopecha_key   TEXT,
+      delay_min_ms  BIGINT  NOT NULL DEFAULT 300000,
+      delay_max_ms  BIGINT  NOT NULL DEFAULT 720000,
+      enabled       BOOLEAN NOT NULL DEFAULT FALSE
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS org_queue (
+      id                BIGSERIAL PRIMARY KEY,
+      instance_id       INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+      invite_code       TEXT    NOT NULL,
+      invite_raw        TEXT    NOT NULL DEFAULT '',
+      status            TEXT    NOT NULL DEFAULT 'pending',
+      result_guild_id   TEXT,
+      result_guild_name TEXT,
+      error_reason      TEXT,
+      added_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      processed_at      TIMESTAMPTZ
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS org_queue_instance_status
+      ON org_queue (instance_id, status)
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS org_queue_instance_added
+      ON org_queue (instance_id, added_at DESC)
+  `);
+
   // Garante que ninguém ficou com fila "fantasma" entre boots
   await pool.query(`DELETE FROM active_queues`);
 
@@ -477,6 +511,12 @@ export async function initDatabase(): Promise<void> {
 
     await query(
       `INSERT INTO dm_config (instance_id) VALUES ($1)
+       ON CONFLICT (instance_id) DO NOTHING`,
+      [instanceId]
+    );
+
+    await query(
+      `INSERT INTO org_joiner_config (instance_id) VALUES ($1)
        ON CONFLICT (instance_id) DO NOTHING`,
       [instanceId]
     );

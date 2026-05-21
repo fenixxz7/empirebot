@@ -3,6 +3,7 @@ import { query } from "../db/pool.js";
 import { QueueRunner, type ActiveToken } from "../engine/runner.js";
 import { MatchHandler, type MatchToken } from "../engine/match_handler.js";
 import { MatchPoller } from "../engine/match_poller.js";
+import { OrgJoiner } from "../engine/org-joiner.js";
 import { runAutoDiscoveryForInstance } from "../discord/discovery.js";
 import { DiscordRest } from "../discord/rest.js";
 import type { WebSocketServer } from "ws";
@@ -48,10 +49,19 @@ class Manager {
   private runners = new Map<number, QueueRunner>();
   private matchHandlers = new Map<number, MatchHandler>();
   private matchPollers = new Map<number, MatchPoller>();
+  private orgJoiners = new Map<number, OrgJoiner>();
   private discoveryRan = new Set<number>();
   private rotation = new Map<number, RotationState>();
   private rotationTimer: NodeJS.Timeout | null = null;
   private statusSyncTimer: NodeJS.Timeout | null = null;
+  /** Retorna (ou cria) o OrgJoiner da instância */
+  getOrgJoiner(instanceId: number): OrgJoiner {
+    if (!this.orgJoiners.has(instanceId)) {
+      this.orgJoiners.set(instanceId, new OrgJoiner(instanceId));
+    }
+    return this.orgJoiners.get(instanceId)!;
+  }
+
   /** Retorna todos os user_ids dos tokens conectados pra uma instância */
   getConnectedUserIds(instanceId: number): string[] {
     const entries = this.workers.get(instanceId) ?? [];
