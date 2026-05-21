@@ -95,10 +95,14 @@ export default function OrgJoiner({ isAdmin = false }: { isAdmin?: boolean }) {
     fetch("/api/instances")
       .then(r => r.json())
       .then((data: Instance[]) => {
-        setInstances(data);
-        if (data.length > 0) setActiveId(data[0]!.id);
+        // BOT3 nunca aparece no Bot Org; BOT X (BOT2) só aparece para admin
+        const visible = data
+          .filter(i => i.name !== "BOT3")
+          .filter(i => isAdmin || i.name !== "BOT2");
+        setInstances(visible);
+        if (visible.length > 0) setActiveId(visible[0]!.id);
       });
-  }, []);
+  }, [isAdmin]);
 
   const loadAll = useCallback(async (id: number) => {
     const [cfgRes, snapRes, queueRes, logsRes] = await Promise.all([
@@ -308,7 +312,7 @@ export default function OrgJoiner({ isAdmin = false }: { isAdmin?: boolean }) {
                     inst.id === activeId ? "tab-active" : "tab-inactive card",
                   ].join(" ")}
                 >
-                  {inst.name}
+                  {inst.name === "BOT2" ? "BOT X" : inst.name}
                 </button>
               ))}
             </div>
