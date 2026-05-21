@@ -1,15 +1,17 @@
 const BASE = "https://discord.com/api/v10";
 const BASE_V9 = "https://discord.com/api/v9";
 
-// Header x-context-properties obrigatório para o Discord aceitar convites via selfbot
-const INVITE_CONTEXT_HEADER = Buffer.from(
-  JSON.stringify({
-    location: "Join Guild",
-    location_guild_id: null,
-    location_channel_id: null,
-    location_channel_type: null,
-  })
-).toString("base64");
+// x-context-properties: Discord envia "Accept Invite Page" ao aceitar convite pela página de invite
+function makeInviteContextHeader(inviteCode: string) {
+  return Buffer.from(
+    JSON.stringify({
+      location: "Accept Invite Page",
+      location_guild_id: null,
+      location_channel_id: null,
+      location_channel_type: null,
+    })
+  ).toString("base64");
+}
 
 // Headers que o cliente web do Discord envia — necessários para endpoints como /users/@me/message-requests
 const SUPER_PROPERTIES = Buffer.from(
@@ -19,26 +21,27 @@ const SUPER_PROPERTIES = Buffer.from(
     device: "",
     system_locale: "pt-BR",
     browser_user_agent:
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    browser_version: "124.0.0.0",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    browser_version: "125.0.0.0",
     os_version: "10",
     referrer: "https://discord.com/",
     referring_domain: "discord.com",
     referrer_current: "",
     referring_domain_current: "",
     release_channel: "stable",
-    client_build_number: 312547,
+    client_build_number: 321005,
     client_event_source: null,
   })
 ).toString("base64");
 
 const DISCORD_HEADERS = {
   "user-agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
   "x-super-properties": SUPER_PROPERTIES,
   "x-discord-locale": "pt-BR",
   "x-discord-timezone": "America/Sao_Paulo",
   "accept-language": "pt-BR,pt;q=0.9",
+  "origin": "https://discord.com",
 };
 
 function sleep(ms: number) {
@@ -281,7 +284,10 @@ export class DiscordRest {
       "POST",
       `/invites/${code}`,
       {},
-      { "x-context-properties": INVITE_CONTEXT_HEADER },
+      {
+        "x-context-properties": makeInviteContextHeader(code),
+        "referer": `https://discord.com/invite/${code}`,
+      },
     );
   }
 
@@ -291,7 +297,10 @@ export class DiscordRest {
       "POST",
       `/invites/${code}`,
       { captcha_key: captchaToken },
-      { "x-context-properties": INVITE_CONTEXT_HEADER },
+      {
+        "x-context-properties": makeInviteContextHeader(code),
+        "referer": `https://discord.com/invite/${code}`,
+      },
     );
   }
 
