@@ -19,13 +19,13 @@ tokensRouter.get("/", asyncHandler(async (req, res) => {
       `SELECT tp.id, tp.label, tp.value, tp.status, tp.username
        FROM token_pool tp
        INNER JOIN instance_token_selection its ON its.token_pool_id = tp.id
-       WHERE its.instance_id = $1
+       WHERE its.instance_id = $1 AND tp.type = 'fila'
        ORDER BY its.position ASC`,
       [instanceId],
     );
   } else {
     rows = await query<{ id: number; label: string | null; value: string; status: string; username: string | null }>(
-      `SELECT id, label, value, status, username FROM token_pool ORDER BY id ASC`,
+      `SELECT id, label, value, status, username FROM token_pool WHERE type = 'fila' ORDER BY id ASC`,
     );
   }
 
@@ -44,8 +44,8 @@ tokensRouter.post("/", asyncHandler(async (req, res) => {
     return res.status(400).json({ error: "Informe o valor do token." });
   }
   const rows = await query<{ id: number }>(
-    `INSERT INTO token_pool (value, label, status)
-     VALUES ($1, $2, 'unknown')
+    `INSERT INTO token_pool (value, label, status, type)
+     VALUES ($1, $2, 'unknown', 'fila')
      ON CONFLICT (value) DO UPDATE SET label = EXCLUDED.label
      RETURNING id`,
     [value.trim(), label?.trim() || null]

@@ -8,6 +8,7 @@ interface TokenPoolEntry {
   value_preview: string;
   status: string;
   username: string | null;
+  value_full?: string;
 }
 
 interface OrgConfig {
@@ -58,7 +59,7 @@ function formatUptime(ms: number): string {
   return `${h}:${m}:${s}`;
 }
 
-export default function OrgJoiner() {
+export default function OrgJoiner({ isAdmin = false }: { isAdmin?: boolean }) {
   const [instances, setInstances] = useState<Instance[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [cfg, setCfg] = useState<OrgConfig>(DEFAULT_CFG);
@@ -78,6 +79,8 @@ export default function OrgJoiner() {
   const [newTokenLabel, setNewTokenLabel] = useState("");
   const [addingToken, setAddingToken] = useState(false);
   const [removingToken, setRemovingToken] = useState(false);
+  const [revealedTokenIds, setRevealedTokenIds] = useState<Set<number>>(new Set());
+  const [tokenFullValues, setTokenFullValues] = useState<Record<number, string>>({});
 
   /* ── Config form states ────────────────────────────────────── */
   const [nopechaDraft, setNopechaDraft] = useState("");
@@ -203,11 +206,32 @@ export default function OrgJoiner() {
   async function removeToken() {
     if (activeId === null || removingToken || selectedTokenId === null) return;
     setRemovingToken(true);
-    await fetch(`/api/org-joiner/tokens/${activeId}/deselect`, { method: "DELETE" });
+    await fetch(`/api/org-joiner/tokens/${activeId}/pool/${selectedTokenId}`, { method: "DELETE" });
     setSelectedTokenId(null);
+    setRevealedTokenIds(new Set());
+    setTokenFullValues({});
     setTokensMode("normal");
-    flash("Token removido da seleção.");
+    await loadAll(activeId);
+    flash("Token removido do pool.");
     setRemovingToken(false);
+  }
+
+  async function toggleReveal(tokenId: number) {
+    if (!isAdmin || activeId === null) return;
+    if (revealedTokenIds.has(tokenId)) {
+      setRevealedTokenIds(prev => { const s = new Set(prev); s.delete(tokenId); return s; });
+      return;
+    }
+    if (tokenFullValues[tokenId]) {
+      setRevealedTokenIds(prev => new Set([...prev, tokenId]));
+      return;
+    }
+    const res = await fetch(`/api/org-joiner/tokens/${activeId}/pool/${tokenId}/reveal`);
+    if (res.ok) {
+      const data = await res.json();
+      setTokenFullValues(prev => ({ ...prev, [tokenId]: data.value }));
+      setRevealedTokenIds(prev => new Set([...prev, tokenId]));
+    }
   }
 
   async function toggleEngine() {
@@ -362,6 +386,7 @@ export default function OrgJoiner() {
                 ) : (
                   cfg.token_pool.map(t => {
                     const isSelected = selectedTokenId === t.id;
+                    const isRevealed = revealedTokenIds.has(t.id);
                     return (
                       <div key={t.id} className={[
                         "flex items-center gap-2.5 px-2 py-1.5 rounded-lg transition-colors",
@@ -380,12 +405,22 @@ export default function OrgJoiner() {
                           <span className="text-[12px] text-slate-200 font-medium shrink-0">{t.label}</span>
                         )}
                         <span className="font-mono text-[11px] text-slate-400 flex-1 truncate">
-                          {t.value_preview}
+                          {isRevealed && tokenFullValues[t.id] ? tokenFullValues[t.id] : t.value_preview}
                         </span>
                         {t.username && (
                           <span className="text-[11px] text-slate-300 truncate max-w-[120px] shrink-0">{t.username}</span>
                         )}
                         <TokenStatus status={t.status} />
+                        {isAdmin && (
+                          <button
+                            type="button"
+                            onClick={() => toggleReveal(t.id)}
+                            title={isRevealed ? "Ocultar token" : "Ver token completo"}
+                            className="text-slate-500 hover:text-amber-400 transition-colors shrink-0"
+                          >
+                            {isRevealed ? <EyeOffIcon className="w-3.5 h-3.5" /> : <EyeIcon className="w-3.5 h-3.5" />}
+                          </button>
+                        )}
                       </div>
                     );
                   })
@@ -673,4 +708,10 @@ function TerminalIcon({ className = "" }) {
 }
 function RetryIcon({ className = "" }) {
   return <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 .49-4.95" /></svg>;
+}
+function EyeIcon({ className = "" }) {
+  return <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>;
+}
+function EyeOffIcon({ className = "" }) {
+  return <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" /></svg>;
 }

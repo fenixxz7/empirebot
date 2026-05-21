@@ -280,7 +280,7 @@ export function App({ isAdmin = false, onLogout }: { isAdmin?: boolean; onLogout
         )}
 
         {/* ── BOT ORG content ────────────────────────────────────── */}
-        {activeTab === "org" && <OrgJoiner />}
+        {activeTab === "org" && <OrgJoiner isAdmin={isAdmin} />}
 
         <p className="text-center text-[11px] text-slate-600 pb-6 pt-1">
           Use por sua conta e risco · Selfbots violam os Termos de Serviço do Discord.

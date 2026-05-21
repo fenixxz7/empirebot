@@ -747,6 +747,9 @@ export async function initDatabase(): Promise<void> {
       ON matches (instance_id, channel_id)
   `);
 
+  // Separação de pools: tokens do Bot Fila (type='fila') vs Bot Org (type='org')
+  await pool.query(`ALTER TABLE token_pool ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT 'fila'`);
+
 }
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);
