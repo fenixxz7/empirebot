@@ -1,18 +1,23 @@
-export type MainTab = "fila" | "dm" | "org";
+export type MainTab = "fila" | "org";
 
-const TABS: { key: MainTab; label: string; path: string }[] = [
-  { key: "fila", label: "BOT FILA", path: "/" },
-  { key: "dm",   label: "BOT DM",   path: "/messages" },
-  { key: "org",  label: "BOT ORG",  path: "/org-joiner" },
+const TABS: { key: MainTab; label: string }[] = [
+  { key: "fila", label: "BOT FILA" },
+  { key: "org",  label: "BOT ORG"  },
 ];
 
-export function TabNav({ active }: { active: MainTab }) {
+export function TabNav({
+  active,
+  onChange,
+}: {
+  active: MainTab;
+  onChange: (tab: MainTab) => void;
+}) {
   return (
     <div className="flex gap-1.5">
       {TABS.map((t) => (
-        <a
+        <button
           key={t.key}
-          href={t.path}
+          onClick={() => onChange(t.key)}
           className={[
             "px-5 py-2 rounded-xl text-xs font-semibold tracking-wide transition-all",
             t.key === active
@@ -21,7 +26,7 @@ export function TabNav({ active }: { active: MainTab }) {
           ].join(" ")}
         >
           {t.label}
-        </a>
+        </button>
       ))}
     </div>
   );

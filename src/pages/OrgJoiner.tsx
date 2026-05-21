@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { TabNav } from "@/components/TabNav";
 
 interface Instance { id: number; name: string; }
 
@@ -199,41 +198,21 @@ export default function OrgJoiner() {
   const tokenConfigured = !!(cfg.token_value && cfg.token_value.trim().length > 0);
 
   return (
-    <div className="min-h-screen px-3 sm:px-5 lg:px-8 py-4 sm:py-6">
-      <div className="mx-auto max-w-4xl space-y-2.5">
-
-        {/* Top nav */}
-        <TabNav active="org" />
-
-        {/* Header card */}
-        <div className="card px-4 py-3 sm:px-5 sm:py-4">
-          <div className="flex items-center gap-3">
-            <EmpireLogo />
-            <div className="flex-1 min-w-0">
-              <div className="flex items-baseline gap-2">
-                <span className="text-xl sm:text-2xl font-extrabold tracking-tight bg-gradient-to-r from-amber-300 via-yellow-200 to-amber-400 bg-clip-text text-transparent leading-none">
-                  EMPIRE
-                </span>
-                <span className="hidden sm:inline text-[10px] uppercase tracking-[0.25em] text-slate-500">
-                  Painel de Controle
-                </span>
-              </div>
-              <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                <span className={tokenConfigured ? "pill-ok" : "pill-stop"}>
-                  <Dot className={tokenConfigured ? "bg-ok" : "bg-danger"} />
-                  {tokenConfigured ? "Token configurado" : "Sem token"}
-                </span>
-                <span className={snap.running ? "pill-run" : "pill-stop"}>
-                  <Dot className={snap.running ? "bg-emerald-400" : "bg-danger"} />
-                  {snap.running ? "Rodando" : "Parado"}
-                </span>
-              </div>
-            </div>
+    <>
+        {/* Instance + status bar */}
+        <div className="card px-4 py-3 sm:px-5 flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-1.5 flex-1">
+            <span className={tokenConfigured ? "pill-ok" : "pill-stop"}>
+              <Dot className={tokenConfigured ? "bg-ok" : "bg-danger"} />
+              {tokenConfigured ? "Token configurado" : "Sem token"}
+            </span>
+            <span className={snap.running ? "pill-run" : "pill-stop"}>
+              <Dot className={snap.running ? "bg-emerald-400" : "bg-danger"} />
+              {snap.running ? "Rodando" : "Parado"}
+            </span>
           </div>
-
-          {/* Instance sub-tabs */}
           {instances.length > 1 && (
-            <div className="mt-3 pt-3 border-t border-white/[0.05] flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap gap-1.5">
               {instances.map(inst => (
                 <button
                   key={inst.id}
@@ -462,11 +441,7 @@ export default function OrgJoiner() {
           </div>
         </div>
 
-        <p className="text-center text-[11px] text-slate-600 pb-6 pt-1">
-          Use por sua conta e risco · Selfbots violam os Termos de Serviço do Discord.
-        </p>
-      </div>
-    </div>
+    </>
   );
 }
 
