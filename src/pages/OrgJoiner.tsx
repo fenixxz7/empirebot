@@ -90,6 +90,7 @@ export default function OrgJoiner({ isAdmin = false }: { isAdmin?: boolean }) {
   const snapTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeIdRef = useRef<number | null>(null);
   const logsBottomRef = useRef<HTMLDivElement | null>(null);
+  const logsInitializedRef = useRef(false);
 
   useEffect(() => {
     fetch("/api/instances")
@@ -136,6 +137,7 @@ export default function OrgJoiner({ isAdmin = false }: { isAdmin?: boolean }) {
   useEffect(() => {
     activeIdRef.current = activeId;
     if (activeId === null) return;
+    logsInitializedRef.current = false;
     loadAll(activeId);
     if (snapTimerRef.current) clearInterval(snapTimerRef.current);
     snapTimerRef.current = setInterval(() => {
@@ -145,6 +147,10 @@ export default function OrgJoiner({ isAdmin = false }: { isAdmin?: boolean }) {
   }, [activeId, loadAll, pollSnap]);
 
   useEffect(() => {
+    if (!logsInitializedRef.current) {
+      logsInitializedRef.current = true;
+      return;
+    }
     logsBottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs.length]);
 
