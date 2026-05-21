@@ -46,7 +46,7 @@ tokensRouter.post("/", asyncHandler(async (req, res) => {
   const rows = await query<{ id: number }>(
     `INSERT INTO token_pool (value, label, status, type)
      VALUES ($1, $2, 'unknown', 'fila')
-     ON CONFLICT (value) DO UPDATE SET label = EXCLUDED.label
+     ON CONFLICT (value) WHERE type = 'fila' DO UPDATE SET label = EXCLUDED.label
      RETURNING id`,
     [value.trim(), label?.trim() || null]
   );
