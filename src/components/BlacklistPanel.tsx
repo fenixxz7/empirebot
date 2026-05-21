@@ -40,8 +40,6 @@ export function BlacklistPanel({ instanceId }: { instanceId: number }) {
   const [rows, setRows] = useState<BlacklistEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [open, setOpen] = useState(false);
-
   const reload = useCallback(async () => {
     setLoading(true);
     try {
@@ -90,34 +88,14 @@ export function BlacklistPanel({ instanceId }: { instanceId: number }) {
   const total = rows.length;
 
   return (
-    <div className="rounded-2xl bg-navy-900 border border-white/10 overflow-hidden">
-      {/* Header toggle */}
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-3 px-5 py-4 text-left hover:bg-white/5 transition-colors"
-      >
-        <ShieldIcon className="w-5 h-5 text-rose-400 shrink-0" />
-        <span className="text-lg font-bold flex-1">
-          Blacklist de orgs por token
-        </span>
-        {total > 0 && (
-          <span className="text-xs font-semibold bg-rose-500/20 text-rose-300 ring-1 ring-rose-400/30 rounded-full px-2.5 py-0.5">
-            {total} bloqueada{total !== 1 ? "s" : ""}
-          </span>
-        )}
-        <ChevronIcon className={`w-4 h-4 text-slate-500 transition-transform ${open ? "rotate-180" : ""}`} />
-      </button>
+    <div className="px-4 sm:px-5 py-4 space-y-4">
+      {loading && (
+        <p className="text-sm text-slate-500">Carregando…</p>
+      )}
 
-      {open && (
-        <div className="px-5 pb-5 space-y-4 border-t border-white/10 pt-4">
-          {loading && (
-            <p className="text-sm text-slate-500">Carregando…</p>
-          )}
-
-          {!loading && total === 0 && (
-            <p className="text-sm text-slate-500">Nenhuma org bloqueada no momento.</p>
-          )}
+      {!loading && total === 0 && (
+        <p className="text-sm text-slate-500">Nenhuma org bloqueada no momento.</p>
+      )}
 
           {!loading && groups.map((g) => (
             <div key={g.token_id} className="rounded-xl border border-white/10 bg-navy-950/60 overflow-hidden">
@@ -174,8 +152,6 @@ export function BlacklistPanel({ instanceId }: { instanceId: number }) {
             Orgs bloqueadas são ignoradas pelo engine para aquele token.
             Ao desbloquear, o bot volta a tentar entrar nas filas dessa org.
           </p>
-        </div>
-      )}
     </div>
   );
 }

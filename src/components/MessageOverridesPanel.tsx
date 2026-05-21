@@ -13,7 +13,6 @@ export function MessageOverridesPanel({ instanceId }: { instanceId: number }) {
   const [rows, setRows] = useState<OverrideEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -132,38 +131,16 @@ export function MessageOverridesPanel({ instanceId }: { instanceId: number }) {
   }
 
   return (
-    <div className="rounded-2xl bg-navy-900 border border-white/10 overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-3 px-5 py-4 text-left hover:bg-white/5 transition-colors"
-      >
-        <ShieldIcon className="w-5 h-5 text-emerald-400 shrink-0" />
-        <span className="text-lg font-bold flex-1">
-          Mensagens alternativas por org (anti-AutoMod)
-        </span>
-        {total > 0 && (
-          <span className="text-xs font-semibold bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-400/30 rounded-full px-2.5 py-0.5">
-            {total} org{total !== 1 ? "s" : ""}
-            {autoCount > 0 && ` · ${autoCount} auto`}
-          </span>
-        )}
-        <ChevronIcon
-          className={`w-4 h-4 text-slate-500 transition-transform ${open ? "rotate-180" : ""}`}
-        />
-      </button>
+    <div className="px-4 sm:px-5 py-4 space-y-3">
+      {loading && <p className="text-sm text-slate-500">Carregando…</p>}
 
-      {open && (
-        <div className="px-5 pb-5 space-y-3 border-t border-white/10 pt-4">
-          {loading && <p className="text-sm text-slate-500">Carregando…</p>}
-
-          {!loading && total === 0 && (
-            <p className="text-sm text-slate-500">
-              Nenhuma mensagem alternativa ativa. Quando o AutoMod bloquear 3×
-              numa mesma org, o sistema gera automaticamente uma versão limpa
-              que mantém a menção do adversário.
-            </p>
-          )}
+      {!loading && total === 0 && (
+        <p className="text-sm text-slate-500">
+          Nenhuma mensagem alternativa ativa. Quando o AutoMod bloquear 3×
+          numa mesma org, o sistema gera automaticamente uma versão limpa
+          que mantém a menção do adversário.
+        </p>
+      )}
 
           {!loading && total > 0 && (
             <>
@@ -321,8 +298,6 @@ export function MessageOverridesPanel({ instanceId }: { instanceId: number }) {
             menções, e gera uma versão com oferta + pedido de DM. Marque várias
             e clique em "Remover selecionadas" pra apagar em lote.
           </p>
-        </div>
-      )}
     </div>
   );
 }

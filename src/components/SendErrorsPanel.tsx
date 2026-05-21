@@ -31,8 +31,6 @@ export function SendErrorsPanel({ instanceId }: { instanceId: number }) {
   const [rows, setRows] = useState<SendErrorEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [open, setOpen] = useState(false);
-
   const reload = useCallback(async () => {
     setLoading(true);
     try {
@@ -74,33 +72,14 @@ export function SendErrorsPanel({ instanceId }: { instanceId: number }) {
   const totalErrors = rows.reduce((s, r) => s + r.error_count, 0);
 
   return (
-    <div className="rounded-2xl bg-navy-900 border border-white/10 overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-3 px-5 py-4 text-left hover:bg-white/5 transition-colors"
-      >
-        <AlertIcon className="w-5 h-5 text-amber-400 shrink-0" />
-        <span className="text-lg font-bold flex-1">
-          Erros de envio de mensagem por org
-        </span>
-        {totalErrors > 0 && (
-          <span className="text-xs font-semibold bg-amber-500/20 text-amber-300 ring-1 ring-amber-400/30 rounded-full px-2.5 py-0.5">
-            {totalErrors} erro{totalErrors !== 1 ? "s" : ""} · {total} org{total !== 1 ? "s" : ""}
-          </span>
-        )}
-        <ChevronIcon className={`w-4 h-4 text-slate-500 transition-transform ${open ? "rotate-180" : ""}`} />
-      </button>
+    <div className="px-4 sm:px-5 py-4 space-y-3">
+      {loading && (
+        <p className="text-sm text-slate-500">Carregando…</p>
+      )}
 
-      {open && (
-        <div className="px-5 pb-5 space-y-3 border-t border-white/10 pt-4">
-          {loading && (
-            <p className="text-sm text-slate-500">Carregando…</p>
-          )}
-
-          {!loading && total === 0 && (
-            <p className="text-sm text-slate-500">Nenhum erro de envio registrado.</p>
-          )}
+      {!loading && total === 0 && (
+        <p className="text-sm text-slate-500">Nenhum erro de envio registrado.</p>
+      )}
 
           {!loading && total > 0 && (
             <div className="rounded-xl border border-white/10 bg-navy-950/60 overflow-hidden">
@@ -185,8 +164,6 @@ export function SendErrorsPanel({ instanceId }: { instanceId: number }) {
             (codes 50013/50001 sem timeout). AutoMod e timeout aparecem aqui e
             o bot continua tentando.
           </p>
-        </div>
-      )}
     </div>
   );
 }
