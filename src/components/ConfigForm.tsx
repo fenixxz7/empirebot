@@ -1859,6 +1859,7 @@ function TrashIcon({ className = "" }) {
 function TokenStatus({ status }: { status: string }) {
   const map: Record<string, { label: string; cls: string }> = {
     connected: { label: "conectado", cls: "bg-emerald-400/15 text-emerald-300 ring-emerald-400/30" },
+    ok: { label: "conectado", cls: "bg-emerald-400/15 text-emerald-300 ring-emerald-400/30" },
     disconnected: { label: "desconectado", cls: "bg-amber-400/15 text-amber-300 ring-amber-400/30" },
     invalid: { label: "inválido", cls: "bg-rose-400/15 text-rose-300 ring-rose-400/30" },
     rate_limited: { label: "rate-limited", cls: "bg-amber-500/15 text-amber-300 ring-amber-500/30" },

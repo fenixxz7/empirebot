@@ -640,7 +640,9 @@ export default function OrgJoiner({ isAdmin = false }: { isAdmin?: boolean }) {
 function TokenStatus({ status }: { status: string }) {
   const map: Record<string, { label: string; cls: string }> = {
     connected:    { label: "conectado",    cls: "text-emerald-400 bg-emerald-400/10" },
+    ok:           { label: "conectado",    cls: "text-emerald-400 bg-emerald-400/10" },
     disconnected: { label: "desconectado", cls: "text-red-400 bg-red-400/10" },
+    invalid:      { label: "inválido",     cls: "text-red-400 bg-red-400/10" },
     unknown:      { label: "desconhecido", cls: "text-slate-500 bg-white/5" },
   };
   const s = map[status] ?? map.unknown!;
