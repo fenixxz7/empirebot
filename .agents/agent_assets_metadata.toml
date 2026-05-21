@@ -30,3 +30,9 @@ id = "CFe-fePZ6FhOUL8dlVfp5"
 uri = "file://exports/bot-essencial.zip"
 type = "unspecified"
 title = "bot-essencial.zip"
+
+[[outputs]]
+id = "ILpOJlY4KVpGJt1pCatQ3"
+uri = "file://BOT_ORG_PLAN.md"
+type = "text"
+title = "BOT ORG — Plano Técnico"
