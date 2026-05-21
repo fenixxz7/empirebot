@@ -484,6 +484,13 @@ export async function initDatabase(): Promise<void> {
       ON org_queue (instance_id, added_at DESC)
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS org_joiner_token_selection (
+      instance_id   INTEGER PRIMARY KEY REFERENCES instances(id) ON DELETE CASCADE,
+      token_pool_id INTEGER NOT NULL REFERENCES token_pool(id) ON DELETE CASCADE
+    )
+  `);
+
   // Garante que ninguém ficou com fila "fantasma" entre boots
   await pool.query(`DELETE FROM active_queues`);
 

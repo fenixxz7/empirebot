@@ -2,12 +2,21 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 interface Instance { id: number; name: string; }
 
+interface TokenPoolEntry {
+  id: number;
+  label: string | null;
+  value_preview: string;
+  status: string;
+  username: string | null;
+}
+
 interface OrgConfig {
-  token_value: string | null;
   nopecha_key: string | null;
   delay_min_ms: number;
   delay_max_ms: number;
   enabled: boolean;
+  token_pool: TokenPoolEntry[];
+  selected_token_id: number | null;
 }
 
 interface OrgQueueItem {
@@ -34,8 +43,8 @@ interface OrgSnapshot {
 interface LogEntry { ts: string; msg: string; }
 
 const DEFAULT_CFG: OrgConfig = {
-  token_value: null, nopecha_key: null,
-  delay_min_ms: 300000, delay_max_ms: 720000, enabled: false,
+  nopecha_key: null, delay_min_ms: 300000, delay_max_ms: 720000,
+  enabled: false, token_pool: [], selected_token_id: null,
 };
 const DEFAULT_SNAP: OrgSnapshot = {
   running: false, startedAt: null, uptimeMs: 0, counter: 0, currentItem: null, queueSize: 0,
@@ -60,12 +69,20 @@ export default function OrgJoiner() {
   const [addingInvite, setAddingInvite] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
-  const [showToken, setShowToken] = useState(false);
-  const [tokenDraft, setTokenDraft] = useState("");
+  const [retrying, setRetrying] = useState(false);
+
+  /* ── Token pool states ─────────────────────────────────────── */
+  const [tokensMode, setTokensMode] = useState<"normal" | "add" | "delete">("normal");
+  const [selectedTokenId, setSelectedTokenId] = useState<number | null>(null);
+  const [newTokenValue, setNewTokenValue] = useState("");
+  const [newTokenLabel, setNewTokenLabel] = useState("");
+  const [addingToken, setAddingToken] = useState(false);
+  const [removingToken, setRemovingToken] = useState(false);
+
+  /* ── Config form states ────────────────────────────────────── */
   const [nopechaDraft, setNopechaDraft] = useState("");
   const [delayMinDraft, setDelayMinDraft] = useState("5");
   const [delayMaxDraft, setDelayMaxDraft] = useState("12");
-  const [retrying, setRetrying] = useState(false);
 
   const snapTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeIdRef = useRef<number | null>(null);
@@ -88,13 +105,14 @@ export default function OrgJoiner() {
       fetch(`/api/org-joiner/logs/${id}`).then(r => r.json()),
     ]);
     setCfg(cfgRes);
-    setTokenDraft("");
+    setSelectedTokenId(cfgRes.selected_token_id ?? null);
     setNopechaDraft(cfgRes.nopecha_key ?? "");
     setDelayMinDraft(String(Math.round((cfgRes.delay_min_ms ?? 300000) / 60000)));
     setDelayMaxDraft(String(Math.round((cfgRes.delay_max_ms ?? 720000) / 60000)));
     setSnap(snapRes);
     setQueue(Array.isArray(queueRes) ? queueRes : []);
     setLogs(Array.isArray(logsRes) ? logsRes : []);
+    setTokensMode("normal");
   }, []);
 
   const pollSnap = useCallback(async (id: number) => {
@@ -131,20 +149,65 @@ export default function OrgJoiner() {
   async function saveCfg() {
     if (activeId === null) return;
     setSaving(true);
-    const body: OrgConfig = {
-      token_value: tokenDraft.trim() || cfg.token_value,
-      nopecha_key: nopechaDraft.trim() || null,
-      delay_min_ms: Math.round(Number(delayMinDraft) * 60000),
-      delay_max_ms: Math.round(Number(delayMaxDraft) * 60000),
-      enabled: cfg.enabled,
-    };
     await fetch(`/api/org-joiner/config/${activeId}`, {
-      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        nopecha_key: nopechaDraft.trim() || null,
+        delay_min_ms: Math.round(Number(delayMinDraft) * 60000),
+        delay_max_ms: Math.round(Number(delayMaxDraft) * 60000),
+        enabled: cfg.enabled,
+      }),
     });
     setSaving(false);
-    setTokenDraft("");
-    setCfg(body);
     flash("Configuração salva!");
+  }
+
+  async function addToken() {
+    if (!newTokenValue.trim() || activeId === null || addingToken) return;
+    setAddingToken(true);
+    const res = await fetch(`/api/org-joiner/tokens/${activeId}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ value: newTokenValue.trim(), label: newTokenLabel.trim() || undefined }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      setNewTokenValue("");
+      setNewTokenLabel("");
+      setTokensMode("normal");
+      await loadAll(activeId);
+      flash("Token adicionado e selecionado!");
+    } else {
+      flash(`Erro: ${data.error}`);
+    }
+    setAddingToken(false);
+  }
+
+  async function selectToken(tokenPoolId: number) {
+    if (activeId === null) return;
+    await fetch(`/api/org-joiner/tokens/${activeId}/select`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token_pool_id: tokenPoolId }),
+    });
+    setSelectedTokenId(tokenPoolId);
+  }
+
+  async function deselectToken() {
+    if (activeId === null) return;
+    await fetch(`/api/org-joiner/tokens/${activeId}/deselect`, { method: "DELETE" });
+    setSelectedTokenId(null);
+  }
+
+  async function removeToken() {
+    if (activeId === null || removingToken || selectedTokenId === null) return;
+    setRemovingToken(true);
+    await fetch(`/api/org-joiner/tokens/${activeId}/deselect`, { method: "DELETE" });
+    setSelectedTokenId(null);
+    setTokensMode("normal");
+    flash("Token removido da seleção.");
+    setRemovingToken(false);
   }
 
   async function toggleEngine() {
@@ -194,8 +257,7 @@ export default function OrgJoiner() {
   const hasFailed = queue.some(q => q.status === "failed");
   const pendingCount = queue.filter(q => q.status === "pending").length;
   const canStart = !snap.running && pendingCount > 0;
-
-  const tokenConfigured = !!(cfg.token_value && cfg.token_value.trim().length > 0);
+  const tokenConfigured = selectedTokenId !== null;
 
   return (
     <>
@@ -231,7 +293,6 @@ export default function OrgJoiner() {
 
         {/* Top stats row */}
         <div className="grid grid-cols-3 gap-2.5">
-          {/* Control */}
           <div className="col-span-1 card px-4 py-4 flex flex-col items-center justify-center gap-3 min-h-[160px]">
             <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-widest self-start">
               ⏻ Controle · Bot Org
@@ -248,9 +309,7 @@ export default function OrgJoiner() {
                     : "border-white/20 text-white/30 cursor-not-allowed",
               ].join(" ")}
             >
-              {snap.running
-                ? <StopIcon className="w-7 h-7" />
-                : <PlayIcon className="w-7 h-7 ml-1" />}
+              {snap.running ? <StopIcon className="w-7 h-7" /> : <PlayIcon className="w-7 h-7 ml-1" />}
             </button>
             <p className="text-[11px] text-slate-500 text-center leading-snug">
               {snap.running
@@ -263,7 +322,6 @@ export default function OrgJoiner() {
             </p>
           </div>
 
-          {/* Entradas */}
           <div className="card px-4 py-4 flex flex-col justify-center gap-1">
             <div className="flex items-center gap-1.5 text-[11px] text-slate-400 font-semibold uppercase tracking-widest">
               <CheckIcon className="w-3.5 h-3.5 text-emerald-400" /> Entradas
@@ -272,7 +330,6 @@ export default function OrgJoiner() {
             <p className="text-[11px] text-slate-500">servidores entrados</p>
           </div>
 
-          {/* Uptime */}
           <div className="card px-4 py-4 flex flex-col justify-center gap-1">
             <div className="flex items-center gap-1.5 text-[11px] text-slate-400 font-semibold uppercase tracking-widest">
               <ClockIcon className="w-3.5 h-3.5 text-amber-400" /> Uptime
@@ -280,11 +337,11 @@ export default function OrgJoiner() {
             <p className={`text-3xl font-black font-mono mt-1 ${snap.running ? "text-amber-400" : "text-slate-600"}`}>
               {snap.running ? formatUptime(snap.uptimeMs) : "00:00:00"}
             </p>
-            <p className="text-[11px] text-slate-500">{snap.running ? "em execução" : "sem falhas"}</p>
+            <p className="text-[11px] text-slate-500">{snap.running ? "em execução" : "parado"}</p>
           </div>
         </div>
 
-        {/* Config + Add */}
+        {/* Config + Add Invite */}
         <div className="grid sm:grid-cols-2 gap-2.5">
           {/* Config */}
           <div className="card px-5 py-4 space-y-4">
@@ -292,29 +349,116 @@ export default function OrgJoiner() {
               <GearIcon className="w-3.5 h-3.5" /> Configuração
             </h2>
 
-            <div className="space-y-1.5">
+            {/* ── Token pool selector ──────────────────────────── */}
+            <div className="space-y-2">
               <label className="text-[11px] text-slate-400 uppercase tracking-wide">
-                Token Discord
-                {tokenConfigured && <span className="ml-2 text-emerald-400 normal-case">✓ configurado</span>}
+                Selecionar token (até 1)
               </label>
-              <div className="relative">
-                <input
-                  type={showToken ? "text" : "password"}
-                  value={tokenDraft}
-                  onChange={e => setTokenDraft(e.target.value)}
-                  placeholder="Deixe em branco para manter o atual"
-                  className="input w-full pr-9 text-[13px]"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowToken(v => !v)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-[11px]"
-                >
-                  {showToken ? "🙈" : "👁"}
-                </button>
+
+              {/* Token list */}
+              <div className="rounded-xl bg-[#0a0c14] border border-white/10 p-2.5 space-y-1 min-h-[48px]">
+                {cfg.token_pool.length === 0 ? (
+                  <p className="text-[12px] text-slate-500 py-1">Nenhum token cadastrado no pool.</p>
+                ) : (
+                  cfg.token_pool.map(t => {
+                    const isSelected = selectedTokenId === t.id;
+                    return (
+                      <div key={t.id} className={[
+                        "flex items-center gap-2.5 px-2 py-1.5 rounded-lg transition-colors",
+                        tokensMode === "delete" && isSelected ? "bg-rose-500/10 ring-1 ring-rose-400/40" : "hover:bg-white/5",
+                      ].join(" ")}>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => {
+                            if (isSelected) deselectToken();
+                            else selectToken(t.id);
+                          }}
+                          className="w-3.5 h-3.5 accent-amber-400 shrink-0"
+                        />
+                        {t.label && (
+                          <span className="text-[12px] text-slate-200 font-medium shrink-0">{t.label}</span>
+                        )}
+                        <span className="font-mono text-[11px] text-slate-400 flex-1 truncate">
+                          {t.value_preview}
+                        </span>
+                        {t.username && (
+                          <span className="text-[11px] text-slate-300 truncate max-w-[120px] shrink-0">{t.username}</span>
+                        )}
+                        <TokenStatus status={t.status} />
+                      </div>
+                    );
+                  })
+                )}
               </div>
+
+              {/* Action row */}
+              {tokensMode === "normal" && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTokensMode("add")}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-white/[0.06] text-slate-300 hover:bg-white/[0.10] hover:text-white transition-all ring-1 ring-white/10"
+                  >
+                    <PlusIcon className="w-3 h-3" /> Adicionar token
+                  </button>
+                  <button
+                    type="button"
+                    onClick={removeToken}
+                    disabled={selectedTokenId === null || removingToken}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold text-rose-300 bg-white/[0.04] hover:bg-rose-500/10 ring-1 ring-rose-400/20 hover:ring-rose-400/40 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <TrashIcon className="w-3 h-3" />
+                    {removingToken ? "Removendo…" : "Remover do pool"}
+                  </button>
+                  <span className="text-[11px] text-slate-500 ml-1">
+                    {selectedTokenId !== null ? 1 : 0}/1 selecionado(s)
+                  </span>
+                </div>
+              )}
+
+              {tokensMode === "add" && (
+                <div className="rounded-xl border border-amber-400/20 bg-amber-500/5 p-3 space-y-2">
+                  <p className="text-[11px] text-slate-400">
+                    Cole o token do Discord. O apelido é opcional (só para identificação visual).
+                  </p>
+                  <input
+                    type="password"
+                    className="input w-full font-mono text-xs"
+                    placeholder="Token (obrigatório)"
+                    value={newTokenValue}
+                    onChange={e => setNewTokenValue(e.target.value)}
+                    autoFocus
+                  />
+                  <input
+                    type="text"
+                    className="input w-full text-xs"
+                    placeholder="Apelido (opcional)"
+                    value={newTokenLabel}
+                    onChange={e => setNewTokenLabel(e.target.value)}
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={addToken}
+                      disabled={addingToken || !newTokenValue.trim()}
+                      className="btn-primary text-xs py-1.5 px-3 disabled:opacity-50"
+                    >
+                      {addingToken ? "Adicionando…" : "Confirmar"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setTokensMode("normal"); setNewTokenValue(""); setNewTokenLabel(""); }}
+                      className="text-[11px] text-slate-400 hover:text-slate-200 transition-colors px-2"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
+            {/* NopeCHA */}
             <div className="space-y-1.5">
               <label className="text-[11px] text-slate-400 uppercase tracking-wide">Chave NopeCHA</label>
               <input
@@ -326,6 +470,7 @@ export default function OrgJoiner() {
               />
             </div>
 
+            {/* Delay */}
             <div className="space-y-1.5">
               <label className="text-[11px] text-slate-400 uppercase tracking-wide">Delay entre entradas (anti-ban)</label>
               <div className="flex items-center gap-2">
@@ -440,11 +585,26 @@ export default function OrgJoiner() {
             <div ref={logsBottomRef} />
           </div>
         </div>
-
     </>
   );
 }
 
+/* ── Token status badge ────────────────────────────────────────────── */
+function TokenStatus({ status }: { status: string }) {
+  const map: Record<string, { label: string; cls: string }> = {
+    connected:    { label: "conectado",    cls: "text-emerald-400 bg-emerald-400/10" },
+    disconnected: { label: "desconectado", cls: "text-red-400 bg-red-400/10" },
+    unknown:      { label: "desconhecido", cls: "text-slate-500 bg-white/5" },
+  };
+  const s = map[status] ?? map.unknown!;
+  return (
+    <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md shrink-0 ${s.cls}`}>
+      {s.label}
+    </span>
+  );
+}
+
+/* ── Queue row ─────────────────────────────────────────────────────── */
 function QueueRow({ item, onRemove }: { item: OrgQueueItem; onRemove: () => void }) {
   const statusInfo: Record<string, { icon: string; color: string; label: string }> = {
     pending:    { icon: "⏳", color: "text-amber-400",  label: "Pendente" },
@@ -453,7 +613,6 @@ function QueueRow({ item, onRemove }: { item: OrgQueueItem; onRemove: () => void
     failed:     { icon: "❌", color: "text-red-400",     label: "Falhou" },
   };
   const s = statusInfo[item.status] ?? statusInfo.failed!;
-
   return (
     <div className={[
       "flex items-center gap-3 px-3 py-2 rounded-lg text-[12px]",
@@ -468,7 +627,7 @@ function QueueRow({ item, onRemove }: { item: OrgQueueItem; onRemove: () => void
           )}
         </p>
         {item.error_reason && (
-          <p className="text-red-400 text-[11px] truncate">HTTP {item.error_reason}</p>
+          <p className="text-red-400 text-[11px] truncate">{item.error_reason}</p>
         )}
       </div>
       <span className={`${s.color} text-[10px] font-semibold uppercase shrink-0`}>{s.label}</span>
@@ -481,26 +640,7 @@ function QueueRow({ item, onRemove }: { item: OrgQueueItem; onRemove: () => void
   );
 }
 
-/* ── Icons ── */
-function EmpireLogo() {
-  return (
-    <div className="shrink-0 w-9 h-9 sm:w-10 sm:h-10">
-      <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-full h-full">
-        <defs>
-          <linearGradient id="shieldGradOrg" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#fbbf24" /><stop offset="50%" stopColor="#f59e0b" /><stop offset="100%" stopColor="#d97706" />
-          </linearGradient>
-          <linearGradient id="shieldGlossOrg" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.2" /><stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        <path d="M24 3L6 10v14c0 9.5 7.5 18.4 18 21 10.5-2.6 18-11.5 18-21V10L24 3z" fill="url(#shieldGradOrg)" />
-        <path d="M24 3L6 10v14c0 1 .05 2 .15 3L24 10.5 41.85 27c.1-1 .15-2 .15-3V10L24 3z" fill="url(#shieldGlossOrg)" />
-        <text x="24" y="31" textAnchor="middle" fontFamily="Arial Black, Arial, sans-serif" fontWeight="900" fontSize="22" fill="#1a0a00" letterSpacing="-1">E</text>
-      </svg>
-    </div>
-  );
-}
+/* ── Icons ─────────────────────────────────────────────────────────── */
 function Dot({ className = "" }: { className?: string }) {
   return <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${className}`} />;
 }
@@ -521,6 +661,9 @@ function GearIcon({ className = "" }) {
 }
 function PlusIcon({ className = "" }) {
   return <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>;
+}
+function TrashIcon({ className = "" }) {
+  return <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6M14 11v6" /><path d="M9 6V4h6v2" /></svg>;
 }
 function ListIcon({ className = "" }) {
   return <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /><line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" /></svg>;

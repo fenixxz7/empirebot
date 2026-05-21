@@ -299,8 +299,12 @@ export class OrgJoiner {
 
   private async getConfig(): Promise<OrgJoinerConfig> {
     const rows = await query<OrgJoinerConfig>(
-      `SELECT token_value, nopecha_key, delay_min_ms, delay_max_ms, enabled
-       FROM org_joiner_config WHERE instance_id = $1`,
+      `SELECT ojc.nopecha_key, ojc.delay_min_ms, ojc.delay_max_ms, ojc.enabled,
+              tp.value AS token_value
+       FROM org_joiner_config ojc
+       LEFT JOIN org_joiner_token_selection ojts ON ojts.instance_id = ojc.instance_id
+       LEFT JOIN token_pool tp ON tp.id = ojts.token_pool_id
+       WHERE ojc.instance_id = $1`,
       [this.instanceId],
     );
     return rows[0] ?? { token_value: null, nopecha_key: null, delay_min_ms: 300_000, delay_max_ms: 720_000, enabled: false };
