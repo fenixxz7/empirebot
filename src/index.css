@@ -9,8 +9,8 @@
   body {
     font-family: theme('fontFamily.display');
     background:
-      radial-gradient(1200px 600px at 80% -10%, rgba(59,130,246,.10), transparent 60%),
-      radial-gradient(900px 500px at -10% 120%, rgba(139,92,246,.08), transparent 60%),
+      radial-gradient(900px 500px at 70% -5%, rgba(59,130,246,.07), transparent 60%),
+      radial-gradient(700px 400px at -5% 110%, rgba(139,92,246,.05), transparent 60%),
       theme('colors.navy.950');
     background-attachment: fixed;
     -webkit-font-smoothing: antialiased;
@@ -20,71 +20,78 @@
 
 @layer components {
   .card {
-    @apply rounded-2xl border border-white/5 bg-navy-900/70 backdrop-blur
-           shadow-[0_1px_0_rgba(255,255,255,.03)_inset,0_24px_48px_-24px_rgba(0,0,0,.6)];
+    @apply rounded-2xl border border-white/[0.06] bg-navy-900/60 backdrop-blur-sm
+           shadow-[0_1px_0_rgba(255,255,255,.04)_inset,0_8px_32px_-8px_rgba(0,0,0,.5)];
   }
   .pill {
-    @apply inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold;
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-[3px] text-[11px] font-semibold;
   }
-  .pill-ok    { @apply pill bg-ok/10 text-ok ring-1 ring-ok/30; }
-  .pill-run   { @apply pill bg-emerald-400/10 text-emerald-300 ring-1 ring-emerald-400/30; }
-  .pill-stop  { @apply pill bg-danger/10 text-danger ring-1 ring-danger/30; }
+  .pill-ok    { @apply pill bg-ok/10 text-ok ring-1 ring-ok/25; }
+  .pill-run   { @apply pill bg-emerald-400/10 text-emerald-300 ring-1 ring-emerald-400/25; }
+  .pill-stop  { @apply pill bg-danger/10 text-danger ring-1 ring-danger/25; }
   .label {
-    @apply text-xs uppercase tracking-[0.2em] text-slate-400;
+    @apply text-[10px] uppercase tracking-[0.18em] text-slate-500 font-medium;
   }
   .input {
-    @apply w-full rounded-xl bg-navy-950/70 border border-white/10
-           px-3 py-2.5 text-sm text-slate-100 placeholder-slate-500
-           focus:outline-none focus:border-accent/60 focus:ring-2 focus:ring-accent/20;
+    @apply w-full rounded-xl bg-navy-950/80 border border-white/[0.08]
+           px-3 py-2.5 text-sm text-slate-100 placeholder-slate-600
+           focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/15
+           transition-colors;
   }
   .textarea {
-    @apply input min-h-[110px] font-mono text-[12.5px] leading-relaxed;
+    @apply input min-h-[100px] font-mono text-[12px] leading-relaxed;
   }
   .btn {
     @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5
-           text-sm font-semibold transition active:scale-[0.99];
+           text-sm font-semibold transition-all active:scale-[0.98];
   }
   .btn-primary {
     @apply btn bg-accent text-white hover:bg-blue-500 shadow-glow;
   }
   .btn-ghost {
-    @apply btn bg-white/5 text-slate-200 hover:bg-white/10 ring-1 ring-white/10;
+    @apply btn bg-white/[0.04] text-slate-300 hover:bg-white/[0.08] ring-1 ring-white/[0.08];
   }
   .btn-secondary {
-    @apply btn bg-white/5 text-slate-200 hover:bg-white/10 ring-1 ring-white/15
+    @apply btn bg-white/[0.04] text-slate-300 hover:bg-white/[0.08] ring-1 ring-white/10
            text-xs px-3 py-2;
   }
   .btn-danger {
-    @apply btn bg-rose-500/15 text-rose-200 hover:bg-rose-500/25
-           ring-1 ring-rose-400/40 text-xs px-3 py-2;
+    @apply btn bg-rose-500/10 text-rose-300 hover:bg-rose-500/20
+           ring-1 ring-rose-400/30 text-xs px-3 py-2;
   }
   .stat-card {
-    @apply card p-5 flex flex-col gap-1;
+    @apply card p-4 sm:p-5 flex flex-col gap-1;
   }
   .stat-num {
-    @apply text-3xl font-extrabold tabular-nums;
+    @apply text-2xl sm:text-3xl font-extrabold tabular-nums;
   }
 }
 
-/* Console de logs */
-.log-line { @apply font-mono text-[12px] leading-5 py-0.5; }
-.log-INFO  { @apply text-slate-300; }
+/* ── Console de logs ─────────────────────────────────────────────── */
+.log-line { @apply font-mono text-[11.5px] leading-[1.55] py-px; }
+.log-INFO  { @apply text-slate-400; }
 .log-WARN  { @apply text-amber-300; }
 .log-ERROR { @apply text-rose-400; }
-.log-time  { @apply text-slate-500; }
+.log-time  { @apply text-slate-600; }
 
-/* nível em "pill" pra destacar */
-.lvl-INFO  { @apply text-emerald-300; }
+.lvl-INFO  { @apply text-emerald-400; }
 .lvl-WARN  { @apply text-amber-300; }
 .lvl-ERROR { @apply text-rose-300; }
 
-/* origem com cor pra identificação rápida */
-.src        { @apply uppercase text-[10px] tracking-wider px-1.5 py-px rounded ring-1; }
-.src-gateway   { @apply text-sky-300       bg-sky-400/10       ring-sky-400/30; }
-.src-engine    { @apply text-emerald-300   bg-emerald-400/10   ring-emerald-400/30; }
-.src-discovery { @apply text-violet-300    bg-violet-400/10    ring-violet-400/30; }
-.src-config    { @apply text-amber-300     bg-amber-400/10     ring-amber-400/30; }
-.src-control   { @apply text-cyan-300      bg-cyan-400/10      ring-cyan-400/30; }
-.src-worker    { @apply text-fuchsia-300   bg-fuchsia-400/10   ring-fuchsia-400/30; }
-.src-match     { @apply text-rose-300      bg-rose-400/10      ring-rose-400/30; }
-.src-default   { @apply text-slate-400     bg-white/5          ring-white/10; }
+.src        { @apply uppercase text-[9.5px] tracking-wider px-1 py-px rounded ring-1; }
+.src-gateway   { @apply text-sky-300       bg-sky-400/10       ring-sky-400/25; }
+.src-engine    { @apply text-emerald-300   bg-emerald-400/10   ring-emerald-400/25; }
+.src-discovery { @apply text-violet-300    bg-violet-400/10    ring-violet-400/25; }
+.src-config    { @apply text-amber-300     bg-amber-400/10     ring-amber-400/25; }
+.src-control   { @apply text-cyan-300      bg-cyan-400/10      ring-cyan-400/25; }
+.src-worker    { @apply text-fuchsia-300   bg-fuchsia-400/10   ring-fuchsia-400/25; }
+.src-match     { @apply text-rose-300      bg-rose-400/10      ring-rose-400/25; }
+.src-default   { @apply text-slate-500     bg-white/[0.04]     ring-white/[0.08]; }
+
+/* ── Tab ativa ───────────────────────────────────────────────────── */
+.tab-active {
+  @apply bg-white text-navy-950 font-bold shadow-sm;
+}
+.tab-inactive {
+  @apply text-slate-400 hover:text-slate-200 hover:bg-white/[0.06] transition-colors;
+}

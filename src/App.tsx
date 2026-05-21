@@ -26,7 +26,6 @@ export function App({ isAdmin = false, onLogout }: { isAdmin?: boolean; onLogout
     }
   }
 
-  // Connect WebSocket for each instance and listen for stats updates
   const connectWs = useCallback((inst: InstanceState) => {
     if (wsRefs.current.has(inst.id)) return;
     const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -67,7 +66,6 @@ export function App({ isAdmin = false, onLogout }: { isAdmin?: boolean; onLogout
 
     ws.onclose = () => {
       wsRefs.current.delete(inst.id);
-      // Reconnect after 3s
       setTimeout(() => {
         if (wsRefs.current.has(inst.id)) return;
         connectWs(inst);
@@ -83,16 +81,12 @@ export function App({ isAdmin = false, onLogout }: { isAdmin?: boolean; onLogout
   }, []);
 
   useEffect(() => {
-    for (const inst of instances) {
-      connectWs(inst);
-    }
+    for (const inst of instances) connectWs(inst);
   }, [instances.map((i) => i.id).join(",")]);
 
   useEffect(() => {
     return () => {
-      for (const ws of wsRefs.current.values()) {
-        ws.close();
-      }
+      for (const ws of wsRefs.current.values()) ws.close();
     };
   }, []);
 
@@ -112,24 +106,26 @@ export function App({ isAdmin = false, onLogout }: { isAdmin?: boolean; onLogout
   }
 
   return (
-    <div className="min-h-screen px-4 sm:px-6 lg:px-10 py-8">
-      <div className="mx-auto max-w-5xl space-y-6">
-        {/* Instance tabs */}
+    <div className="min-h-screen px-3 sm:px-5 lg:px-8 py-4 sm:py-6">
+      <div className="mx-auto max-w-4xl space-y-3 sm:space-y-4">
+
+        {/* Instance tabs — sticky pill row */}
         {instances.length > 1 && (
-          <div className="flex gap-2">
+          <div className="sticky top-3 z-30 flex gap-1.5">
             {instances.map((inst, idx) => (
               <button
                 key={inst.id}
                 onClick={() => setActiveIdx(idx)}
-                className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
+                className={[
+                  "flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold transition-all",
                   idx === activeIdx
-                    ? "bg-emerald-500 text-black"
-                    : "bg-white/10 text-slate-300 hover:bg-white/20"
-                }`}
+                    ? "tab-active shadow-sm"
+                    : "tab-inactive card",
+                ].join(" ")}
               >
                 {inst.name}
                 {inst.running && (
-                  <span className="ml-2 inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                 )}
               </button>
             ))}
@@ -138,7 +134,8 @@ export function App({ isAdmin = false, onLogout }: { isAdmin?: boolean; onLogout
 
         <Header instance={instance} isAdmin={isAdmin} onLogout={onLogout} />
 
-        <div className="grid lg:grid-cols-2 gap-6">
+        {/* Control + Stats row */}
+        <div className="grid sm:grid-cols-[auto_1fr] gap-3 sm:gap-4">
           <ControlPanel instance={instance} onToggle={toggle} />
           <StatsGrid instance={instance} onResetStats={resetStats} />
         </div>
@@ -156,7 +153,7 @@ export function App({ isAdmin = false, onLogout }: { isAdmin?: boolean; onLogout
         {instance && <MessageOverridesPanel instanceId={instance.id} />}
         {instance && <LogsConsole instanceId={instance.id} />}
 
-        <p className="text-center text-xs text-slate-500 pt-2 pb-6">
+        <p className="text-center text-[11px] text-slate-600 pb-6">
           Use por sua conta e risco. Selfbots violam os Termos de Serviço do Discord.
         </p>
       </div>
