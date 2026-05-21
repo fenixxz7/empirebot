@@ -1,6 +1,15 @@
 import { query } from "../db/pool.js";
 import { DiscordRest } from "../discord/rest.js";
 
+const DISCORD_403_MESSAGES: Record<number, string> = {
+  40007: "conta banida deste servidor",
+  40002: "conta precisa de verificação (e-mail ou telefone)",
+  40014: "conta desativada ou suspensa",
+  40041: "servidor exige verificação de membro",
+  50013: "sem permissão para entrar",
+  20016: "ação bloqueada — conta muito nova ou suspeita",
+};
+
 function sleep(ms: number) {
   return new Promise<void>((r) => setTimeout(r, ms));
 }
@@ -292,10 +301,15 @@ export class OrgJoiner {
         }
       }
 
-      const errCode = (res.data as any)?.code;
+      const errCode = (res.data as any)?.code ?? (() => {
+        try { return JSON.parse(res.error ?? "")?.code; } catch { return undefined; }
+      })();
       const reason = `HTTP_${res.status}${errCode ? `_code_${errCode}` : ""}`;
+      const friendlyMsg = DISCORD_403_MESSAGES[errCode] ?? null;
       await this.failItem(item.id, reason);
-      this.addLog(`✗ Falhou (${reason}): discord.gg/${item.invite_code}`);
+      this.addLog(
+        `✗ Falhou (${reason})${friendlyMsg ? ` — ${friendlyMsg}` : ""}: discord.gg/${item.invite_code}`
+      );
       return;
     }
 
