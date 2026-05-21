@@ -755,6 +755,7 @@ export async function initDatabase(): Promise<void> {
   await pool.query(`ALTER TABLE token_pool ADD COLUMN IF NOT EXISTS owner_instance_id INTEGER REFERENCES instances(id) ON DELETE CASCADE`);
 
   // Remove constraint UNIQUE global antiga (value) para permitir o mesmo token em instâncias distintas.
+  // Usa bloco anônimo para não crashar se o nome for diferente ou já não existir.
   await pool.query(`
     DO $$ BEGIN
       IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'token_pool_value_key') THEN
@@ -763,17 +764,27 @@ export async function initDatabase(): Promise<void> {
     END $$
   `);
 
-  // Unique parcial para tokens de fila (global por valor, sem owner)
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS token_pool_fila_value_unique
-      ON token_pool (value) WHERE type = 'fila'
-  `);
+  // Unique parcial para tokens de fila (global por valor, sem owner).
+  // Envolto em try-catch: pode falhar em bancos antigos com duplicatas; não é crítico para startup.
+  try {
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS token_pool_fila_value_unique
+        ON token_pool (value) WHERE type = 'fila'
+    `);
+  } catch (e) {
+    console.warn("[init] Não foi possível criar índice token_pool_fila_value_unique (pode já existir ou haver duplicatas):", e);
+  }
 
-  // Unique parcial para tokens de org (por valor + instância dona)
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS token_pool_org_value_instance_unique
-      ON token_pool (value, owner_instance_id) WHERE type = 'org'
-  `);
+  // Unique parcial para tokens de org (por valor + instância dona).
+  // Envolto em try-catch pelo mesmo motivo.
+  try {
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS token_pool_org_value_instance_unique
+        ON token_pool (value, owner_instance_id) WHERE type = 'org'
+    `);
+  } catch (e) {
+    console.warn("[init] Não foi possível criar índice token_pool_org_value_instance_unique:", e);
+  }
 
 }
 
