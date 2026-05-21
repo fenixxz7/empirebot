@@ -34,7 +34,12 @@ orgJoinerRouter.get("/config/:id", asyncHandler(async (req, res) => {
 
   const poolRows = await query<{
     id: number; label: string | null; value: string; status: string; username: string | null;
-  }>(`SELECT id, label, value, status, username FROM token_pool WHERE type = 'org' ORDER BY id ASC`);
+  }>(
+    `SELECT id, label, value, status, username FROM token_pool
+     WHERE type = 'org' AND owner_instance_id = $1
+     ORDER BY id ASC`,
+    [id],
+  );
 
   const selRows = await query<{ token_pool_id: number }>(
     `SELECT token_pool_id FROM org_joiner_token_selection WHERE instance_id = $1`,
@@ -75,11 +80,12 @@ orgJoinerRouter.post("/tokens/:id", asyncHandler(async (req, res) => {
     return;
   }
   const rows = await query<{ id: number }>(
-    `INSERT INTO token_pool (value, label, status, type)
-     VALUES ($1, $2, 'unknown', 'org')
-     ON CONFLICT (value) DO UPDATE SET label = COALESCE(EXCLUDED.label, token_pool.label)
+    `INSERT INTO token_pool (value, label, status, type, owner_instance_id)
+     VALUES ($1, $2, 'unknown', 'org', $3)
+     ON CONFLICT (value, owner_instance_id) WHERE type = 'org'
+     DO UPDATE SET label = COALESCE(EXCLUDED.label, token_pool.label)
      RETURNING id`,
-    [value.trim(), label?.trim() || null],
+    [value.trim(), label?.trim() || null, instanceId],
   );
   const tokenPoolId = rows[0]!.id;
   await query(
@@ -112,21 +118,22 @@ orgJoinerRouter.delete("/tokens/:id/deselect", asyncHandler(async (req, res) => 
   res.json({ ok: true });
 }));
 
-// Remove o token do pool global (apenas tokens type='org') e desseleciona da instância
+// Remove o token do pool da instância (apenas tokens type='org' daquela instância)
 orgJoinerRouter.delete("/tokens/:instanceId/pool/:tokenId", asyncHandler(async (req, res) => {
   const instanceId = Number(req.params.instanceId);
   const tokenId = Number(req.params.tokenId);
   await query(`DELETE FROM org_joiner_token_selection WHERE instance_id = $1 AND token_pool_id = $2`, [instanceId, tokenId]);
-  await query(`DELETE FROM token_pool WHERE id = $1 AND type = 'org'`, [tokenId]);
+  await query(`DELETE FROM token_pool WHERE id = $1 AND type = 'org' AND owner_instance_id = $2`, [tokenId, instanceId]);
   res.json({ ok: true });
 }));
 
 // Retorna o valor completo do token (apenas admin)
 orgJoinerRouter.get("/tokens/:instanceId/pool/:tokenId/reveal", requireAdmin, asyncHandler(async (req, res) => {
+  const instanceId = Number(req.params.instanceId);
   const tokenId = Number(req.params.tokenId);
   const rows = await query<{ value: string }>(
-    `SELECT value FROM token_pool WHERE id = $1 AND type = 'org'`,
-    [tokenId],
+    `SELECT value FROM token_pool WHERE id = $1 AND type = 'org' AND owner_instance_id = $2`,
+    [tokenId, instanceId],
   );
   if (!rows[0]) { res.status(404).json({ error: "Token não encontrado." }); return; }
   res.json({ value: rows[0].value });

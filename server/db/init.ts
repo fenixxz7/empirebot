@@ -750,6 +750,31 @@ export async function initDatabase(): Promise<void> {
   // Separação de pools: tokens do Bot Fila (type='fila') vs Bot Org (type='org')
   await pool.query(`ALTER TABLE token_pool ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT 'fila'`);
 
+  // Isolamento de tokens por instância no Bot Org:
+  // Cada instância tem seu próprio pool de tokens org (owner_instance_id).
+  await pool.query(`ALTER TABLE token_pool ADD COLUMN IF NOT EXISTS owner_instance_id INTEGER REFERENCES instances(id) ON DELETE CASCADE`);
+
+  // Remove constraint UNIQUE global antiga (value) para permitir o mesmo token em instâncias distintas.
+  await pool.query(`
+    DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'token_pool_value_key') THEN
+        ALTER TABLE token_pool DROP CONSTRAINT token_pool_value_key;
+      END IF;
+    END $$
+  `);
+
+  // Unique parcial para tokens de fila (global por valor, sem owner)
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS token_pool_fila_value_unique
+      ON token_pool (value) WHERE type = 'fila'
+  `);
+
+  // Unique parcial para tokens de org (por valor + instância dona)
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS token_pool_org_value_instance_unique
+      ON token_pool (value, owner_instance_id) WHERE type = 'org'
+  `);
+
 }
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);
