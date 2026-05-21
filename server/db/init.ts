@@ -331,10 +331,11 @@ export async function initDatabase(): Promise<void> {
     )
   `);
   // Migra tokens existentes para o pool global (compatibilidade com bancos antigos)
+  // Usa ON CONFLICT DO NOTHING sem coluna explícita: compatível mesmo após DROP da UNIQUE(value) global.
   await pool.query(`
     INSERT INTO token_pool (value, status, username)
     SELECT DISTINCT value, status, username FROM tokens
-    ON CONFLICT (value) DO NOTHING
+    ON CONFLICT DO NOTHING
   `);
   // Popula instance_token_selection com a seleção atual de cada instância
   await pool.query(`
@@ -750,41 +751,52 @@ export async function initDatabase(): Promise<void> {
   // Separação de pools: tokens do Bot Fila (type='fila') vs Bot Org (type='org')
   await pool.query(`ALTER TABLE token_pool ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT 'fila'`);
 
-  // Isolamento de tokens por instância no Bot Org:
-  // Cada instância tem seu próprio pool de tokens org (owner_instance_id).
-  await pool.query(`ALTER TABLE token_pool ADD COLUMN IF NOT EXISTS owner_instance_id INTEGER REFERENCES instances(id) ON DELETE CASCADE`);
+  // Isolamento de tokens por instância no Bot Org — cada passo protegido.
+  console.log("[init] migrando owner_instance_id em token_pool...");
+  try {
+    await pool.query(`ALTER TABLE token_pool ADD COLUMN IF NOT EXISTS owner_instance_id INTEGER REFERENCES instances(id) ON DELETE CASCADE`);
+    console.log("[init] owner_instance_id ok");
+  } catch (e) {
+    console.warn("[init] ADD COLUMN owner_instance_id falhou (pode já existir ou conflito de FK):", (e as Error).message);
+  }
 
-  // Remove constraint UNIQUE global antiga (value) para permitir o mesmo token em instâncias distintas.
-  // Usa bloco anônimo para não crashar se o nome for diferente ou já não existir.
-  await pool.query(`
-    DO $$ BEGIN
-      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'token_pool_value_key') THEN
-        ALTER TABLE token_pool DROP CONSTRAINT token_pool_value_key;
-      END IF;
-    END $$
-  `);
+  // Remove constraint UNIQUE global antiga (value) para permitir mesmo token em instâncias distintas.
+  try {
+    await pool.query(`
+      DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'token_pool_value_key') THEN
+          ALTER TABLE token_pool DROP CONSTRAINT token_pool_value_key;
+        END IF;
+      END $$
+    `);
+    console.log("[init] DROP CONSTRAINT token_pool_value_key ok");
+  } catch (e) {
+    console.warn("[init] DROP CONSTRAINT token_pool_value_key falhou:", (e as Error).message);
+  }
 
-  // Unique parcial para tokens de fila (global por valor, sem owner).
-  // Envolto em try-catch: pode falhar em bancos antigos com duplicatas; não é crítico para startup.
+  // Unique parcial para tokens de fila.
   try {
     await pool.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS token_pool_fila_value_unique
         ON token_pool (value) WHERE type = 'fila'
     `);
+    console.log("[init] índice token_pool_fila_value_unique ok");
   } catch (e) {
-    console.warn("[init] Não foi possível criar índice token_pool_fila_value_unique (pode já existir ou haver duplicatas):", e);
+    console.warn("[init] índice token_pool_fila_value_unique falhou:", (e as Error).message);
   }
 
-  // Unique parcial para tokens de org (por valor + instância dona).
-  // Envolto em try-catch pelo mesmo motivo.
+  // Unique parcial para tokens de org (por valor + instância).
   try {
     await pool.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS token_pool_org_value_instance_unique
         ON token_pool (value, owner_instance_id) WHERE type = 'org'
     `);
+    console.log("[init] índice token_pool_org_value_instance_unique ok");
   } catch (e) {
-    console.warn("[init] Não foi possível criar índice token_pool_org_value_instance_unique:", e);
+    console.warn("[init] índice token_pool_org_value_instance_unique falhou:", (e as Error).message);
   }
+
+  console.log("[init] migrações de isolamento concluídas");
 
 }
 
