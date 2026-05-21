@@ -35,6 +35,7 @@ export interface OrgJoinerSnapshot {
 }
 
 interface OrgJoinerConfig {
+  pool_id: number | null;
   token_value: string | null;
   nopecha_key: string | null;
   delay_min_ms: number;
@@ -63,6 +64,34 @@ export class OrgJoiner {
       [this.instanceId],
     );
     this.addLog("Bot Org iniciado.");
+
+    // Valida o token e loga status de conexão
+    const cfg = await this.getConfig();
+    const tokenVal = cfg.token_value?.trim() || null;
+    if (tokenVal && cfg.pool_id) {
+      const rest = new DiscordRest(tokenVal);
+      const me = await rest.getMe();
+      if (me.status === 200 && me.data) {
+        const { username, discriminator, global_name } = me.data;
+        const discrim = discriminator && discriminator !== "0" ? `#${discriminator}` : "";
+        const display = global_name ?? username;
+        const usernameStr = `${username}${discrim}`;
+        this.addLog(`✓ Conectado · ${usernameStr} (${display})`);
+        await query(
+          `UPDATE token_pool SET status = 'ok', username = $2 WHERE id = $1`,
+          [cfg.pool_id, `${usernameStr} (${display})`],
+        );
+      } else {
+        this.addLog(`✗ Token inválido ou erro ao conectar (HTTP ${me.status})`);
+        await query(
+          `UPDATE token_pool SET status = 'invalid' WHERE id = $1`,
+          [cfg.pool_id],
+        );
+      }
+    } else if (!tokenVal) {
+      this.addLog("⚠ Nenhum token configurado.");
+    }
+
     this.scheduleTick(0);
   }
 
@@ -300,13 +329,13 @@ export class OrgJoiner {
   private async getConfig(): Promise<OrgJoinerConfig> {
     const rows = await query<OrgJoinerConfig>(
       `SELECT ojc.nopecha_key, ojc.delay_min_ms, ojc.delay_max_ms, ojc.enabled,
-              tp.value AS token_value
+              tp.value AS token_value, tp.id AS pool_id
        FROM org_joiner_config ojc
        LEFT JOIN org_joiner_token_selection ojts ON ojts.instance_id = ojc.instance_id
        LEFT JOIN token_pool tp ON tp.id = ojts.token_pool_id
        WHERE ojc.instance_id = $1`,
       [this.instanceId],
     );
-    return rows[0] ?? { token_value: null, nopecha_key: null, delay_min_ms: 300_000, delay_max_ms: 720_000, enabled: false };
+    return rows[0] ?? { pool_id: null, token_value: null, nopecha_key: null, delay_min_ms: 300_000, delay_max_ms: 720_000, enabled: false };
   }
 }

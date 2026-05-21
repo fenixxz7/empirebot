@@ -1,6 +1,16 @@
 const BASE = "https://discord.com/api/v10";
 const BASE_V9 = "https://discord.com/api/v9";
 
+// Header x-context-properties obrigatório para o Discord aceitar convites via selfbot
+const INVITE_CONTEXT_HEADER = Buffer.from(
+  JSON.stringify({
+    location: "Join Guild",
+    location_guild_id: null,
+    location_channel_id: null,
+    location_channel_type: null,
+  })
+).toString("base64");
+
 // Headers que o cliente web do Discord envia — necessários para endpoints como /users/@me/message-requests
 const SUPER_PROPERTIES = Buffer.from(
   JSON.stringify({
@@ -48,8 +58,8 @@ export class DiscordRest {
     return this.requestBase<T>(BASE_V9, method, path, body);
   }
 
-  request<T = unknown>(method: string, path: string, body?: unknown) {
-    return this.requestBase<T>(BASE, method, path, body);
+  request<T = unknown>(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>) {
+    return this.requestBase<T>(BASE, method, path, body, extraHeaders);
   }
 
   async requestBase<T = unknown>(
@@ -57,6 +67,7 @@ export class DiscordRest {
     method: string,
     path: string,
     body?: unknown,
+    extraHeaders?: Record<string, string>,
   ): Promise<DiscordResponse<T>> {
     const url = `${base}${path}`;
     let attempts = 0;
@@ -73,6 +84,7 @@ export class DiscordRest {
             authorization: this.token,
             "content-type": "application/json",
             ...DISCORD_HEADERS,
+            ...(extraHeaders ?? {}),
           },
           body: body !== undefined ? JSON.stringify(body) : undefined,
         });
@@ -247,6 +259,14 @@ export class DiscordRest {
    * Clica num botão de mensagem como o usuário (selfbot).
    * Usa o endpoint genérico de interactions do Discord.
    */
+  /** GET /users/@me — retorna dados da conta do token */
+  getMe() {
+    return this.request<{ id: string; username: string; discriminator: string; global_name: string | null }>(
+      "GET",
+      "/users/@me",
+    );
+  }
+
   /** GET /invites/:code — preview do servidor antes de entrar */
   getInvite(code: string) {
     return this.request<{ guild?: { id: string; name: string }; code?: number }>(
@@ -261,6 +281,7 @@ export class DiscordRest {
       "POST",
       `/invites/${code}`,
       {},
+      { "x-context-properties": INVITE_CONTEXT_HEADER },
     );
   }
 
@@ -270,6 +291,7 @@ export class DiscordRest {
       "POST",
       `/invites/${code}`,
       { captcha_key: captchaToken },
+      { "x-context-properties": INVITE_CONTEXT_HEADER },
     );
   }
 
