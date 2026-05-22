@@ -278,6 +278,17 @@ export class DiscordRest {
     );
   }
 
+  /**
+   * GET /guilds/:id/members/@me — verifica se a conta já é membro do servidor.
+   * 200 = já é membro, 404 = não é membro, 403 = sem acesso / banido.
+   */
+  getGuildMember(guildId: string) {
+    return this.request<{ user?: { id: string }; roles?: string[] }>(
+      "GET",
+      `/guilds/${guildId}/members/@me`,
+    );
+  }
+
   /** POST /invites/:code — entra no servidor */
   acceptInvite(code: string) {
     return this.request<{ guild?: { id: string; name: string }; guild_id?: string }>(

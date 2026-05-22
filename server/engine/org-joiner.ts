@@ -1,14 +1,19 @@
 import { query } from "../db/pool.js";
 import { DiscordRest } from "../discord/rest.js";
 
-const DISCORD_403_MESSAGES: Record<number, string> = {
+// ── Discord error code catalogue ──────────────────────────────────────────────
+const DISCORD_ERROR_MESSAGES: Record<number, string> = {
+  10006: "convite inválido ou expirado",
   40007: "conta banida deste servidor",
   40002: "conta precisa de verificação (e-mail ou telefone)",
   40014: "conta desativada ou suspensa",
-  40041: "servidor exige verificação de membro",
+  40041: "servidor exige verificação de membro antes de entrar",
   50013: "sem permissão para entrar",
-  20016: "ação bloqueada — conta muito nova ou suspeita",
+  20016: "ação bloqueada — conta muito nova ou suspeita para o Discord",
+  30001: "número máximo de servidores atingido (conta no limite de guilds)",
 };
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function sleep(ms: number) {
   return new Promise<void>((r) => setTimeout(r, ms));
@@ -21,6 +26,23 @@ function extractInviteCode(raw: string): string | null {
   if (/^[a-zA-Z0-9\-]{2,30}$/.test(cleaned)) return cleaned;
   return null;
 }
+
+/**
+ * Extracts the Discord error code from a response.
+ * When the request fails (!res.ok), `res.data` is null and the raw body is
+ * in `res.error` as a JSON string — we parse both to cover all cases.
+ */
+function parseErrorCode(res: { data: unknown; error?: string }): number | null {
+  const fromData = (res.data as any)?.code;
+  if (fromData != null) return Number(fromData);
+  try {
+    const parsed = JSON.parse(res.error ?? "");
+    if (parsed?.code != null) return Number(parsed.code);
+  } catch { /* not JSON */ }
+  return null;
+}
+
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface OrgQueueItem {
   id: number;
@@ -52,6 +74,8 @@ interface OrgJoinerConfig {
   enabled: boolean;
 }
 
+// ── OrgJoiner class ───────────────────────────────────────────────────────────
+
 export class OrgJoiner {
   private running = false;
   private startedAt: Date | null = null;
@@ -74,7 +98,6 @@ export class OrgJoiner {
     );
     this.addLog("Bot Org iniciado.");
 
-    // Valida o token e loga status de conexão
     const cfg = await this.getConfig();
     const tokenVal = cfg.token_value?.trim() || null;
     if (tokenVal && cfg.pool_id) {
@@ -150,9 +173,29 @@ export class OrgJoiner {
 
     if (token) {
       const rest = new DiscordRest(token);
+
+      // Validate the invite and get guild info
       const preview = await rest.getInvite(code);
-      if (preview.status === 404 || (preview.data as any)?.code === 10006) {
+      if (preview.status === 404 || parseErrorCode(preview) === 10006) {
         return { ok: false, error: "Convite inválido ou expirado." };
+      }
+
+      // Pre-check: if we already know the guild_id, verify membership before queuing
+      const guildId = (preview.data as any)?.guild?.id as string | undefined;
+      if (guildId) {
+        const memberCheck = await rest.getGuildMember(guildId);
+        if (memberCheck.status === 200) {
+          const guildName = (preview.data as any)?.guild?.name as string | undefined ?? null;
+          // Already a member — insert as done directly, no need to queue
+          const rows = await query<OrgQueueItem>(
+            `INSERT INTO org_queue (instance_id, invite_code, invite_raw, status, result_guild_id, result_guild_name, processed_at)
+             VALUES ($1, $2, $3, 'done', $4, $5, NOW())
+             RETURNING *`,
+            [this.instanceId, code, inviteRaw.trim(), guildId, guildName],
+          );
+          this.addLog(`ℹ Conta já está no servidor: ${guildName ?? code} — marcado como concluído.`);
+          return { ok: true, item: rows[0] };
+        }
       }
     }
 
@@ -239,32 +282,58 @@ export class OrgJoiner {
     const rest = new DiscordRest(token);
     this.addLog(`Processando: discord.gg/${item.invite_code}`);
 
+    // ── Step 1: Resolve the invite to get guild info ──────────────────────────
+    let guildId: string | null = null;
+    let guildName: string | null = null;
+
+    const preview = await rest.getInvite(item.invite_code);
+    if (preview.status === 200 && (preview.data as any)?.guild) {
+      guildId = (preview.data as any).guild.id ?? null;
+      guildName = (preview.data as any).guild.name ?? null;
+    } else if (preview.status === 404 || parseErrorCode(preview) === 10006) {
+      await this.failItem(item.id, "convite_inválido");
+      this.addLog(`✗ Convite inválido ou expirado: discord.gg/${item.invite_code}`);
+      return;
+    }
+    // (if preview fails for other reason, continue anyway — don't abort)
+
+    // ── Step 2: Pre-check membership ──────────────────────────────────────────
+    if (guildId) {
+      const memberCheck = await rest.getGuildMember(guildId);
+      if (memberCheck.status === 200) {
+        await this.doneItem(item.id, guildId, guildName);
+        this.counter++;
+        this.addLog(`✓ Conta já estava no servidor: ${guildName ?? item.invite_code}${guildId ? ` (${guildId})` : ""}`);
+        return;
+      }
+    }
+
+    // ── Step 3: Attempt to join ───────────────────────────────────────────────
     let attempts = 0;
     while (attempts < 3) {
       attempts++;
       const res = await rest.acceptInvite(item.invite_code);
 
+      // ── Success ──────────────────────────────────────────────────────────────
       if (res.status === 200 || res.status === 204) {
-        const guildId = (res.data as any)?.guild?.id ?? null;
-        const guildName = (res.data as any)?.guild?.name ?? null;
-        await query(
-          `UPDATE org_queue SET status = 'done', result_guild_id = $2, result_guild_name = $3, processed_at = NOW()
-           WHERE id = $1`,
-          [item.id, guildId, guildName],
-        );
+        const finalGuildId = (res.data as any)?.guild?.id ?? guildId;
+        const finalGuildName = (res.data as any)?.guild?.name ?? guildName;
+        await this.doneItem(item.id, finalGuildId, finalGuildName);
         this.counter++;
-        this.addLog(`✓ Entrou em: ${guildName ?? item.invite_code}${guildId ? ` (${guildId})` : ""}`);
+        this.addLog(`✓ Entrou em: ${finalGuildName ?? item.invite_code}${finalGuildId ? ` (${finalGuildId})` : ""}`);
         return;
       }
 
+      // ── Rate limit ───────────────────────────────────────────────────────────
       if (res.status === 429) {
         let waitMs = 5_000;
         try { waitMs = Math.min(30_000, ((res.data as any)?.retry_after ?? 5) * 1000 + 1000); } catch { /**/ }
-        this.addLog(`Rate limit — aguardando ${Math.round(waitMs / 1000)}s… (tentativa ${attempts}/3)`);
+        this.addLog(`⏳ Rate limit — aguardando ${Math.round(waitMs / 1000)}s… (tentativa ${attempts}/3)`);
         await sleep(waitMs);
         continue;
       }
 
+      // ── CAPTCHA ──────────────────────────────────────────────────────────────
       if (res.status === 400) {
         const captchaKey = (res.data as any)?.captcha_key;
         if (captchaKey) {
@@ -273,7 +342,7 @@ export class OrgJoiner {
             this.addLog(`✗ CAPTCHA detectado mas sem chave NopeCHA configurada.`);
             return;
           }
-          this.addLog(`CAPTCHA detectado — resolvendo via NopeCHA…`);
+          this.addLog(`🔒 CAPTCHA detectado — resolvendo via NopeCHA…`);
           const sitekey = (res.data as any)?.captcha_sitekey ?? "a9b5fb07-92ff-493f-86fe-352a2803b3df";
           const solved = await this.solveHCaptcha(config.nopecha_key.trim(), sitekey, "https://discord.com");
           if (!solved) {
@@ -283,29 +352,83 @@ export class OrgJoiner {
           }
           const res2 = await rest.acceptInviteWithCaptcha(item.invite_code, solved);
           if (res2.status === 200 || res2.status === 204) {
-            const guildId = (res2.data as any)?.guild?.id ?? null;
-            const guildName = (res2.data as any)?.guild?.name ?? null;
-            await query(
-              `UPDATE org_queue SET status = 'done', result_guild_id = $2, result_guild_name = $3, processed_at = NOW()
-               WHERE id = $1`,
-              [item.id, guildId, guildName],
-            );
+            const finalGuildId = (res2.data as any)?.guild?.id ?? guildId;
+            const finalGuildName = (res2.data as any)?.guild?.name ?? guildName;
+            await this.doneItem(item.id, finalGuildId, finalGuildName);
             this.counter++;
-            this.addLog(`✓ Entrou (com captcha): ${guildName ?? item.invite_code}`);
+            this.addLog(`✓ Entrou (com CAPTCHA): ${finalGuildName ?? item.invite_code}`);
             return;
           }
-          const errCode2 = (res2.data as any)?.code;
-          await this.failItem(item.id, `HTTP_${res2.status}${errCode2 ? `_code_${errCode2}` : ""}`);
-          this.addLog(`✗ Falhou após resolver captcha: HTTP ${res2.status}`);
+          const errCode2 = parseErrorCode(res2);
+          const reason2 = `HTTP_${res2.status}${errCode2 ? `_code_${errCode2}` : ""}`;
+          await this.failItem(item.id, reason2);
+          this.addLog(`✗ Falhou após resolver CAPTCHA (${reason2}): discord.gg/${item.invite_code}`);
           return;
         }
+        // 400 sem captcha
+        const errCode400 = parseErrorCode(res);
+        await this.failItem(item.id, `HTTP_400${errCode400 ? `_code_${errCode400}` : ""}`);
+        this.addLog(`✗ Requisição inválida (código ${errCode400 ?? "?"}): discord.gg/${item.invite_code}`);
+        return;
       }
 
-      const errCode = (res.data as any)?.code ?? (() => {
-        try { return JSON.parse(res.error ?? "")?.code; } catch { return undefined; }
-      })();
+      // ── 403 — Ban / permission / detection ───────────────────────────────────
+      if (res.status === 403) {
+        const errCode = parseErrorCode(res);
+
+        if (errCode === 40007) {
+          // Before treating as ban, re-check membership.
+          // Discord sometimes returns 40007 as a false positive from anti-bot
+          // detection even when the join actually succeeded or the account is
+          // already a member.
+          if (guildId) {
+            const recheck = await rest.getGuildMember(guildId);
+            if (recheck.status === 200) {
+              await this.doneItem(item.id, guildId, guildName);
+              this.counter++;
+              this.addLog(`✓ Entrou no servidor (40007 era falso positivo de detecção): ${guildName ?? item.invite_code}`);
+              return;
+            }
+          }
+
+          // First attempt: wait and retry once (transient anti-bot detection)
+          if (attempts === 1) {
+            this.addLog(`⚠ Erro 40007 (tentativa ${attempts}) — pode ser detecção temporária. Aguardando 4s e tentando novamente…`);
+            await sleep(4_000);
+            continue;
+          }
+
+          // Second attempt still 40007: re-check membership one last time
+          if (guildId) {
+            const finalCheck = await rest.getGuildMember(guildId);
+            if (finalCheck.status === 200) {
+              await this.doneItem(item.id, guildId, guildName);
+              this.counter++;
+              this.addLog(`✓ Conta está no servidor após retentativa (40007 era falso positivo): ${guildName ?? item.invite_code}`);
+              return;
+            }
+          }
+
+          // Confirmed: real ban or unrecoverable detection block
+          await this.failItem(item.id, "HTTP_403_code_40007_banido");
+          this.addLog(`✗ Conta banida deste servidor: ${guildName ?? item.invite_code}`);
+          return;
+        }
+
+        // Other known 403 codes
+        const friendly = DISCORD_ERROR_MESSAGES[errCode ?? -1] ?? null;
+        const reason403 = `HTTP_403${errCode ? `_code_${errCode}` : ""}`;
+        await this.failItem(item.id, reason403);
+        this.addLog(
+          `✗ Sem permissão${friendly ? ` — ${friendly}` : ` (código ${errCode ?? "?"})`}: discord.gg/${item.invite_code}`
+        );
+        return;
+      }
+
+      // ── Generic error ─────────────────────────────────────────────────────────
+      const errCode = parseErrorCode(res);
       const reason = `HTTP_${res.status}${errCode ? `_code_${errCode}` : ""}`;
-      const friendlyMsg = DISCORD_403_MESSAGES[errCode] ?? null;
+      const friendlyMsg = DISCORD_ERROR_MESSAGES[errCode ?? -1] ?? null;
       await this.failItem(item.id, reason);
       this.addLog(
         `✗ Falhou (${reason})${friendlyMsg ? ` — ${friendlyMsg}` : ""}: discord.gg/${item.invite_code}`
@@ -314,7 +437,7 @@ export class OrgJoiner {
     }
 
     await this.failItem(item.id, "rate_limit_esgotado");
-    this.addLog(`✗ Rate limit esgotado após 3 tentativas: discord.gg/${item.invite_code}`);
+    this.addLog(`✗ Rate limit esgotado após ${attempts} tentativas: discord.gg/${item.invite_code}`);
   }
 
   private async solveHCaptcha(apiKey: string, sitekey: string, url: string): Promise<string | null> {
@@ -331,6 +454,14 @@ export class OrgJoiner {
     } catch {
       return null;
     }
+  }
+
+  private async doneItem(id: number, guildId: string | null, guildName: string | null): Promise<void> {
+    await query(
+      `UPDATE org_queue SET status = 'done', result_guild_id = $2, result_guild_name = $3, processed_at = NOW()
+       WHERE id = $1`,
+      [id, guildId, guildName],
+    );
   }
 
   private async failItem(id: number, reason: string): Promise<void> {
