@@ -1,27 +1,35 @@
 const BASE = "https://discord.com/api/v10";
 const BASE_V9 = "https://discord.com/api/v9";
 
-// x-context-properties: Discord envia "Accept Invite Page" ao aceitar convite pela página de invite
-function makeInviteContextHeader(inviteCode: string) {
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+
+/**
+ * x-context-properties para aceitar convite.
+ * Quando o guild_id é conhecido (via preview), inclui no payload —
+ * é o que o Discord Web envia ao aceitar da página de convite.
+ */
+function makeInviteContextHeader(guildId?: string | null) {
   return Buffer.from(
     JSON.stringify({
       location: "Accept Invite Page",
-      location_guild_id: null,
+      location_guild_id: guildId ?? null,
       location_channel_id: null,
       location_channel_type: null,
     })
   ).toString("base64");
 }
 
-// Headers que o cliente web do Discord envia — necessários para endpoints como /users/@me/message-requests
+/**
+ * x-super-properties — idêntico ao que o Chrome 125 + Discord Web envia.
+ * client_build_number: obtido do JS do Discord (atualizar periodicamente).
+ */
 const SUPER_PROPERTIES = Buffer.from(
   JSON.stringify({
     os: "Windows",
     browser: "Chrome",
     device: "",
     system_locale: "pt-BR",
-    browser_user_agent:
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    browser_user_agent: UA,
     browser_version: "125.0.0.0",
     os_version: "10",
     referrer: "https://discord.com/",
@@ -31,18 +39,38 @@ const SUPER_PROPERTIES = Buffer.from(
     release_channel: "stable",
     client_build_number: 321005,
     client_event_source: null,
+    design_id: 0,
   })
 ).toString("base64");
 
+/** Headers base enviados em TODAS as requisições. */
 const DISCORD_HEADERS = {
-  "user-agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+  "accept": "*/*",
+  "accept-language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+  "user-agent": UA,
+  "origin": "https://discord.com",
   "x-super-properties": SUPER_PROPERTIES,
   "x-discord-locale": "pt-BR",
   "x-discord-timezone": "America/Sao_Paulo",
-  "accept-language": "pt-BR,pt;q=0.9",
-  "origin": "https://discord.com",
+  "x-debug-options": "bugReporterEnabled",
+  // Browser security headers — navegador real sempre envia esses
+  "sec-fetch-dest": "empty",
+  "sec-fetch-mode": "cors",
+  "sec-fetch-site": "same-origin",
+  "sec-ch-ua": '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
+  "sec-ch-ua-mobile": "?0",
+  "sec-ch-ua-platform": '"Windows"',
 };
+
+/** Headers adicionais específicos para requests de invite (GET preview). */
+const INVITE_GET_HEADERS = {
+  "referer": "https://discord.com/",
+};
+
+function randomDelay(minMs: number, maxMs: number): Promise<void> {
+  const ms = Math.floor(minMs + Math.random() * (maxMs - minMs));
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -270,11 +298,16 @@ export class DiscordRest {
     );
   }
 
-  /** GET /invites/:code — preview do servidor antes de entrar */
+  /**
+   * GET /invites/:code — preview do servidor antes de entrar.
+   * Envia referer da homepage, igual ao browser quando o usuário acessa discord.gg/{code}.
+   */
   getInvite(code: string) {
     return this.request<{ guild?: { id: string; name: string }; code?: number }>(
       "GET",
-      `/invites/${code}?with_counts=true`,
+      `/invites/${code}?with_counts=true&with_expiration=true`,
+      undefined,
+      INVITE_GET_HEADERS,
     );
   }
 
@@ -289,27 +322,36 @@ export class DiscordRest {
     );
   }
 
-  /** POST /invites/:code — entra no servidor */
-  acceptInvite(code: string) {
+  /**
+   * POST /invites/:code — entra no servidor.
+   * guildId: quando conhecido (via preview), é incluído no x-context-properties
+   * para corresponder ao request real do Discord Web.
+   */
+  async acceptInvite(code: string, guildId?: string | null) {
+    // Delay humano antes do POST (500–1500ms) — evita detecção por velocidade
+    await randomDelay(500, 1500);
     return this.request<{ guild?: { id: string; name: string }; guild_id?: string }>(
       "POST",
       `/invites/${code}`,
       {},
       {
-        "x-context-properties": makeInviteContextHeader(code),
+        "x-context-properties": makeInviteContextHeader(guildId),
         "referer": `https://discord.com/invite/${code}`,
       },
     );
   }
 
-  /** POST /invites/:code com captcha resolvido */
-  acceptInviteWithCaptcha(code: string, captchaToken: string) {
+  /**
+   * POST /invites/:code com captcha resolvido.
+   */
+  async acceptInviteWithCaptcha(code: string, captchaToken: string, guildId?: string | null) {
+    await randomDelay(300, 800);
     return this.request<{ guild?: { id: string; name: string }; guild_id?: string }>(
       "POST",
       `/invites/${code}`,
       { captcha_key: captchaToken },
       {
-        "x-context-properties": makeInviteContextHeader(code),
+        "x-context-properties": makeInviteContextHeader(guildId),
         "referer": `https://discord.com/invite/${code}`,
       },
     );

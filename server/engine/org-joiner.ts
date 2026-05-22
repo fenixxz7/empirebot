@@ -308,11 +308,17 @@ export class OrgJoiner {
       }
     }
 
-    // ── Step 3: Attempt to join ───────────────────────────────────────────────
+    // ── Step 3: Attempt to join (até 3 tentativas com delays humanos) ───────────
     let attempts = 0;
     while (attempts < 3) {
       attempts++;
-      const res = await rest.acceptInvite(item.invite_code);
+      this.addLog(`↑ POST /invites/${item.invite_code} (tentativa ${attempts}/3)${guildId ? ` · guild=${guildId}` : ""}`);
+
+      const res = await rest.acceptInvite(item.invite_code, guildId);
+
+      // Debug: log status + body completo para diagnóstico
+      const rawBody = res.error ?? (res.data ? JSON.stringify(res.data) : "");
+      this.addLog(`↓ HTTP ${res.status}${rawBody ? ` · ${rawBody.slice(0, 200)}` : ""}`);
 
       // ── Success ──────────────────────────────────────────────────────────────
       if (res.status === 200 || res.status === 204) {
@@ -326,31 +332,39 @@ export class OrgJoiner {
 
       // ── Rate limit ───────────────────────────────────────────────────────────
       if (res.status === 429) {
-        let waitMs = 5_000;
-        try { waitMs = Math.min(30_000, ((res.data as any)?.retry_after ?? 5) * 1000 + 1000); } catch { /**/ }
-        this.addLog(`⏳ Rate limit — aguardando ${Math.round(waitMs / 1000)}s… (tentativa ${attempts}/3)`);
-        await sleep(waitMs);
+        let retryAfterMs = 5_000;
+        try {
+          const parsed = JSON.parse(res.error ?? "{}");
+          retryAfterMs = Math.min(30_000, ((parsed?.retry_after ?? 5) * 1000) + 1000);
+        } catch { /**/ }
+        this.addLog(`⏳ Rate limit — aguardando ${Math.round(retryAfterMs / 1000)}s…`);
+        await sleep(retryAfterMs);
         continue;
       }
 
       // ── CAPTCHA ──────────────────────────────────────────────────────────────
       if (res.status === 400) {
-        const captchaKey = (res.data as any)?.captcha_key;
+        let bodyParsed: any = {};
+        try { bodyParsed = JSON.parse(res.error ?? "{}"); } catch { /**/ }
+        const captchaKey = bodyParsed?.captcha_key;
         if (captchaKey) {
           if (!config.nopecha_key?.trim()) {
             await this.failItem(item.id, "captcha_sem_chave_nopecha");
             this.addLog(`✗ CAPTCHA detectado mas sem chave NopeCHA configurada.`);
             return;
           }
-          this.addLog(`🔒 CAPTCHA detectado — resolvendo via NopeCHA…`);
-          const sitekey = (res.data as any)?.captcha_sitekey ?? "a9b5fb07-92ff-493f-86fe-352a2803b3df";
+          this.addLog(`🔒 CAPTCHA detectado (sitekey=${bodyParsed?.captcha_sitekey ?? "?"}) — resolvendo via NopeCHA…`);
+          const sitekey = bodyParsed?.captcha_sitekey ?? "a9b5fb07-92ff-493f-86fe-352a2803b3df";
           const solved = await this.solveHCaptcha(config.nopecha_key.trim(), sitekey, "https://discord.com");
           if (!solved) {
             await this.failItem(item.id, "captcha_falhou");
             this.addLog(`✗ Falhou ao resolver CAPTCHA.`);
             return;
           }
-          const res2 = await rest.acceptInviteWithCaptcha(item.invite_code, solved);
+          this.addLog(`🔓 CAPTCHA resolvido — enviando POST com token…`);
+          const res2 = await rest.acceptInviteWithCaptcha(item.invite_code, solved, guildId);
+          const rawBody2 = res2.error ?? (res2.data ? JSON.stringify(res2.data) : "");
+          this.addLog(`↓ HTTP ${res2.status}${rawBody2 ? ` · ${rawBody2.slice(0, 200)}` : ""}`);
           if (res2.status === 200 || res2.status === 204) {
             const finalGuildId = (res2.data as any)?.guild?.id ?? guildId;
             const finalGuildName = (res2.data as any)?.guild?.name ?? guildName;
@@ -360,9 +374,8 @@ export class OrgJoiner {
             return;
           }
           const errCode2 = parseErrorCode(res2);
-          const reason2 = `HTTP_${res2.status}${errCode2 ? `_code_${errCode2}` : ""}`;
-          await this.failItem(item.id, reason2);
-          this.addLog(`✗ Falhou após resolver CAPTCHA (${reason2}): discord.gg/${item.invite_code}`);
+          await this.failItem(item.id, `HTTP_${res2.status}${errCode2 ? `_code_${errCode2}` : ""}`);
+          this.addLog(`✗ Falhou após resolver CAPTCHA (HTTP ${res2.status} · código ${errCode2 ?? "?"})`);
           return;
         }
         // 400 sem captcha
@@ -372,50 +385,50 @@ export class OrgJoiner {
         return;
       }
 
-      // ── 403 — Ban / permission / detection ───────────────────────────────────
+      // ── 403 — Ban / permission / anti-bot detection ───────────────────────────
       if (res.status === 403) {
         const errCode = parseErrorCode(res);
 
         if (errCode === 40007) {
-          // Before treating as ban, re-check membership.
-          // Discord sometimes returns 40007 as a false positive from anti-bot
-          // detection even when the join actually succeeded or the account is
-          // already a member.
+          // Re-verifica membership — 40007 pode ser falso positivo de detecção,
+          // especialmente quando o join tecnicamente funcionou mas o Discord
+          // retornou erro por comportamento suspeito.
           if (guildId) {
+            await sleep(1_500); // aguarda propagação
             const recheck = await rest.getGuildMember(guildId);
             if (recheck.status === 200) {
               await this.doneItem(item.id, guildId, guildName);
               this.counter++;
-              this.addLog(`✓ Entrou no servidor (40007 era falso positivo de detecção): ${guildName ?? item.invite_code}`);
+              this.addLog(`✓ Entrou (40007 era falso positivo — membro confirmado): ${guildName ?? item.invite_code}`);
               return;
             }
           }
 
-          // First attempt: wait and retry once (transient anti-bot detection)
-          if (attempts === 1) {
-            this.addLog(`⚠ Erro 40007 (tentativa ${attempts}) — pode ser detecção temporária. Aguardando 4s e tentando novamente…`);
-            await sleep(4_000);
+          // Retry com espera mais longa (detecção anti-bot transitória)
+          const waitSeconds = attempts === 1 ? 6 : 10;
+          if (attempts < 3) {
+            this.addLog(`⚠ 40007 tentativa ${attempts}/3 — aguardando ${waitSeconds}s antes de tentar novamente…`);
+            await sleep(waitSeconds * 1000);
             continue;
           }
 
-          // Second attempt still 40007: re-check membership one last time
+          // Última tentativa ainda 40007 — verifica membership uma última vez
           if (guildId) {
             const finalCheck = await rest.getGuildMember(guildId);
             if (finalCheck.status === 200) {
               await this.doneItem(item.id, guildId, guildName);
               this.counter++;
-              this.addLog(`✓ Conta está no servidor após retentativa (40007 era falso positivo): ${guildName ?? item.invite_code}`);
+              this.addLog(`✓ Entrou após retentativas (40007 resolvido como falso positivo): ${guildName ?? item.invite_code}`);
               return;
             }
           }
 
-          // Confirmed: real ban or unrecoverable detection block
           await this.failItem(item.id, "HTTP_403_code_40007_banido");
-          this.addLog(`✗ Conta banida deste servidor: ${guildName ?? item.invite_code}`);
+          this.addLog(`✗ Conta banida deste servidor após ${attempts} tentativas: ${guildName ?? item.invite_code}`);
           return;
         }
 
-        // Other known 403 codes
+        // Outros códigos 403 conhecidos
         const friendly = DISCORD_ERROR_MESSAGES[errCode ?? -1] ?? null;
         const reason403 = `HTTP_403${errCode ? `_code_${errCode}` : ""}`;
         await this.failItem(item.id, reason403);
@@ -425,7 +438,7 @@ export class OrgJoiner {
         return;
       }
 
-      // ── Generic error ─────────────────────────────────────────────────────────
+      // ── Erro genérico ─────────────────────────────────────────────────────────
       const errCode = parseErrorCode(res);
       const reason = `HTTP_${res.status}${errCode ? `_code_${errCode}` : ""}`;
       const friendlyMsg = DISCORD_ERROR_MESSAGES[errCode ?? -1] ?? null;
@@ -437,7 +450,7 @@ export class OrgJoiner {
     }
 
     await this.failItem(item.id, "rate_limit_esgotado");
-    this.addLog(`✗ Rate limit esgotado após ${attempts} tentativas: discord.gg/${item.invite_code}`);
+    this.addLog(`✗ Esgotado após ${attempts} tentativas: discord.gg/${item.invite_code}`);
   }
 
   private async solveHCaptcha(apiKey: string, sitekey: string, url: string): Promise<string | null> {
