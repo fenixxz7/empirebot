@@ -51,8 +51,8 @@ const SaveConfigBody = z.object({
   entry_cap_total_per_60s: z.coerce.number().int().min(0).max(200).optional().default(48),
   refusal_check_delay_ms: z.coerce.number().int().min(300).max(5000).optional().default(800),
   enable_60rpm_mode: z.boolean().optional().default(false),
-  active_queue_soft_limit: z.coerce.number().int().min(10).max(500).optional().default(120),
-  active_queue_hard_limit: z.coerce.number().int().min(10).max(500).optional().default(180),
+  active_queue_soft_limit: z.coerce.number().int().min(10).max(1000).optional().default(120),
+  active_queue_hard_limit: z.coerce.number().int().min(10).max(1000).optional().default(180),
   optimize_for_conversion: z.boolean().optional().default(false),
 });
 
@@ -271,8 +271,8 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
      Math.min(5000, Math.max(300, Number(refusal_check_delay_ms ?? 800))),
      Math.min(50, Math.max(0, Number(hot_org_extra_clicks ?? 10))),
      Boolean(enable_60rpm_mode ?? false),
-     Math.min(500, Math.max(10, Number(active_queue_soft_limit ?? 120))),
-     Math.min(500, Math.max(10, Number(active_queue_hard_limit ?? 180))),
+     Math.min(1000, Math.max(10, Number(active_queue_soft_limit ?? 120))),
+     Math.min(1000, Math.max(10, Number(active_queue_hard_limit ?? 180))),
      Boolean(optimize_for_conversion ?? false)]
   );
 

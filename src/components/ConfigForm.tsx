@@ -1101,19 +1101,19 @@ export function ConfigForm({
                 <div>
                   <p className="text-xs text-slate-400 mb-1">Soft limit (≥ só aceita com players)</p>
                   <input
-                    type="number" min={10} max={500} step={10}
+                    type="number" min={10} max={1000} step={10}
                     className="input text-center"
                     value={aqSoftLimit}
-                    onChange={(e) => setAqSoftLimit(Math.max(10, Math.min(500, Number(e.target.value))))}
+                    onChange={(e) => setAqSoftLimit(Math.max(10, Math.min(1000, Number(e.target.value))))}
                   />
                 </div>
                 <div>
                   <p className="text-xs text-slate-400 mb-1">Hard limit (≥ pausa total)</p>
                   <input
-                    type="number" min={10} max={500} step={10}
+                    type="number" min={10} max={1000} step={10}
                     className="input text-center"
                     value={aqHardLimit}
-                    onChange={(e) => setAqHardLimit(Math.max(10, Math.min(500, Number(e.target.value))))}
+                    onChange={(e) => setAqHardLimit(Math.max(10, Math.min(1000, Number(e.target.value))))}
                   />
                 </div>
               </div>
