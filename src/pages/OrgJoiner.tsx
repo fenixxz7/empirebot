@@ -96,10 +96,10 @@ export default function OrgJoiner({ isAdmin = false }: { isAdmin?: boolean }) {
     fetch("/api/instances")
       .then(r => r.json())
       .then((data: Instance[]) => {
-        // BOT3 nunca aparece no Bot Org; BOT X (BOT2) só aparece para admin
+        // BOT3 nunca aparece no Bot Org; BOT2 e BOT X só aparecem para admin
         const visible = data
           .filter(i => i.name !== "BOT3")
-          .filter(i => isAdmin || i.name !== "BOT2");
+          .filter(i => isAdmin || (i.name !== "BOT2" && i.name !== "BOT X"));
         setInstances(visible);
         if (visible.length > 0) setActiveId(visible[0]!.id);
       });

@@ -26,7 +26,8 @@ export function App({ isAdmin = false, onLogout }: { isAdmin?: boolean; onLogout
   async function reload() {
     try {
       const list = await api<InstanceState[]>("/api/instances");
-      setInstances(list);
+      const filtered = isAdmin ? list : list.filter(i => i.name !== "BOT X");
+      setInstances(filtered);
     } catch (e) {
       console.error(e);
     }

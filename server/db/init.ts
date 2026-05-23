@@ -495,7 +495,7 @@ export async function initDatabase(): Promise<void> {
   // Garante que ninguém ficou com fila "fantasma" entre boots
   await pool.query(`DELETE FROM active_queues`);
 
-  for (const botName of ["BOT1", "BOT2", "BOT3"]) {
+  for (const botName of ["BOT1", "BOT2", "BOT3", "BOT X"]) {
     const instances = await query<{ id: number }>(
       `INSERT INTO instances (name, running)
        VALUES ($1, FALSE)
