@@ -301,7 +301,7 @@ function sleep(ms: number) {
 }
 
 /** Retorna true se o erro indica acesso negado permanente (código 50001 ou ban). */
-function isPermanentAccessError(error: string | undefined): boolean {
+export function isPermanentAccessError(error: string | undefined): boolean {
   if (!error) return false;
   try {
     const parsed = JSON.parse(error);

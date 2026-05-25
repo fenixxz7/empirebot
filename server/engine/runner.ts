@@ -1,6 +1,6 @@
 import { query } from "../db/pool.js";
 import { DiscordRest, type DiscordMessage } from "../discord/rest.js";
-import { DiscoveryRateBudget } from "../discord/discovery.js";
+import { DiscoveryRateBudget, isPermanentAccessError } from "../discord/discovery.js";
 import { ACTIVE_QUEUE_TTL_THREAD_MS, ACTIVE_QUEUE_TTL_PRIVATE_MS } from "../lib/timings.js";
 import { recordGhostByType } from "../lib/orgDetection.js";
 
@@ -1448,7 +1448,7 @@ export class QueueRunner {
         } else if (r.status === 404) {
           // 404 na mensagem: canal provavelmente foi deletado — remove do buffer e agenda re-discovery
           this.evictCandidate(c.channel_id, c.message_id ?? "");
-          this.scheduleOrgRediscovery(c.org_id, c.org_name, token.token, "mensagem 404 ao ler (bg)");
+          this.scheduleOrgRediscovery(c.org_id, c.org_name, token.token, "mensagem 404 ao ler (bg)", token.tokenId, token.position);
           this.playerCache.set(`${c.channel_id}:${c.message_id}`, { count: 0, ts: Date.now() });
         }
       } catch {
@@ -1465,6 +1465,8 @@ export class QueueRunner {
     orgName: string,
     token: string,
     reason: string,
+    tokenId?: number,
+    tokenPos?: number,
   ): void {
     if (this.rediscoveryQueued.has(orgId)) return;
     this.rediscoveryQueued.add(orgId);
@@ -1495,6 +1497,21 @@ export class QueueRunner {
           const remSec = Math.ceil(this.discoveryBudget.remainingMs(guildId) / 1000);
           await this.manager.log(this.instanceId, "WARN", "discovery",
             `Re-discovery de ${orgName} (${reason}): rate limit 429 — cooldown de ${remSec}s aplicado.`);
+        } else if (!r.ok && isPermanentAccessError(r.error)) {
+          // Erro permanente (50001): token não tem acesso à guild — adiciona à blacklist
+          // para evitar re-tentativas infinitas a cada 30s.
+          if (tokenId !== undefined && tokenPos !== undefined) {
+            await this.blacklistOrgForToken(
+              tokenId,
+              tokenPos,
+              orgId,
+              orgName,
+              `re-discovery: sem acesso permanente (50001) — ${reason}`,
+            );
+          } else {
+            await this.manager.log(this.instanceId, "WARN", "discovery",
+              `Re-discovery de ${orgName} falhou com 50001 mas tokenId não disponível — não foi possível blacklistar.`);
+          }
         } else {
           await this.manager.log(
             this.instanceId,
@@ -1517,7 +1534,7 @@ export class QueueRunner {
           `Re-discovery de ${orgName} exceção: ${(err as Error).message}`,
         );
       } finally {
-        // Libera após 30s pra permitir nova re-descoberta se voltar a falhar
+        // Libera após 30s pra permitir nova re-descoberta se voltar a falhar (erros não-permanentes)
         setTimeout(() => this.rediscoveryQueued.delete(orgId), 30_000);
       }
     })();
@@ -1702,7 +1719,7 @@ export class QueueRunner {
       return false;
     } else if (r.status === 404 || (r.error ?? "").toLowerCase().includes("unknown message")) {
       // Mensagem da fila sumiu/mudou — agenda re-discovery dessa org
-      this.scheduleOrgRediscovery(ch.org_id, ch.org_name, token.token, `clique HTTP ${r.status}`);
+      this.scheduleOrgRediscovery(ch.org_id, ch.org_name, token.token, `clique HTTP ${r.status}`, token.tokenId, token.position);
       this.playerCache.delete(`${ch.channel_id}:${ch.message_id}`);
       return false;
     } else if (r.status === 401) {
