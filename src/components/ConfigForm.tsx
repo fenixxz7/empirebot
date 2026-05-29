@@ -1156,7 +1156,6 @@ export function ConfigForm({
       </Section>
       )}
 
-      {isAdmin && (
       <Section title="Apenas Filas Vazias">
         <div className="space-y-3">
           <div className="flex items-center gap-3">
@@ -1180,7 +1179,6 @@ export function ConfigForm({
           )}
         </div>
       </Section>
-      )}
 
       <Section title="Categorias permitidas">
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
