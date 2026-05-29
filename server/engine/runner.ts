@@ -66,6 +66,7 @@ interface CycleConfig {
   aqSoftLimit: number;
   aqHardLimit: number;
   optimizeForConversion: boolean;
+  onlyEmptyQueues: boolean;
 }
 
 const STARTUP_GRACE_MS = 5000;
@@ -569,6 +570,7 @@ export class QueueRunner {
       active_queue_soft_limit: number;
       active_queue_hard_limit: number;
       optimize_for_conversion: boolean;
+      only_empty_queues: boolean;
     }>(
       `SELECT delay_seconds, allowed_modes, allowed_categories, blocked_names,
               max_valor, token_strategy, token_strategy_n,
@@ -583,7 +585,8 @@ export class QueueRunner {
               enable_60rpm_mode,
               active_queue_soft_limit,
               active_queue_hard_limit,
-              optimize_for_conversion
+              optimize_for_conversion,
+              only_empty_queues
        FROM instance_configs
        WHERE instance_id = $1`,
       [this.instanceId],
@@ -622,6 +625,7 @@ export class QueueRunner {
       aqSoftLimit: Math.max(10, r?.active_queue_soft_limit ?? 120),
       aqHardLimit: Math.max(10, r?.active_queue_hard_limit ?? 180),
       optimizeForConversion: r?.optimize_for_conversion ?? false,
+      onlyEmptyQueues: r?.only_empty_queues ?? false,
     };
     this.configCache = { cfg, ts: Date.now() };
     return cfg;
@@ -1016,26 +1020,9 @@ export class QueueRunner {
       let pick: typeof ranked.candidates[number] | undefined;
       let pickedModeIdx = -1;
 
-      // Passo 1: percorre os modos em rotação procurando fila COM player.
-      if (playersSlot) {
-        for (let i = 0; i < orderedModes.length; i++) {
-          const m = orderedModes[i]!;
-          const hit = ranked.candidates.find(
-            (r) => r.players > 0 && (r.ch.mode ?? "") === m,
-          );
-          if (hit) { pick = hit; pickedModeIdx = i; break; }
-        }
-      }
-
-      // Passo 2: nenhum modo tinha player → percorre os modos procurando vazia.
-      // MAS: se a org já tem >=50% do max_queues ocupado por filas vazias paradas,
-      // bloqueia novas vazias (só permite com player). Evita encher de fila vazia
-      // que nunca vira partida e desperdiça os slots da org.
-      // Preferência 70/30: filas vazias só são selecionadas aqui 30% das vezes;
-      // nos outros 70% cai no Passo 3 (overflow) que prefere com-player se houver.
-      const emptiesForOrg = emptiesPerOrg.get(currentOrgId) ?? 0;
-      const emptyBlocked = maxForOrg > 0 && emptiesForOrg * 4 >= maxForOrg * 3;
-      if (!pick && effectiveNoPlayersSlot && !emptyBlocked && Math.random() < 0.60) {
+      // Modo "Apenas Filas Vazias": ignora completamente filas com players.
+      // Se não houver fila vazia disponível nesta org, pula para a próxima.
+      if (cfg.onlyEmptyQueues) {
         for (let i = 0; i < orderedModes.length; i++) {
           const m = orderedModes[i]!;
           const hit = ranked.candidates.find(
@@ -1043,25 +1030,59 @@ export class QueueRunner {
           );
           if (hit) { pick = hit; pickedModeIdx = i; break; }
         }
-      }
+        if (!pick) {
+          this.orgCursor = (this.orgCursor + 1) % totalOrgs;
+          attempts++;
+          continue;
+        }
+      } else {
+        // Passo 1: percorre os modos em rotação procurando fila COM player.
+        if (playersSlot) {
+          for (let i = 0; i < orderedModes.length; i++) {
+            const m = orderedModes[i]!;
+            const hit = ranked.candidates.find(
+              (r) => r.players > 0 && (r.ch.mode ?? "") === m,
+            );
+            if (hit) { pick = hit; pickedModeIdx = i; break; }
+          }
+        }
 
-      // Se a org está bloqueada pra vazia mas existem candidatos com player,
-      // pula (não desperdiça slots com vazia quando tem com-player disponível).
-      // MAS se NÃO há nenhum candidato com player nesta org, libera entrada em
-      // vazia mesmo bloqueada — melhor usar o slot do que deixar a org parada.
-      const hasAnyWithPlayers = ranked.candidates.some((r) => r.players > 0);
-      if (!pick && emptyBlocked && hasAnyWithPlayers) {
-        this.orgCursor = (this.orgCursor + 1) % totalOrgs;
-        attempts++;
-        continue;
-      }
+        // Passo 2: nenhum modo tinha player → percorre os modos procurando vazia.
+        // MAS: se a org já tem >=50% do max_queues ocupado por filas vazias paradas,
+        // bloqueia novas vazias (só permite com player). Evita encher de fila vazia
+        // que nunca vira partida e desperdiça os slots da org.
+        // Preferência 70/30: filas vazias só são selecionadas aqui 30% das vezes;
+        // nos outros 70% cai no Passo 3 (overflow) que prefere com-player se houver.
+        const emptiesForOrg = emptiesPerOrg.get(currentOrgId) ?? 0;
+        const emptyBlocked = maxForOrg > 0 && emptiesForOrg * 4 >= maxForOrg * 3;
+        if (!pick && effectiveNoPlayersSlot && !emptyBlocked && Math.random() < 0.60) {
+          for (let i = 0; i < orderedModes.length; i++) {
+            const m = orderedModes[i]!;
+            const hit = ranked.candidates.find(
+              (r) => r.players === 0 && (r.ch.mode ?? "") === m,
+            );
+            if (hit) { pick = hit; pickedModeIdx = i; break; }
+          }
+        }
 
-      // Passo 3: overflow — total < 10 e nenhum match preferencial → melhor disponível.
-      if (!pick) {
-        pick = ranked.candidates[0];
-        if (pick) {
-          const m = pick.ch.mode ?? "";
-          pickedModeIdx = orderedModes.indexOf(m);
+        // Se a org está bloqueada pra vazia mas existem candidatos com player,
+        // pula (não desperdiça slots com vazia quando tem com-player disponível).
+        // MAS se NÃO há nenhum candidato com player nesta org, libera entrada em
+        // vazia mesmo bloqueada — melhor usar o slot do que deixar a org parada.
+        const hasAnyWithPlayers = ranked.candidates.some((r) => r.players > 0);
+        if (!pick && emptyBlocked && hasAnyWithPlayers) {
+          this.orgCursor = (this.orgCursor + 1) % totalOrgs;
+          attempts++;
+          continue;
+        }
+
+        // Passo 3: overflow — total < 10 e nenhum match preferencial → melhor disponível.
+        if (!pick) {
+          pick = ranked.candidates[0];
+          if (pick) {
+            const m = pick.ch.mode ?? "";
+            pickedModeIdx = orderedModes.indexOf(m);
+          }
         }
       }
 

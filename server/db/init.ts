@@ -24,6 +24,11 @@ export async function initDatabase(): Promise<void> {
     `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS optimize_for_conversion BOOLEAN NOT NULL DEFAULT FALSE`,
   );
 
+  // Modo apenas filas vazias
+  await pool.query(
+    `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS only_empty_queues BOOLEAN NOT NULL DEFAULT FALSE`,
+  );
+
   // Garante colunas de orgs necessárias antes de qualquer query que as use
   await pool.query(
     `ALTER TABLE orgs ADD COLUMN IF NOT EXISTS discovery_blocked BOOLEAN NOT NULL DEFAULT FALSE`,

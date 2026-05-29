@@ -54,6 +54,7 @@ const SaveConfigBody = z.object({
   active_queue_soft_limit: z.coerce.number().int().min(10).max(1000).optional().default(120),
   active_queue_hard_limit: z.coerce.number().int().min(10).max(1000).optional().default(180),
   optimize_for_conversion: z.boolean().optional().default(false),
+  only_empty_queues: z.boolean().optional().default(false),
 });
 
 // Body do POST /:instanceId/import — formato JSON exportado.
@@ -110,6 +111,7 @@ configRouter.get("/:instanceId", asyncHandler(async (req, res) => {
     active_queue_soft_limit: number;
     active_queue_hard_limit: number;
     optimize_for_conversion: boolean;
+    only_empty_queues: boolean;
   }>(
     `SELECT category, allowed_categories, delay_seconds, rotation_minutes,
             allowed_modes, message_main, message_per_org, image_url, blocked_names,
@@ -122,7 +124,7 @@ configRouter.get("/:instanceId", asyncHandler(async (req, res) => {
             entry_cap_with_players_per_60s, entry_cap_empty_per_60s,
             entry_cap_total_per_60s, refusal_check_delay_ms,
             enable_60rpm_mode, active_queue_soft_limit, active_queue_hard_limit,
-            optimize_for_conversion
+            optimize_for_conversion, only_empty_queues
      FROM instance_configs WHERE instance_id = $1`,
     [id]
   );
@@ -202,6 +204,7 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
     active_queue_soft_limit,
     active_queue_hard_limit,
     optimize_for_conversion,
+    only_empty_queues,
   } = req.body;
 
   // allowed_categories pode chegar como array (UI) ou string CSV (terminal/api)
@@ -251,6 +254,7 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
          active_queue_soft_limit = $30,
          active_queue_hard_limit = $31,
          optimize_for_conversion = $32,
+         only_empty_queues = $33,
          updated_at = NOW()
      WHERE instance_id = $1`,
     [id, primaryCategory, allowedCategoriesStr,
@@ -273,7 +277,8 @@ configRouter.put("/:instanceId", validate({ body: SaveConfigBody }), asyncHandle
      Boolean(enable_60rpm_mode ?? false),
      Math.min(1000, Math.max(10, Number(active_queue_soft_limit ?? 120))),
      Math.min(1000, Math.max(10, Number(active_queue_hard_limit ?? 180))),
-     Boolean(optimize_for_conversion ?? false)]
+     Boolean(optimize_for_conversion ?? false),
+     Boolean(only_empty_queues ?? false)]
   );
 
   // Tokens: novo sistema — seleção por pool ID

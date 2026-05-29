@@ -94,6 +94,7 @@ type ConfigPayload = {
     active_queue_soft_limit?: number;
     active_queue_hard_limit?: number;
     optimize_for_conversion?: boolean;
+    only_empty_queues?: boolean;
   } | null;
   token_pool: TokenPoolEntry[];
   selected_token_ids: number[];
@@ -152,6 +153,7 @@ export function ConfigForm({
   const [aqSoftLimit, setAqSoftLimit] = useState(120);
   const [aqHardLimit, setAqHardLimit] = useState(180);
   const [optimizeForConversion, setOptimizeForConversion] = useState(false);
+  const [onlyEmptyQueues, setOnlyEmptyQueues] = useState(false);
   const [tokenStrategy, setTokenStrategy] = useState("single");
   const [tokenStrategyN, setTokenStrategyN] = useState(5);
   const [selectedOrgIds, setSelectedOrgIds] = useState<Set<number>>(new Set());
@@ -218,6 +220,7 @@ export function ConfigForm({
       setAqSoftLimit(Number(cfg.config.active_queue_soft_limit ?? 120));
       setAqHardLimit(Number(cfg.config.active_queue_hard_limit ?? 180));
       setOptimizeForConversion(Boolean((cfg.config as any).optimize_for_conversion ?? false));
+      setOnlyEmptyQueues(Boolean((cfg.config as any).only_empty_queues ?? false));
       setTokenStrategy(cfg.config.token_strategy ?? "single");
       setTokenStrategyN(Number(cfg.config.token_strategy_n ?? 5));
       const tv: TimingValues = {
@@ -549,6 +552,7 @@ export function ConfigForm({
           active_queue_soft_limit: aqSoftLimit,
           active_queue_hard_limit: aqHardLimit,
           optimize_for_conversion: optimizeForConversion,
+          only_empty_queues: onlyEmptyQueues,
         }),
       });
       await reload();
@@ -1145,6 +1149,32 @@ export function ConfigForm({
             <div className="rounded-xl border border-emerald-400/30 bg-emerald-500/5 p-3 space-y-2">
               <p className="text-xs text-emerald-300/80">
                 Ativa métricas de conversão por org (janela 15min), skip automático de orgs com ghost_rate alto (penalidade cold de 5min), pre-pass ponderado por taxa de conversão histórica, soft/hard limits independentes de 60rpm e log de eficiência a cada 60s.
+              </p>
+            </div>
+          )}
+        </div>
+      </Section>
+      )}
+
+      {isAdmin && (
+      <Section title="Apenas Filas Vazias">
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setOnlyEmptyQueues((v) => !v)}
+              className={`relative w-12 h-6 rounded-full transition-colors flex-shrink-0 ${onlyEmptyQueues ? "bg-accent" : "bg-white/10"}`}
+            >
+              <span className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white shadow transition-transform ${onlyEmptyQueues ? "translate-x-6" : "translate-x-0"}`} />
+            </button>
+            <span className={`text-sm font-medium ${onlyEmptyQueues ? "text-accent" : "text-slate-400"}`}>
+              {onlyEmptyQueues ? "Ativo — entra somente em filas sem players" : "Desativado (padrão)"}
+            </span>
+          </div>
+          {onlyEmptyQueues && (
+            <div className="rounded-xl border border-sky-400/30 bg-sky-500/5 p-3 space-y-2">
+              <p className="text-xs text-sky-300/80">
+                Com este modo ativo, o bot ignora todas as filas que já tenham players e entra somente em filas completamente vazias. Se não houver nenhuma fila vazia disponível em uma org, ela é pulada — sem fallback para filas com players.
               </p>
             </div>
           )}
