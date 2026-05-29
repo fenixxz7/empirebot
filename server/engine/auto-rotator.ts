@@ -1,5 +1,6 @@
 import { query } from "../db/pool.js";
 import { DiscordRest } from "../discord/rest.js";
+import { forceFullRediscovery } from "../discord/discovery.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -643,6 +644,12 @@ async function executeRotation(
     }
 
     console.log(`[auto-rotator] inst=${instanceId} rotação ${isFailover ? "FAILOVER " : ""}OK → ${candidate.nickname}`);
+
+    // Passo 9: Força re-discovery completo para todas as orgs — o novo token pode
+    // não estar mais em servers que o anterior estava (e vice-versa).
+    forceFullRediscovery(instanceId).catch(err =>
+      console.error(`[auto-rotator] inst=${instanceId} re-discovery pós-rotação falhou:`, err),
+    );
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

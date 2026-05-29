@@ -110,6 +110,7 @@ accountsRouter.get("/pool-by-instance", asyncHandler(async (_req, res) => {
     SELECT
       a.id, a.nickname, a.email, a.state,
       a.instance_id,
+      a.token_pool_id,
       a.consecutive_failures, a.failure_count, a.rotation_count,
       a.activated_at, a.last_active_at, a.cooldown_until, a.quarantine_until,
       a.account_lock, a.locked_by_instance, a.lock_expires_at,
@@ -121,16 +122,30 @@ accountsRouter.get("/pool-by-instance", asyncHandler(async (_req, res) => {
     ORDER BY a.id ASC
   `);
 
+  // Orgs bloqueadas por token (token_org_blacklist) — indexado por token_pool_id
+  const blacklistRows = await query<{ token_id: number; cnt: number; org_names: string[] }>(
+    `SELECT b.token_id, COUNT(*)::int AS cnt,
+            array_agg(o.name ORDER BY o.name) AS org_names
+     FROM token_org_blacklist b
+     JOIN orgs o ON o.id = b.org_id
+     GROUP BY b.token_id`,
+  );
+  const blacklistByToken = new Map<number, { cnt: number; org_names: string[] }>();
+  for (const r of blacklistRows) {
+    blacklistByToken.set(r.token_id, { cnt: r.cnt, org_names: r.org_names });
+  }
+
   // Calcula health para cada conta
   type RawAccount = {
     id: number; nickname: string; email: string | null; state: string;
-    instance_id: number | null;
+    instance_id: number | null; token_pool_id: number | null;
     consecutive_failures: number; failure_count: number; rotation_count: number;
     activated_at: string | null; last_active_at: string | null;
     token_status: string | null; cooldown_until: string | null; quarantine_until: string | null;
     account_lock: boolean; locked_by_instance: number | null; lock_expires_at: string | null;
     locked_by_instance_name: string | null;
     health_score: number; tier: string;
+    blacklisted_org_count: number; blacklisted_org_names: string[];
   };
 
   const allAccounts: RawAccount[] = rows.map(r => {
@@ -145,12 +160,15 @@ accountsRouter.get("/pool-by-instance", asyncHandler(async (_req, res) => {
       cooldown_until: r.cooldown_until as string | null,
       quarantine_until: r.quarantine_until as string | null,
     });
+    const tokenPoolId = r.token_pool_id != null ? Number(r.token_pool_id) : null;
+    const bl = tokenPoolId != null ? (blacklistByToken.get(tokenPoolId) ?? null) : null;
     return {
       id: Number(r.id),
       nickname: String(r.nickname),
       email: r.email as string | null,
       state: String(r.state),
       instance_id: r.instance_id != null ? Number(r.instance_id) : null,
+      token_pool_id: tokenPoolId,
       consecutive_failures: Number(r.consecutive_failures ?? 0),
       failure_count: Number(r.failure_count ?? 0),
       rotation_count: Number(r.rotation_count ?? 0),
@@ -165,6 +183,8 @@ accountsRouter.get("/pool-by-instance", asyncHandler(async (_req, res) => {
       locked_by_instance_name: r.locked_by_instance_name as string | null,
       health_score: score,
       tier: calcTier(score),
+      blacklisted_org_count: bl?.cnt ?? 0,
+      blacklisted_org_names: bl?.org_names ?? [],
     };
   });
 
@@ -281,6 +301,8 @@ accountsRouter.get("/pool-by-instance", asyncHandler(async (_req, res) => {
         in_quarantine: a.in_quarantine,
         locked_by_other: a.locked_by_other,
         locked_by_instance_name: a.locked_by_instance_name,
+        blacklisted_org_count: a.blacklisted_org_count,
+        blacklisted_org_names: a.blacklisted_org_names,
       })),
     };
   });

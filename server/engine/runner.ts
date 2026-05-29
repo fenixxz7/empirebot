@@ -189,6 +189,8 @@ export class QueueRunner {
   private orgRateLimitCooldowns = new Map<string, number>();
   // Contador acumulado de sem_candidatos entre diags de 30s
   private semCandidatosTotal = 0;
+  // Contador acumulado de erros 10004/ignorados (org inválida) — exposto no [60rpm diag]
+  private ignoredCount10004 = 0;
   // Métricas de conversão por org (janela deslizante de 15min)
   private orgJoinTs = new Map<number, number[]>();
   private orgMatchTs = new Map<number, number[]>();
@@ -1884,6 +1886,7 @@ export class QueueRunner {
     if (this.safetyEvents.length > 400) {
       this.safetyEvents = this.safetyEvents.filter(e => now - e.ts < 120_000);
     }
+    if (type === "ignored") this.ignoredCount10004++;
   }
 
   /**
@@ -1984,7 +1987,7 @@ export class QueueRunner {
       ` | send_ok=${sendRate}` +
       ` | buf=${bufValid}/${bufTotal}` +
       ` | sem_cand=${semCand}` +
-      ` | disc_429=${disc429} disc_cooldowns=${discCooldowns}` +
+      ` | disc_429=${disc429} disc_10004=${this.ignoredCount10004} disc_cooldowns=${discCooldowns}` +
       (cooldownSec > 0 ? ` | cooldown=${cooldownSec}s` : "") +
       (criticalEvts > 0 ? ` | critical_err=${criticalEvts}` : "") +
       (reasons ? ` | blocked: ${reasons}` : "") +
@@ -2013,7 +2016,21 @@ export class QueueRunner {
     const orgIds = cfg.selected_org_ids;
     const orgWithChannels = new Set(cached.map(c => c.org_id));
     const orgsWithChannels = orgIds.filter(id => orgWithChannels.has(id)).length;
-    const orgsWithoutChannels = orgIds.filter(id => !orgWithChannels.has(id)).length;
+    const orgIdsWithoutCh = orgIds.filter(id => !orgWithChannels.has(id));
+    const orgsWithoutChannels = orgIdsWithoutCh.length;
+
+    // Busca os nomes das orgs sem canais para facilitar diagnóstico
+    let semChOrgNames = "";
+    if (orgIdsWithoutCh.length > 0) {
+      try {
+        const nameRows = await query<{ id: number; name: string }>(
+          `SELECT id, name FROM orgs WHERE id = ANY($1)`,
+          [orgIdsWithoutCh],
+        );
+        const nameMap = new Map(nameRows.map(r => [r.id, r.name]));
+        semChOrgNames = orgIdsWithoutCh.map(id => nameMap.get(id) ?? `#${id}`).join(" ");
+      } catch { /* não bloqueia o diag se a query falhar */ }
+    }
 
     // Orgs blacklistadas para qualquer token desta instância
     let totalBlacklistedOrgs = 0;
@@ -2063,6 +2080,7 @@ export class QueueRunner {
       ` | blacklisted_org_token_pairs=${totalBlacklistedOrgs}` +
       ` | cache_ch=${cached.length} buf_valid=${bufValid.length} buf_exp=${bufExpired.length}` +
       ` | ttl_avg=${ttlAvgSec}s` +
+      (semChOrgNames ? ` | sem_ch_orgs: ${semChOrgNames}` : "") +
       (catStr ? ` | por_cat: ${catStr}` : "") +
       (topOrgs ? ` | top_orgs: ${topOrgs}` : ""),
     );

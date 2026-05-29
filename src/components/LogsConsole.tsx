@@ -213,12 +213,25 @@ export function LogsConsole({ instanceId }: { instanceId: number }) {
             /^(gateway|engine|discovery|config|control|worker|match)$/.test(r.source)
               ? `src src-${r.source}`
               : "src src-default";
+          const disc10004 = (() => {
+            if (!r.message.includes("disc_10004=")) return 0;
+            const m = r.message.match(/disc_10004=(\d+)/);
+            return m ? parseInt(m[1]!, 10) : 0;
+          })();
+          const highDisc10004 = disc10004 > 5;
           return (
-            <div key={r.id} className={`log-line log-${r.level}`}>
+            <div
+              key={r.id}
+              className={`log-line log-${r.level}${highDisc10004 ? " ring-1 ring-orange-500/30 bg-orange-500/5 rounded" : ""}`}
+              title={highDisc10004 ? `⚠ ${disc10004} erros 10004 (Unknown Guild) — token pode ter saído de ${disc10004} servidores` : undefined}
+            >
               <span className="log-time">[{hh}:{mm}:{ss}]</span>{" "}
               <span className={`lvl-${r.level} font-semibold`}>{r.level}</span>{" "}
               {r.source && <span className={srcCls}>{r.source}</span>}{" "}
               <span>{r.message}</span>
+              {highDisc10004 && (
+                <span className="ml-2 text-[9px] font-bold text-orange-400 uppercase tracking-wide">⚠ {disc10004}×10004</span>
+              )}
             </div>
           );
         })}

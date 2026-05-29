@@ -256,6 +256,8 @@ interface PoolAccountEntry {
   in_quarantine: boolean;
   locked_by_other: boolean;
   locked_by_instance_name: string | null;
+  blacklisted_org_count?: number;
+  blacklisted_org_names?: string[];
 }
 
 interface InstancePoolSummary {
@@ -587,6 +589,21 @@ function PoolAccountRow({ a, onGoTo }: { a: PoolAccountEntry; onGoTo?: () => voi
         {a.email && <p className="text-slate-600 truncate mt-0.5">{a.email}</p>}
         {!a.is_available && a.unavailable_reasons.length > 0 && (
           <p className="text-rose-400/80 mt-0.5 truncate">⚠ {a.unavailable_reasons.join(" · ")}</p>
+        )}
+        {(a.blacklisted_org_count ?? 0) > 0 && (
+          <div className="mt-1 group relative inline-block">
+            <span className="text-[9px] px-1.5 py-0.5 rounded bg-orange-500/15 text-orange-400 ring-1 ring-orange-400/20 font-semibold cursor-default select-none">
+              🚫 {a.blacklisted_org_count} org{(a.blacklisted_org_count ?? 0) !== 1 ? "s" : ""} bloqueada{(a.blacklisted_org_count ?? 0) !== 1 ? "s" : ""} p/ token
+            </span>
+            {(a.blacklisted_org_names ?? []).length > 0 && (
+              <div className="absolute left-0 bottom-full mb-1 z-50 hidden group-hover:block min-w-[160px] max-w-[260px] rounded-lg border border-white/[0.08] bg-navy-900 shadow-xl p-2">
+                <p className="text-[9px] text-slate-500 uppercase tracking-wider mb-1">Orgs bloqueadas por token</p>
+                {(a.blacklisted_org_names ?? []).map(name => (
+                  <p key={name} className="text-[11px] text-orange-300 leading-5">{name}</p>
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </div>
       <div className="w-20 shrink-0">

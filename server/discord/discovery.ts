@@ -463,3 +463,49 @@ export async function runAutoDiscoveryForInstance(
 export function pluralCanal(n: number): string {
   return n === 1 ? "canal" : "canais";
 }
+
+/**
+ * Força um re-discovery COMPLETO para todas as orgs de uma instância, incluindo
+ * as que já foram descobertas antes (last_discovered_at IS NOT NULL).
+ * Usado após rotação de token para garantir que o novo token consegue ver todas as orgs.
+ */
+export async function forceFullRediscovery(instanceId: number): Promise<void> {
+  const resetResult = await query<{ count: string }>(
+    `WITH updated AS (
+       UPDATE orgs SET last_discovered_at = NULL
+       WHERE last_discovered_at IS NOT NULL
+         AND id IN (SELECT org_id FROM instance_orgs WHERE instance_id = $1)
+       RETURNING id
+     ) SELECT COUNT(*)::text AS count FROM updated`,
+    [instanceId],
+  );
+  const resetCount = Number(resetResult[0]?.count ?? 0);
+
+  await query(
+    `INSERT INTO logs (instance_id, level, source, message) VALUES ($1, 'INFO', 'discovery', $2)`,
+    [instanceId, `[re-discovery] pós-rotação: ${resetCount} org(s) resetadas para re-scan com novo token`],
+  );
+
+  if (resetCount === 0) return;
+
+  const tokenRows = await query<{ id: number; value: string }>(
+    `SELECT tp.id, tp.value
+     FROM instance_token_selection its
+     JOIN token_pool tp ON tp.id = its.token_pool_id
+     WHERE its.instance_id = $1
+     ORDER BY its.position ASC
+     LIMIT 1`,
+    [instanceId],
+  );
+
+  if (tokenRows.length === 0) {
+    await query(
+      `INSERT INTO logs (instance_id, level, source, message) VALUES ($1, 'WARN', 'discovery', $2)`,
+      [instanceId, `[re-discovery] nenhum token selecionado para a instância — re-scan adiado`],
+    );
+    return;
+  }
+
+  const { id: tokenId, value: token } = tokenRows[0]!;
+  await runAutoDiscoveryForInstance(instanceId, tokenId, token);
+}
