@@ -1,8 +1,14 @@
 import { Router } from "express";
 import { query } from "../db/pool.js";
-import { discoverOrg, type DiscoveryResult } from "../discord/discovery.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { manager } from "../worker/manager.js";
+import { spawn } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const WORKER_PATH = path.join(__dirname, "..", "scripts", "discovery-worker.ts");
+const TSX_BIN = path.join(__dirname, "..", "..", "node_modules", ".bin", "tsx");
 
 export const discoveryRouter = Router();
 
@@ -57,6 +63,12 @@ discoveryRouter.post("/:instanceId", asyncHandler(async (req, res) => {
       .json({ error: "Nenhuma org selecionada tem guild_id preenchido" });
   }
 
+  // Reseta last_discovered_at das orgs que serão varridas
+  await query(
+    `UPDATE orgs SET last_discovered_at = NULL WHERE id = ANY($1::int[])`,
+    [orgs.map((o) => o.id)],
+  );
+
   // Pausa o motor de cliques enquanto a varredura roda
   const runnerRunning = manager.isRunning(instanceId);
   if (runnerRunning) {
@@ -68,66 +80,60 @@ discoveryRouter.post("/:instanceId", asyncHandler(async (req, res) => {
     instanceId,
     "INFO",
     "discovery",
-    `Iniciando descoberta de ${orgs.length} org(s)…`,
+    `Iniciando descoberta de ${orgs.length} org(s) em processo separado…`,
   );
 
-  // Reseta last_discovered_at das orgs que serão varridas para forçar re-descoberta
-  // automática no próximo boot, caso os canais sejam perdidos novamente.
-  if (orgs.length > 0) {
-    await query(
-      `UPDATE orgs SET last_discovered_at = NULL WHERE id = ANY($1::int[])`,
-      [orgs.map((o) => o.id)],
-    );
-  }
-
-  // Responde imediatamente — discovery roda em background para não travar o servidor
+  // Responde imediatamente — discovery roda em processo filho para não travar o servidor
   res.json({ ok: true, started: true, count: orgs.length });
 
-  // Background: processa uma org por vez com pausa entre elas para dar ao GC tempo de limpar
-  setImmediate(async () => {
-    try {
-      for (const o of orgs) {
-        try {
-          const r = await discoverOrg(token, o.id, o.guild_id!);
-          if (r.ok) {
-            await query(
-              `UPDATE orgs SET last_discovered_at = NOW() WHERE id = $1`,
-              [o.id],
-            );
-            await log(
-              instanceId,
-              "INFO",
-              "discovery",
-              `${o.name}: ${r.channels_found} ${r.channels_found === 1 ? "canal" : "canais"} escaneado(s), ${r.queues_saved} fila(s) cadastradas`,
-            );
-          } else {
-            await log(
-              instanceId,
-              "ERROR",
-              "discovery",
-              `${o.name}: falha (${r.error ?? "erro"})`,
-            );
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          await log(
-            instanceId,
-            "ERROR",
-            "discovery",
-            `${o.name}: exceção — ${msg}`,
-          );
-        }
-        // Pausa entre orgs para liberar memória antes da próxima guild
-        await new Promise((r) => setTimeout(r, 1500));
-      }
-    } finally {
-      if (runnerRunning) {
-        manager.resumeRunner(instanceId);
-        await log(instanceId, "INFO", "discovery", "Descoberta concluída — cliques retomados.");
-      } else {
-        await log(instanceId, "INFO", "discovery", "Descoberta concluída.");
-      }
+  // Spawn do worker com limite de memória próprio (256 MB), isolado do servidor principal
+  const workerEnv = {
+    ...process.env,
+    NODE_OPTIONS: "--max-old-space-size=256",
+  };
+
+  const worker = spawn(TSX_BIN, [WORKER_PATH], {
+    env: workerEnv,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  const payload = JSON.stringify({
+    token,
+    instanceId,
+    orgs: orgs.map((o) => ({ id: o.id, name: o.name, guild_id: o.guild_id! })),
+  });
+
+  worker.stdin.write(payload);
+  worker.stdin.end();
+
+  worker.stderr.on("data", (chunk: Buffer) => {
+    const text = chunk.toString().trim();
+    if (text) console.error("[discovery-worker stderr]", text);
+  });
+
+  worker.on("close", async (code, signal) => {
+    const exitDesc = signal ? `sinal ${signal}` : `código ${code ?? "?"}`;
+    if (code !== 0) {
+      await log(
+        instanceId,
+        "ERROR",
+        "discovery",
+        `Processo de descoberta encerrado inesperadamente (${exitDesc}). Verifique os logs acima.`,
+      );
+    } else {
+      await log(instanceId, "INFO", "discovery", "Descoberta concluída.");
     }
+
+    if (runnerRunning) {
+      manager.resumeRunner(instanceId);
+      await log(instanceId, "INFO", "discovery", "Cliques retomados.");
+    }
+  });
+
+  worker.on("error", async (err) => {
+    console.error("[discovery-worker] erro ao iniciar:", err);
+    await log(instanceId, "ERROR", "discovery", `Falha ao iniciar worker: ${err.message}`);
+    if (runnerRunning) manager.resumeRunner(instanceId);
   });
 }));
 
