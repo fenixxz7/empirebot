@@ -224,7 +224,7 @@ export async function discoverOrg(
     candidatesScanned++;
     const channelCategory = detectCategory(ch.name);
 
-    await sleep(150);
+    await sleep(300);
 
     const { data: rawMsgs } = await rest.channelMessages(ch.id, 50);
     if (!rawMsgs || rawMsgs.length === 0) continue;
@@ -304,7 +304,7 @@ export async function discoverOrg(
     }
 
     // Pausa extra a cada canal para dar tempo ao GC limpar
-    await sleep(50);
+    await sleep(200);
   }
 
   return {

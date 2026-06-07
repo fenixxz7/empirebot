@@ -13,9 +13,11 @@ discoveryRouter.post("/:instanceId", asyncHandler(async (req, res) => {
     : null;
 
   const tokens = await query<{ value: string }>(
-    `SELECT value FROM tokens
-     WHERE instance_id = $1 AND status = 'connected'
-     ORDER BY position ASC LIMIT 1`,
+    `SELECT tp.value
+     FROM instance_token_selection its
+     JOIN token_pool tp ON tp.id = its.token_pool_id
+     WHERE its.instance_id = $1 AND tp.status = 'connected'
+     ORDER BY its.position ASC LIMIT 1`,
     [instanceId],
   );
   const token = tokens[0]?.value;
@@ -116,7 +118,7 @@ discoveryRouter.post("/:instanceId", asyncHandler(async (req, res) => {
           );
         }
         // Pausa entre orgs para liberar memória antes da próxima guild
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 1500));
       }
     } finally {
       if (runnerRunning) {
