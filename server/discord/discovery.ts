@@ -190,8 +190,8 @@ export async function discoverOrg(
   guildId: string,
 ): Promise<DiscoveryResult> {
   const rest = new DiscordRest(token);
-  const { status, data: channels, error } = await rest.listGuildChannels(guildId);
-  if (!channels) {
+  const { status, data: rawChannels, error } = await rest.listGuildChannels(guildId);
+  if (!rawChannels) {
     const was_rate_limited = status === 429 ||
       (error ?? "").includes("rate_limited");
     return {
@@ -205,12 +205,18 @@ export async function discoverOrg(
     };
   }
 
+  // Descarta permission_overwrites e outros campos pesados imediatamente —
+  // numa guild grande esses arrays podem ser MB de dados desnecessários.
+  const channels = rawChannels
+    .filter((ch) => ch.type === 0)
+    .map((ch) => ({ id: ch.id, name: ch.name, type: ch.type }));
+  // Libera o array original para GC
+  (rawChannels as unknown as null[])[0] = null!;
+
   let queuesSaved = 0;
   let candidatesScanned = 0;
 
   for (const ch of channels) {
-    if (ch.type !== 0) continue;
-
     const modeFromName = detectMode(ch.name);
     const looksLikeQueue = !!modeFromName || /\bfila\b/i.test(ch.name);
     if (!looksLikeQueue) continue;
@@ -218,14 +224,18 @@ export async function discoverOrg(
     candidatesScanned++;
     const channelCategory = detectCategory(ch.name);
 
-    await sleep(120);
+    await sleep(150);
 
-    const { data: msgs } = await rest.channelMessages(ch.id, 50);
-    if (!msgs || msgs.length === 0) continue;
+    const { data: rawMsgs } = await rest.channelMessages(ch.id, 50);
+    if (!rawMsgs || rawMsgs.length === 0) continue;
 
-    const queueMsgs = msgs.filter(
+    // Filtra apenas mensagens com botões e extrai só o que precisa
+    const queueMsgs = rawMsgs.filter(
       (m) => Array.isArray(m.components) && m.components.length > 0,
     );
+    // Libera mensagens sem botões imediatamente
+    rawMsgs.length = 0;
+
     if (queueMsgs.length === 0) continue;
 
     const seenMsgIds: string[] = [];
@@ -245,6 +255,12 @@ export async function discoverOrg(
       const applicationId = queueMsg.author?.id ?? null;
       const embedTitle = extractEmbedTitle(queueMsg);
       const embedValor = extractEmbedValor(queueMsg);
+
+      // Extração concluída — libera o objeto de mensagem para GC
+      const msgId = queueMsg.id;
+      const msgContent = queueMsg.content;
+      (queueMsg as unknown as Record<string, unknown>).embeds = null;
+      (queueMsg as unknown as Record<string, unknown>).components = null;
 
       await query(
         `INSERT INTO org_channels (org_id, channel_id, channel_name, category, mode,
@@ -266,14 +282,15 @@ export async function discoverOrg(
           ch.name,
           channelCategory,
           mode,
-          queueMsg.id,
+          msgId,
           embedTitle,
           embedValor,
           applicationId,
           JSON.stringify(buttons),
         ],
       );
-      seenMsgIds.push(queueMsg.id);
+      void msgContent; // usado acima indiretamente, mantém referência limpa
+      seenMsgIds.push(msgId);
       queuesSaved++;
     }
 
@@ -285,6 +302,9 @@ export async function discoverOrg(
         [orgId, ch.id, seenMsgIds],
       );
     }
+
+    // Pausa extra a cada canal para dar tempo ao GC limpar
+    await sleep(50);
   }
 
   return {

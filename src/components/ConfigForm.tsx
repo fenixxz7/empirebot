@@ -339,22 +339,21 @@ export function ConfigForm({
 
   async function forceRediscover() {
     setRediscovering(true);
-    setFeedback("Forçando redescoberta de canais…");
+    setFeedback("Iniciando redescoberta de canais…");
     try {
-      const r = await api<{ ok: boolean; results: { ok: boolean; channels_found?: number; queues_saved?: number; error?: string }[] }>(
+      const r = await api<{ ok: boolean; started?: boolean; count?: number }>(
         `/api/discovery/${instanceId}`,
         { method: "POST", body: JSON.stringify({}) },
       );
-      await reloadOrgs();
-      const totalCh = (r.results ?? []).reduce((s, x) => s + (x.channels_found ?? 0), 0);
-      const totalQ = (r.results ?? []).reduce((s, x) => s + (x.queues_saved ?? 0), 0);
-      const n = r.results?.length ?? 0;
-      if (n === 0) {
-        setFeedback("Nenhuma org com guild_id configurado para descobrir.");
-      } else {
-        setFeedback(`Redescoberta concluída: ${totalCh} canal(is) em ${n} org(s), ${totalQ} fila(s) cadastrada(s).`);
+      if (r.ok) {
+        const n = r.count ?? 0;
+        setFeedback(
+          n === 0
+            ? "Nenhuma org com guild_id configurado para descobrir."
+            : `Redescoberta iniciada para ${n} org(s) — acompanhe o progresso nos logs.`,
+        );
       }
-      setTimeout(() => setFeedback(null), 6000);
+      setTimeout(() => setFeedback(null), 8000);
     } catch (e) {
       setFeedback(e instanceof Error ? e.message : "Erro ao redescobrir");
     } finally {

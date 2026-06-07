@@ -78,60 +78,55 @@ discoveryRouter.post("/:instanceId", asyncHandler(async (req, res) => {
     );
   }
 
-  const results: DiscoveryResult[] = [];
-  try {
-    for (const o of orgs) {
-      try {
-        const r = await discoverOrg(token, o.id, o.guild_id!);
-        results.push(r);
-        if (r.ok) {
-          await query(
-            `UPDATE orgs SET last_discovered_at = NOW() WHERE id = $1`,
-            [o.id],
-          );
-          await log(
-            instanceId,
-            "INFO",
-            "discovery",
-            `${o.name}: ${r.channels_found} ${r.channels_found === 1 ? "canal" : "canais"} escaneado(s), ${r.queues_saved} fila(s) cadastradas`,
-          );
-        } else {
+  // Responde imediatamente — discovery roda em background para não travar o servidor
+  res.json({ ok: true, started: true, count: orgs.length });
+
+  // Background: processa uma org por vez com pausa entre elas para dar ao GC tempo de limpar
+  setImmediate(async () => {
+    try {
+      for (const o of orgs) {
+        try {
+          const r = await discoverOrg(token, o.id, o.guild_id!);
+          if (r.ok) {
+            await query(
+              `UPDATE orgs SET last_discovered_at = NOW() WHERE id = $1`,
+              [o.id],
+            );
+            await log(
+              instanceId,
+              "INFO",
+              "discovery",
+              `${o.name}: ${r.channels_found} ${r.channels_found === 1 ? "canal" : "canais"} escaneado(s), ${r.queues_saved} fila(s) cadastradas`,
+            );
+          } else {
+            await log(
+              instanceId,
+              "ERROR",
+              "discovery",
+              `${o.name}: falha (${r.error ?? "erro"})`,
+            );
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
           await log(
             instanceId,
             "ERROR",
             "discovery",
-            `${o.name}: falha (${r.error ?? "erro"})`,
+            `${o.name}: exceção — ${msg}`,
           );
         }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        results.push({
-          ok: false,
-          org_id: o.id,
-          guild_id: o.guild_id ?? "",
-          channels_found: 0,
-          queues_saved: 0,
-          error: msg,
-        });
-        await log(
-          instanceId,
-          "ERROR",
-          "discovery",
-          `${o.name}: exceção — ${msg}`,
-        );
+        // Pausa entre orgs para liberar memória antes da próxima guild
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    } finally {
+      if (runnerRunning) {
+        manager.resumeRunner(instanceId);
+        await log(instanceId, "INFO", "discovery", "Descoberta concluída — cliques retomados.");
+      } else {
+        await log(instanceId, "INFO", "discovery", "Descoberta concluída.");
       }
     }
-  } finally {
-    // Retoma cliques independente de erro
-    if (runnerRunning) {
-      manager.resumeRunner(instanceId);
-      await log(instanceId, "INFO", "discovery", "Descoberta concluída — cliques retomados.");
-    } else {
-      await log(instanceId, "INFO", "discovery", "Descoberta concluída.");
-    }
-  }
-
-  res.json({ ok: true, results });
+  });
 }));
 
 async function log(
