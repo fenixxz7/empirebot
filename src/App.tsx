@@ -8,7 +8,6 @@ import { ConfigForm } from "@/components/ConfigForm";
 import { LogsConsole } from "@/components/LogsConsole";
 import { BlacklistPanel } from "@/components/BlacklistPanel";
 import { SendErrorsPanel } from "@/components/SendErrorsPanel";
-import { MessageOverridesPanel } from "@/components/MessageOverridesPanel";
 import { Accordion } from "@/components/Accordion";
 import OrgJoiner from "@/pages/OrgJoiner";
 
@@ -256,14 +255,6 @@ export function App({ isAdmin = false, onLogout }: { isAdmin?: boolean; onLogout
                   defaultOpen={false}
                 >
                   <SendErrorsPanel instanceId={instance.id} />
-                </Accordion>
-
-                <Accordion
-                  title="Mensagens alternativas por org (anti-AutoMod)"
-                  icon={<SparkleIcon className="w-4 h-4" />}
-                  defaultOpen={false}
-                >
-                  <MessageOverridesPanel instanceId={instance.id} />
                 </Accordion>
 
                 <Accordion

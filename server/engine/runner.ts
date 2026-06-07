@@ -196,8 +196,6 @@ export class QueueRunner {
   private orgJoinTs = new Map<number, number[]>();
   private orgMatchTs = new Map<number, number[]>();
   private orgGhostTs = new Map<number, number[]>();
-  // Orgs em penalidade cold (ghost_rate > 50% → pausa 5min)
-  private coldOrgs = new Map<number, number>(); // orgId → thawAt
   private lastEfficiencyLog = 0;
   /** Limite de cliques comprometido no primeiro clique da sessão por org —
    *  evita o bug "clicks concluídos 9/5" causado por variação de isHotOrg entre ticks. */
@@ -245,7 +243,6 @@ export class QueueRunner {
     this.orgJoinTs.clear();
     this.orgMatchTs.clear();
     this.orgGhostTs.clear();
-    this.coldOrgs.clear();
     this.lastEfficiencyLog = 0;
     this.orgClickLimits.clear();
     this.timer = setTimeout(() => this.tick(), STARTUP_GRACE_MS);
@@ -310,8 +307,6 @@ export class QueueRunner {
     arr.push(Date.now());
     this.orgGhostTs.set(orgId, arr);
     this.pruneOrgMetric(this.orgGhostTs, orgId);
-    // Verifica se org deve entrar em cold (ghost_rate > 50% na janela de 10min)
-    this.maybeFreeze(orgId);
   }
 
   /** Registra uma conversão (match confirmado) para a org. Chamado pelo Manager. */
@@ -342,39 +337,6 @@ export class QueueRunner {
     );
   }
 
-  /** Verifica se a org deve entrar em cold (ghost_rate > 50% na janela de 10min). */
-  private maybeFreeze(orgId: number): void {
-    const m = calcConvMetrics(
-      this.orgJoinTs.get(orgId) ?? [],
-      this.orgMatchTs.get(orgId) ?? [],
-      this.orgGhostTs.get(orgId) ?? [],
-      10 * 60_000,
-    );
-    // Só aplica cold se há dados suficientes (≥10 joins na janela) e ghost_rate expressivo
-    if (m.joins >= 10 && m.ghost_rate > 0.7) {
-      const thawAt = Date.now() + 5 * 60_000;
-      const existing = this.coldOrgs.get(orgId) ?? 0;
-      if (thawAt > existing) {
-        this.coldOrgs.set(orgId, thawAt);
-        void this.manager.log(
-          this.instanceId, "WARN", "engine",
-          `Org ${orgId} em penalidade cold (ghost_rate=${Math.round(m.ghost_rate * 100)}% em 10min) — pausa 5min.`,
-        );
-      }
-    }
-  }
-
-  /** Retorna true se a org está em penalidade cold (ghost_rate alta). */
-  private isOrgCold(orgId: number): boolean {
-    const thawAt = this.coldOrgs.get(orgId);
-    if (!thawAt) return false;
-    if (Date.now() >= thawAt) {
-      this.coldOrgs.delete(orgId);
-      return false;
-    }
-    return true;
-  }
-
   /** Emite log de eficiência (conversão, ghosts) de todas as orgs a cada 60s. */
   private async emitEfficiencyLog(cfg: CycleConfig, activeCount: number): Promise<void> {
     const WINDOW_MS = 15 * 60_000;
@@ -382,9 +344,8 @@ export class QueueRunner {
     for (const orgId of this.orgJoinTs.keys()) {
       const m = this.getOrgConversionMetrics(orgId, WINDOW_MS);
       if (m.joins === 0) continue;
-      const cold = this.isOrgCold(orgId) ? " [COLD]" : "";
       lines.push(
-        `org${orgId}: joins=${m.joins} match=${m.matches} ghost=${m.ghosts} conv=${Math.round(m.conversion_rate * 100)}% ghost_rate=${Math.min(100, Math.round(m.ghost_rate * 100))}%${cold}`,
+        `org${orgId}: joins=${m.joins} match=${m.matches} ghost=${m.ghosts} conv=${Math.round(m.conversion_rate * 100)}% ghost_rate=${Math.min(100, Math.round(m.ghost_rate * 100))}%`,
       );
     }
     const softLim = cfg.optimizeForConversion ? ` soft=${cfg.aqSoftLimit} hard=${cfg.aqHardLimit}` : "";
@@ -853,8 +814,6 @@ export class QueueRunner {
       let bestOrg: { idx: number; score: number } | null = null;
       for (let i = 0; i < totalOrgs; i++) {
         const orgId = orgIds[i]!;
-        // Eficiência: skip orgs em cold na pre-pass
-        if (cfg.optimizeForConversion && this.isOrgCold(orgId)) continue;
         const orgChs = channels.filter((c) => c.org_id === orgId);
         if (orgChs.length === 0) continue;
         const maxForOrg = orgChs[0]?.max_queues ?? 0;
@@ -891,15 +850,6 @@ export class QueueRunner {
       const orgChannels = channels.filter((c) => c.org_id === currentOrgId);
       const maxForOrg = orgChannels[0]?.max_queues ?? 0;
       const activeForOrg = activePerOrg.get(currentOrgId) ?? 0;
-
-      // Eficiência: pula orgs em cold (ghost_rate alta recentemente)
-      if (cfg.optimizeForConversion && this.isOrgCold(currentOrgId)) {
-        if (cfg.enable60RpmMode) this.blockedReasons.set("cold_org", (this.blockedReasons.get("cold_org") ?? 0) + 1);
-        this.orgCursor = (this.orgCursor + 1) % totalOrgs;
-        attempts++;
-        advancedDueToFull = true;
-        continue;
-      }
 
       // Cooldown de limite real: org foi recusada pela própria plataforma recentemente
       const limitCd = this.isOrgInLimitCooldown(currentOrgId);
