@@ -20,8 +20,9 @@ discoveryRouter.post("/:instanceId", asyncHandler(async (req, res) => {
 
   // Pega qualquer token da instância — prefere 'connected', aceita qualquer um.
   // Isso permite rodar a discovery mesmo com o bot pausado/parado.
-  const tokens = await query<{ value: string }>(
-    `SELECT tp.value
+  const tokenRows = await query<{ value: string; token_id: number | null }>(
+    `SELECT tp.value,
+            (SELECT t.id FROM tokens t WHERE t.value = tp.value LIMIT 1) AS token_id
      FROM instance_token_selection its
      JOIN token_pool tp ON tp.id = its.token_pool_id
      WHERE its.instance_id = $1
@@ -31,7 +32,9 @@ discoveryRouter.post("/:instanceId", asyncHandler(async (req, res) => {
      LIMIT 1`,
     [instanceId],
   );
-  const token = tokens[0]?.value;
+  const token = tokenRows[0]?.value;
+  const tokenId = tokenRows[0]?.token_id ?? null;
+
   if (!token) {
     await log(
       instanceId,
@@ -44,16 +47,25 @@ discoveryRouter.post("/:instanceId", asyncHandler(async (req, res) => {
       .json({ error: "Nenhum token cadastrado para esta instância" });
   }
 
+  // Carrega orgs elegíveis, excluindo as que já estão na blacklist deste token
   const orgs = await query<{ id: number; name: string; guild_id: string | null }>(
     orgIds && orgIds.length > 0
       ? `SELECT o.id, o.name, o.guild_id FROM orgs o
          JOIN UNNEST($1::int[]) u(id) ON u.id = o.id
-         WHERE o.guild_id IS NOT NULL AND o.guild_id <> ''`
+         WHERE o.guild_id IS NOT NULL AND o.guild_id <> ''
+           AND NOT EXISTS (
+             SELECT 1 FROM token_org_blacklist b
+             WHERE b.org_id = o.id AND b.token_id = $2
+           )`
       : `SELECT o.id, o.name, o.guild_id FROM orgs o
          JOIN instance_orgs io ON io.org_id = o.id
          WHERE io.instance_id = $1
-           AND o.guild_id IS NOT NULL AND o.guild_id <> ''`,
-    orgIds && orgIds.length > 0 ? [orgIds] : [instanceId],
+           AND o.guild_id IS NOT NULL AND o.guild_id <> ''
+           AND NOT EXISTS (
+             SELECT 1 FROM token_org_blacklist b
+             WHERE b.org_id = o.id AND b.token_id = $2
+           )`,
+    orgIds && orgIds.length > 0 ? [orgIds, tokenId] : [instanceId, tokenId],
   );
 
   if (orgs.length === 0) {
@@ -61,14 +73,14 @@ discoveryRouter.post("/:instanceId", asyncHandler(async (req, res) => {
       instanceId,
       "WARN",
       "discovery",
-      "Nenhuma org com guild_id preenchido para descobrir",
+      "Nenhuma org elegível para descobrir (todas já na blacklist ou sem guild_id)",
     );
     return res
       .status(400)
-      .json({ error: "Nenhuma org selecionada tem guild_id preenchido" });
+      .json({ error: "Nenhuma org disponível — todas já na blacklist deste token ou sem guild_id" });
   }
 
-  // Reseta last_discovered_at das orgs que serão varridas
+  // Reseta last_discovered_at APENAS das orgs que serão varridas (não blacklistadas)
   await query(
     `UPDATE orgs SET last_discovered_at = NULL WHERE id = ANY($1::int[])`,
     [orgs.map((o) => o.id)],
@@ -85,7 +97,7 @@ discoveryRouter.post("/:instanceId", asyncHandler(async (req, res) => {
     instanceId,
     "INFO",
     "discovery",
-    `Iniciando descoberta de ${orgs.length} org(s)…`,
+    `Iniciando descoberta de ${orgs.length} org(s)${tokenId ? "" : " (sem token_id — blacklist desabilitada)"}…`,
   );
 
   res.json({ ok: true, started: true, count: orgs.length });
