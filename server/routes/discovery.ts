@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { query } from "../db/pool.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
-import { manager } from "../worker/manager.js";
+import { manager, broadcastRawLog } from "../worker/manager.js";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,12 +18,17 @@ discoveryRouter.post("/:instanceId", asyncHandler(async (req, res) => {
     ? (req.body.org_ids as number[]).map(Number)
     : null;
 
+  // Pega qualquer token da instância — prefere 'connected', aceita qualquer um.
+  // Isso permite rodar a discovery mesmo com o bot pausado/parado.
   const tokens = await query<{ value: string }>(
     `SELECT tp.value
      FROM instance_token_selection its
      JOIN token_pool tp ON tp.id = its.token_pool_id
-     WHERE its.instance_id = $1 AND tp.status = 'connected'
-     ORDER BY its.position ASC LIMIT 1`,
+     WHERE its.instance_id = $1
+     ORDER BY
+       CASE WHEN tp.status = 'connected' THEN 0 ELSE 1 END,
+       its.position ASC
+     LIMIT 1`,
     [instanceId],
   );
   const token = tokens[0]?.value;
@@ -32,11 +37,11 @@ discoveryRouter.post("/:instanceId", asyncHandler(async (req, res) => {
       instanceId,
       "ERROR",
       "discovery",
-      "Nenhum token conectado — inicie o bot antes de descobrir canais",
+      "Nenhum token cadastrado — adicione ao menos um token antes de descobrir canais",
     );
     return res
       .status(400)
-      .json({ error: "Nenhum token conectado para fazer a descoberta" });
+      .json({ error: "Nenhum token cadastrado para esta instância" });
   }
 
   const orgs = await query<{ id: number; name: string; guild_id: string | null }>(
@@ -69,7 +74,7 @@ discoveryRouter.post("/:instanceId", asyncHandler(async (req, res) => {
     [orgs.map((o) => o.id)],
   );
 
-  // Pausa o motor de cliques enquanto a varredura roda
+  // Pausa o motor de cliques enquanto a varredura roda (se estiver rodando)
   const runnerRunning = manager.isRunning(instanceId);
   if (runnerRunning) {
     manager.pauseRunner(instanceId);
@@ -80,18 +85,13 @@ discoveryRouter.post("/:instanceId", asyncHandler(async (req, res) => {
     instanceId,
     "INFO",
     "discovery",
-    `Iniciando descoberta de ${orgs.length} org(s) em processo separado…`,
+    `Iniciando descoberta de ${orgs.length} org(s)…`,
   );
 
-  // Responde imediatamente — discovery roda em processo filho para não travar o servidor
   res.json({ ok: true, started: true, count: orgs.length });
 
-  // Spawn do worker com limite de memória próprio (256 MB), isolado do servidor principal
-  const workerEnv = {
-    ...process.env,
-    NODE_OPTIONS: "--max-old-space-size=256",
-  };
-
+  // Spawn do worker com limite de memória próprio (256 MB)
+  const workerEnv = { ...process.env, NODE_OPTIONS: "--max-old-space-size=256" };
   const worker = spawn(TSX_BIN, [WORKER_PATH], {
     env: workerEnv,
     stdio: ["pipe", "pipe", "pipe"],
@@ -102,9 +102,26 @@ discoveryRouter.post("/:instanceId", asyncHandler(async (req, res) => {
     instanceId,
     orgs: orgs.map((o) => ({ id: o.id, name: o.name, guild_id: o.guild_id! })),
   });
-
   worker.stdin.write(payload);
   worker.stdin.end();
+
+  // Repassa cada linha JSON do worker diretamente para o WebSocket do painel
+  let buf = "";
+  worker.stdout.on("data", (chunk: Buffer) => {
+    buf += chunk.toString();
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t) continue;
+      try {
+        const entry = JSON.parse(t) as {
+          id: number; ts: string; level: string; source: string; message: string;
+        };
+        broadcastRawLog(instanceId, entry);
+      } catch { /* linha não-JSON, ignora */ }
+    }
+  });
 
   worker.stderr.on("data", (chunk: Buffer) => {
     const text = chunk.toString().trim();
@@ -112,18 +129,17 @@ discoveryRouter.post("/:instanceId", asyncHandler(async (req, res) => {
   });
 
   worker.on("close", async (code, signal) => {
-    const exitDesc = signal ? `sinal ${signal}` : `código ${code ?? "?"}`;
     if (code !== 0) {
+      const exitDesc = signal ? `sinal ${signal}` : `código ${code ?? "OOM"}`;
       await log(
         instanceId,
         "ERROR",
         "discovery",
-        `Processo de descoberta encerrado inesperadamente (${exitDesc}). Verifique os logs acima.`,
+        `Processo de descoberta encerrado inesperadamente (${exitDesc}).`,
       );
     } else {
       await log(instanceId, "INFO", "discovery", "Descoberta concluída.");
     }
-
     if (runnerRunning) {
       manager.resumeRunner(instanceId);
       await log(instanceId, "INFO", "discovery", "Cliques retomados.");
@@ -137,19 +153,17 @@ discoveryRouter.post("/:instanceId", asyncHandler(async (req, res) => {
   });
 }));
 
-async function log(
-  instanceId: number,
-  level: string,
-  source: string,
-  message: string,
-) {
+async function log(instanceId: number, level: string, source: string, message: string) {
   try {
-    await query(
+    const rows = await query<{ id: number; ts: string }>(
       `INSERT INTO logs (instance_id, level, source, message)
-       VALUES ($1, $2, $3, $4)`,
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, to_char(ts AT TIME ZONE 'America/Sao_Paulo', 'HH24:MI:SS') AS ts`,
       [instanceId, level, source, message],
     );
-  } catch {
-    /* noop */
-  }
+    const row = rows[0];
+    if (row) {
+      broadcastRawLog(instanceId, { id: row.id, ts: row.ts, level, source, message });
+    }
+  } catch { /* noop */ }
 }

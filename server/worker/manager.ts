@@ -15,6 +15,13 @@ export function setWsServer(wss: WebSocketServer) {
   _wss = wss;
 }
 
+/** Transmite uma entrada de log já salva no DB para os clientes WS da instância. */
+export function broadcastRawLog(instanceId: number, log: {
+  id: number; ts: string; level: string; source: string; message: string;
+}) {
+  broadcast(instanceId, { type: "log", payload: log });
+}
+
 function broadcast(instanceId: number, payload: unknown) {
   if (!_wss) return;
   const msg = JSON.stringify(payload);

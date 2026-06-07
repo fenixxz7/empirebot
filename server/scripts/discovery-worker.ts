@@ -16,10 +16,19 @@ interface WorkerInput {
 
 async function log(instanceId: number, level: string, source: string, message: string) {
   try {
-    await query(
-      `INSERT INTO logs (instance_id, level, source, message) VALUES ($1, $2, $3, $4)`,
+    const rows = await query<{ id: number; ts: string }>(
+      `INSERT INTO logs (instance_id, level, source, message)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, to_char(ts AT TIME ZONE 'America/Sao_Paulo', 'HH24:MI:SS') AS ts`,
       [instanceId, level, source, message],
     );
+    const row = rows[0];
+    if (row) {
+      // Emite JSON para o processo pai repassar via WebSocket
+      process.stdout.write(
+        JSON.stringify({ id: row.id, ts: row.ts, level, source, message }) + "\n",
+      );
+    }
   } catch { /* noop */ }
 }
 
