@@ -1,0 +1,1 @@
+- [Dev architecture: Vite + Express separados](dev-arch-split.md) — Vite na 5000 (proxy), Express na 5001; nunca rodar Vite como middleware no mesmo processo do servidor.

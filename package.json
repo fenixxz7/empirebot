@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "NODE_OPTIONS=--max-old-space-size=512 node_modules/.bin/tsx server/index.ts",
+    "dev": "NODE_OPTIONS=--max-old-space-size=512 node_modules/.bin/tsx server/index.ts & node_modules/.bin/vite",
+    "dev:server": "NODE_OPTIONS=--max-old-space-size=512 node_modules/.bin/tsx server/index.ts",
+    "dev:vite": "node_modules/.bin/vite",
     "build": "node_modules/.bin/vite build",
     "start": "NODE_ENV=production NODE_OPTIONS=--max-old-space-size=768 node_modules/.bin/tsx server/index.ts",
     "db:init": "NODE_OPTIONS=--max-old-space-size=384 node_modules/.bin/tsx server/db/init.ts"

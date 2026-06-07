@@ -15,8 +15,10 @@ import { startHealthMonitor } from "./engine/auto-rotator.js";
 import { startWatchdog } from "./engine/watchdog.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = Number(process.env.PORT ?? 5000);
 const isProd = process.env.NODE_ENV === "production";
+// Em dev, Express roda na 5001 (Vite roda na 5000 e faz proxy para cá).
+// Em produção, roda direto na 5000 servindo os arquivos buildados.
+const PORT = isProd ? Number(process.env.PORT ?? 5000) : 5001;
 
 async function main() {
   await initDatabase();
@@ -24,7 +26,6 @@ async function main() {
   const app = express();
   app.use(express.json({ limit: "1mb" }));
 
-  // Session para autenticação
   const SESSION_SECRET = process.env.SESSION_SECRET ?? "empirebotdev_secret_change_me";
   app.use(session({
     secret: SESSION_SECRET,
@@ -37,7 +38,6 @@ async function main() {
     },
   }));
 
-  // Cache busting in dev so the user always sees fresh content
   if (!isProd) {
     app.use((_req, res, next) => {
       res.setHeader("Cache-Control", "no-store");
@@ -47,7 +47,6 @@ async function main() {
 
   mountApi(app);
 
-  // Middleware global de erro — DEVE vir depois de todas as rotas
   app.use(errorMiddleware);
 
   const httpServer = createHttpServer(app);
@@ -59,7 +58,7 @@ async function main() {
   httpServer.on("upgrade", (req, socket, head) => {
     const url = req.url ?? "";
     const m = url.match(/^\/ws\/(\d+)$/);
-    if (!m) return; // Let Vite (HMR) handle other upgrade requests
+    if (!m) { socket.destroy(); return; }
     const instanceId = Number(m[1]);
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit("connection", ws, req, instanceId);
@@ -77,31 +76,9 @@ async function main() {
     app.use((_req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
-  } else {
-    const { createServer: createViteServer } = await import("vite");
-    const vite = await createViteServer({
-      configFile: path.join(__dirname, "..", "vite.config.ts"),
-      server: {
-        middlewareMode: true,
-        allowedHosts: true,
-        hmr: { server: httpServer },
-      },
-      appType: "custom",
-    });
-    app.use(vite.middlewares);
-    app.use("*", async (req, res, next) => {
-      try {
-        const url = req.originalUrl;
-        const indexPath = path.join(__dirname, "..", "index.html");
-        const { readFileSync } = await import("node:fs");
-        let html = readFileSync(indexPath, "utf8");
-        html = await vite.transformIndexHtml(url, html);
-        res.status(200).set({ "Content-Type": "text/html" }).end(html);
-      } catch (e) {
-        next(e);
-      }
-    });
   }
+  // Em dev, o Vite roda em processo separado e serve o frontend.
+  // Não há middleware Vite aqui — isso libera ~250 MB de RAM para o servidor.
 
   // Rotação de logs: remove registros com mais de 7 dias, roda a cada 6h
   async function rotateLogs() {
@@ -120,15 +97,12 @@ async function main() {
   rotateLogs();
   setInterval(rotateLogs, LOG_ROTATION_INTERVAL_MS);
 
-  // Inicia o monitor de saúde de contas (auto-rotação) e o watchdog
   startHealthMonitor(30_000);
   startWatchdog(60_000);
 
   httpServer.listen(PORT, "0.0.0.0", async () => {
     console.log(`[server] listening on http://0.0.0.0:${PORT}`);
 
-    // Se o servidor reiniciou enquanto alguma instância estava marcada como
-    // "rodando", religa os workers automaticamente.
     try {
       const running = await query<{ id: number }>(
         `SELECT id FROM instances WHERE running = TRUE`

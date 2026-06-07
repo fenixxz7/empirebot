@@ -11,8 +11,24 @@ export default defineConfig({
     },
   },
   server: {
-    middlewareMode: true,
+    port: 5000,
+    host: true,
     allowedHosts: true,
+    proxy: {
+      "/api": {
+        target: "http://localhost:5001",
+        changeOrigin: false,
+      },
+      "/health": {
+        target: "http://localhost:5001",
+        changeOrigin: false,
+      },
+      "/ws": {
+        target: "ws://localhost:5001",
+        ws: true,
+        changeOrigin: false,
+      },
+    },
   },
-  appType: "custom",
+  appType: "spa",
 });
