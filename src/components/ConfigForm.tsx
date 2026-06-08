@@ -991,22 +991,25 @@ export function ConfigForm({
       <Section title="Entradas por janela (60s)">
         <div className="flex flex-wrap gap-2 mb-3">
           {([
-            { label: "Conservador", players: 15, empty: 9, total: 24 },
-            { label: "Agressivo",   players: 30, empty: 18, total: 48 },
+            { label: "Conservador", players: 15, empty: 9,  total: 24, color: "emerald" },
+            { label: "Agressivo",   players: 30, empty: 18, total: 48, color: "red"     },
+            { label: "Partidas",    players: 46, empty: 2,  total: 48, color: "amber"   },
           ] as const).map((p) => {
             const active = entryCapWithPlayers === p.players && entryCapEmpty === p.empty && entryCapTotal === p.total;
+            const colorMap: Record<string, string> = {
+              emerald: "bg-emerald-600/20 border-emerald-500/60 text-emerald-300",
+              red:     "bg-red-600/20 border-red-500/60 text-red-300",
+              amber:   "bg-amber-600/20 border-amber-500/60 text-amber-300",
+            };
             return (
               <button
                 key={p.label}
                 type="button"
+                title={p.label === "Partidas" ? "Minimiza entradas em filas vazias — maximiza taxa de partida" : undefined}
                 onClick={() => { setEntryCapWithPlayers(p.players); setEntryCapEmpty(p.empty); setEntryCapTotal(p.total); }}
                 className={
                   "px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors " +
-                  (active
-                    ? p.label === "Conservador"
-                      ? "bg-emerald-600/20 border-emerald-500/60 text-emerald-300"
-                      : "bg-red-600/20 border-red-500/60 text-red-300"
-                    : "bg-navy-950/60 border-white/10 text-slate-400 hover:border-white/30")
+                  (active ? colorMap[p.color]! : "bg-navy-950/60 border-white/10 text-slate-400 hover:border-white/30")
                 }
               >
                 {p.label}
@@ -1015,8 +1018,9 @@ export function ConfigForm({
           })}
           {(() => {
             const isCustom =
-              !(entryCapWithPlayers === 15 && entryCapEmpty === 9 && entryCapTotal === 24) &&
-              !(entryCapWithPlayers === 30 && entryCapEmpty === 18 && entryCapTotal === 48);
+              !(entryCapWithPlayers === 15 && entryCapEmpty === 9  && entryCapTotal === 24) &&
+              !(entryCapWithPlayers === 30 && entryCapEmpty === 18 && entryCapTotal === 48) &&
+              !(entryCapWithPlayers === 46 && entryCapEmpty === 2  && entryCapTotal === 48);
             return (
               <button
                 type="button"
