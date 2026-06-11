@@ -316,20 +316,30 @@ export class MatchHandler {
     const reusedChannel = matchKey !== event.id;
 
     // Idempotência: não reenvia se já foi enviado para esse match.
-    // Para canais RECICLADOS (match_key = channel_id:last_msg), verifica APENAS match_key —
-    // o mesmo channel_id tem msg_sent=TRUE de partidas anteriores e NÃO deve bloquear a nova.
-    // Para canais NÃO reciclados (match_key = channel_id, evento gateway puro), também
-    // verifica channel_id para evitar duplo envio quando gateway + poller chegam juntos.
+    //
+    // Para canais RECICLADOS (match_key = channel_id:last_msg_id):
+    //   Checa `match_key = $2 OR match_key = $3` onde $3 = event.id (channel_id puro).
+    //   - `match_key = $2` → exato: esse reused-match já foi enviado. Bloqueia.
+    //   - `match_key = $3` → o mesmo match foi detectado antes sem last_msg_id (gateway
+    //     CHANNEL_CREATE puro) e já enviado. Bloqueia para evitar duplo envio.
+    //   - match_key = "channel_id:OUTRO_msg_id" (partida anterior, sessão antiga) →
+    //     NÃO casa em nenhum dos dois casos. NÃO bloqueia. ← isso corrige TOKYO/SHARK.
+    //
+    // Para canais NÃO reciclados (match_key = channel_id, gateway puro):
+    //   Checa também channel_id para pegar o caso em que o poller chegou primeiro
+    //   com match_key = channel_id:msg_id (reused=true) e já enviou.
     const existing = reusedChannel
       ? await query<{ match_key: string }>(
           `SELECT match_key FROM matches
-           WHERE instance_id = $1 AND match_key = $2 AND msg_sent = TRUE
+           WHERE instance_id = $1 AND msg_sent = TRUE
+             AND (match_key = $2 OR match_key = $3)
            LIMIT 1`,
-          [this.instanceId, matchKey],
+          [this.instanceId, matchKey, event.id],
         )
       : await query<{ match_key: string }>(
           `SELECT match_key FROM matches
-           WHERE instance_id = $1 AND (match_key = $2 OR channel_id = $3) AND msg_sent = TRUE
+           WHERE instance_id = $1 AND msg_sent = TRUE
+             AND (match_key = $2 OR channel_id = $3)
            LIMIT 1`,
           [this.instanceId, matchKey, event.id],
         );
