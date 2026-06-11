@@ -46,3 +46,4 @@ externalPort = 3001
 
 [userenv.shared]
 ADMIN_PASSWORD = "1"
+PORT = "5000"
