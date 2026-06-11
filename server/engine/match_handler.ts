@@ -315,13 +315,24 @@ export class MatchHandler {
       : event.id;
     const reusedChannel = matchKey !== event.id;
 
-    // Idempotência: não reenvia se já foi enviado para esse canal ou match_key
-    const existing = await query<{ match_key: string }>(
-      `SELECT match_key FROM matches
-       WHERE instance_id = $1 AND (match_key = $2 OR channel_id = $3) AND msg_sent = TRUE
-       LIMIT 1`,
-      [this.instanceId, matchKey, event.id],
-    );
+    // Idempotência: não reenvia se já foi enviado para esse match.
+    // Para canais RECICLADOS (match_key = channel_id:last_msg), verifica APENAS match_key —
+    // o mesmo channel_id tem msg_sent=TRUE de partidas anteriores e NÃO deve bloquear a nova.
+    // Para canais NÃO reciclados (match_key = channel_id, evento gateway puro), também
+    // verifica channel_id para evitar duplo envio quando gateway + poller chegam juntos.
+    const existing = reusedChannel
+      ? await query<{ match_key: string }>(
+          `SELECT match_key FROM matches
+           WHERE instance_id = $1 AND match_key = $2 AND msg_sent = TRUE
+           LIMIT 1`,
+          [this.instanceId, matchKey],
+        )
+      : await query<{ match_key: string }>(
+          `SELECT match_key FROM matches
+           WHERE instance_id = $1 AND (match_key = $2 OR channel_id = $3) AND msg_sent = TRUE
+           LIMIT 1`,
+          [this.instanceId, matchKey, event.id],
+        );
     if (existing.length > 0) {
       await this.host.log(
         this.instanceId, "INFO", "match",

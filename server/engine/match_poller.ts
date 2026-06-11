@@ -154,7 +154,17 @@ export class MatchPoller {
         if (thRes && thRes.status === 200 && thRes.data?.threads) {
           for (const t of thRes.data.threads) {
             if (!THREAD_TYPES.has(t.type)) continue;
-            if (!isMatchName(t.name)) continue;
+            if (!isMatchName(t.name)) {
+              // Log diagnóstico: thread com nome inesperado — ajuda a identificar orgs
+              // cujos canais de partida usam padrão diferente (ex: SURF, WURF).
+              const refId2: string = t.last_message_id ?? t.id;
+              const age2 = Date.now() - snowflakeToTimestamp(refId2);
+              if (age2 < MAX_CHANNEL_AGE_MS) {
+                await this.host.log(this.instanceId, "INFO", "match",
+                  `[poller] ${o.name}: thread ativa ignorada — nome_sem_match="${t.name}" type=${t.type} channel_id=${t.id} age=${Math.round(age2 / 1000)}s`);
+              }
+              continue;
+            }
             if (t.thread_metadata?.archived || t.thread_metadata?.locked) continue;
             const refId: string = t.last_message_id ?? t.id;
             const ageMs = Date.now() - snowflakeToTimestamp(refId);
