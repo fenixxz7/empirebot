@@ -253,7 +253,13 @@ export class MatchHandler {
       ? `${event.id}:${triggerMsgId}`
       : event.id;
     const key = `${this.instanceId}:${matchKey}`;
+    // Chave de trava por canal (independe do match_key).
+    // Evita que CHANNEL_CREATE (matchKey=channelId) e MESSAGE_CREATE
+    // (matchKey=channelId:msgId) processem o MESMO canal em paralelo —
+    // o que causava 2–3 POSTs simultâneos para o mesmo endpoint e 429 em cascata.
+    const channelKey = `${this.instanceId}:ch:${event.id}`;
 
+    // Nível 1 — deduplicação por match_key exato (lógica original).
     // Se já está processando esse match_key, aguarda até 12s para o primeiro
     // processamento terminar e depois verifica se precisa reenviar.
     if (this.processing.has(key)) {
@@ -272,8 +278,26 @@ export class MatchHandler {
         `#${event.name} — reprocessando após primeiro ciclo (msg_sent=false) match_key=${matchKey}`);
     }
 
+    // Nível 2 — deduplicação por channel_id (proteção extra).
+    // Quando CHANNEL_CREATE e MESSAGE_CREATE chegam para o mesmo canal com
+    // match_keys diferentes, o nível 1 não os trava entre si.
+    // Aqui aguardamos qualquer processamento ativo deste canal antes de prosseguir.
+    if (!this.processing.has(key) && this.processing.has(channelKey)) {
+      const waited = await this._waitForProcessing(channelKey, 12_000);
+      if (!waited) return; // timeout — descarta para não duplicar
+      // Verifica se algum envio para esse channel_id já foi confirmado
+      const sent = await query<{ msg_sent: boolean }>(
+        `SELECT msg_sent FROM matches
+         WHERE instance_id = $1 AND channel_id = $2 AND msg_sent = TRUE
+         LIMIT 1`,
+        [this.instanceId, event.id],
+      ).catch(() => [] as Array<{ msg_sent: boolean }>);
+      if (sent.length > 0) return; // já enviado por outro match_key do mesmo canal
+    }
+
     if (this.processing.has(key)) return; // dupla checagem após await
     this.processing.add(key);
+    this.processing.add(channelKey); // trava o canal para outros match_keys concorrentes
 
     try {
       await this.handleMatch(event, tokens);
@@ -286,6 +310,7 @@ export class MatchHandler {
       );
     } finally {
       this.processing.delete(key);
+      this.processing.delete(channelKey);
     }
   }
 
@@ -375,7 +400,7 @@ export class MatchHandler {
        JOIN orgs o ON o.id = aq.org_id
        LEFT JOIN org_channels oc ON oc.org_id = aq.org_id AND oc.mode = aq.mode
        WHERE aq.instance_id = $1 AND o.guild_id = $2
-         AND aq.joined_at > NOW() - INTERVAL '4 minutes'
+         AND aq.joined_at > NOW() - INTERVAL '8 minutes'
        ORDER BY aq.joined_at DESC
        LIMIT 1`,
       [this.instanceId, guildId],
