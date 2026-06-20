@@ -11,10 +11,10 @@ export const HOUR_MS = 60 * MINUTE_MS;
 export const DAY_MS = 24 * HOUR_MS;
 
 /** TTL de uma fila ativa (org tipo thread) — threads demoram mais para aparecer. */
-export const ACTIVE_QUEUE_TTL_THREAD_MS = 15 * MINUTE_MS;
+export const ACTIVE_QUEUE_TTL_THREAD_MS = 8 * MINUTE_MS;
 
 /** TTL de uma fila ativa (org tipo canal privado) — canais privados chegam rápido. */
-export const ACTIVE_QUEUE_TTL_PRIVATE_MS = 5 * MINUTE_MS;
+export const ACTIVE_QUEUE_TTL_PRIVATE_MS = 3 * MINUTE_MS;
 
 /** TTL legado — mantido para compatibilidade, aponta para private_channel. */
 export const ACTIVE_QUEUE_TTL_MS = ACTIVE_QUEUE_TTL_PRIVATE_MS;
