@@ -378,9 +378,9 @@ export class MatchHandler {
 
     // Busca fila ativa nessa guild para pegar org/modo/valor.
     // NOTA: esta consulta busca por guild_id — NÃO depende da org atual do engine.
-    // As active_queues de orgs anteriores permanecem na tabela até o sweep de 4min,
-    // então partidas de COROLLA chegando 2–3min após o engine avançar AINDA encontram
-    // a linha correspondente aqui (desde que dentro do TTL de 4min).
+    // As active_queues permanecem na tabela até o sweep (6min private_channel, 8min thread),
+    // então partidas chegando após o engine avançar AINDA encontram a linha correspondente
+    // (desde que dentro do TTL do tipo da org).
     const activeQueue = await query<{
       aq_id: number;
       org_id: number;
@@ -455,7 +455,7 @@ export class MatchHandler {
         ).catch(() => [] as Array<{ id: number; name: string; total_queues: string }>);
         const orgApprox = orgFallback[0];
         aqStatus = orgApprox
-          ? `activeQueue=NÃO (guild=${guildId} org_aprox="${orgApprox.name}" id=${orgApprox.id} filas_total=${orgApprox.total_queues} — ignored_reason=no_active_queue fora do TTL 4min)`
+          ? `activeQueue=NÃO (guild=${guildId} org_aprox="${orgApprox.name}" id=${orgApprox.id} filas_total=${orgApprox.total_queues} — ignored_reason=no_active_queue fora do TTL 6min/8min)`
           : `activeQueue=NÃO (guild=${guildId} — ignored_reason=no_active_queue guild_id não encontrado nesta instância)`;
       } else {
         aqStatus = `activeQueue=NÃO (guild_id ausente — ignored_reason=no_active_queue)`;

@@ -2002,16 +2002,36 @@ export class QueueRunner {
     const orgIdsWithoutCh = orgIds.filter(id => !orgWithChannels.has(id));
     const orgsWithoutChannels = orgIdsWithoutCh.length;
 
-    // Busca os nomes das orgs sem canais para facilitar diagnóstico
+    // Busca os nomes das orgs sem canais + motivo (sem canal algum vs. categoria/modo null)
     let semChOrgNames = "";
     if (orgIdsWithoutCh.length > 0) {
       try {
-        const nameRows = await query<{ id: number; name: string }>(
-          `SELECT id, name FROM orgs WHERE id = ANY($1)`,
+        const diagRows = await query<{
+          id: number;
+          name: string;
+          total: string;
+          null_cat: string;
+          null_mode: string;
+        }>(
+          `SELECT o.id, o.name,
+                  COUNT(oc.id)::text AS total,
+                  COUNT(oc.id) FILTER (WHERE oc.category IS NULL)::text AS null_cat,
+                  COUNT(oc.id) FILTER (WHERE oc.mode IS NULL)::text AS null_mode
+           FROM orgs o
+           LEFT JOIN org_channels oc ON oc.org_id = o.id
+           WHERE o.id = ANY($1)
+           GROUP BY o.id, o.name`,
           [orgIdsWithoutCh],
         );
-        const nameMap = new Map(nameRows.map(r => [r.id, r.name]));
-        semChOrgNames = orgIdsWithoutCh.map(id => nameMap.get(id) ?? `#${id}`).join(" ");
+        semChOrgNames = diagRows.map(r => {
+          const total = Number(r.total);
+          if (total === 0) return r.name + "(0ch)";
+          const nullCat = Number(r.null_cat);
+          const nullMode = Number(r.null_mode);
+          if (nullCat > 0 || nullMode > 0)
+            return `${r.name}(${total}ch:cat_null=${nullCat},mode_null=${nullMode})`;
+          return `${r.name}(${total}ch:cat_ok)`;
+        }).join(" ");
       } catch { /* não bloqueia o diag se a query falhar */ }
     }
 
