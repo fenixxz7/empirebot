@@ -48,6 +48,7 @@ interface CycleConfig {
   selected_org_ids: number[];
   blockedNames: string[];
   maxValor: number;
+  maxValorEmpty: number;
   tokenStrategy: TokenStrategy;
   tokenStrategyN: number;
   timingIntraMinMs: number;
@@ -513,6 +514,7 @@ export class QueueRunner {
       allowed_categories: string;
       blocked_names: string;
       max_valor: number;
+      max_valor_empty: number;
       token_strategy: string;
       token_strategy_n: number;
       timing_intra_min_ms: number;
@@ -534,7 +536,7 @@ export class QueueRunner {
       only_empty_queues: boolean;
     }>(
       `SELECT delay_seconds, allowed_modes, allowed_categories, blocked_names,
-              max_valor, token_strategy, token_strategy_n,
+              max_valor, max_valor_empty, token_strategy, token_strategy_n,
               timing_intra_min_ms, timing_intra_max_ms,
               timing_pause_min_ms, timing_pause_max_ms,
               timing_click_min_ms, timing_click_max_ms,
@@ -568,6 +570,7 @@ export class QueueRunner {
       selected_org_ids: orgRows.map((row) => row.org_id),
       blockedNames: parseList(r?.blocked_names ?? "").map((n) => n.toLowerCase()),
       maxValor: Number(r?.max_valor ?? 0),
+      maxValorEmpty: Number(r?.max_valor_empty ?? 0),
       tokenStrategy: (r?.token_strategy ?? "single") as TokenStrategy,
       tokenStrategyN: Math.max(1, r?.token_strategy_n ?? 5),
       timingIntraMinMs: r?.timing_intra_min_ms ?? 4000,
@@ -1033,6 +1036,15 @@ export class QueueRunner {
             const m = pick.ch.mode ?? "";
             pickedModeIdx = orderedModes.indexOf(m);
           }
+        }
+      }
+
+      // Filtro max_valor_empty: ignora filas VAZIAS acima do valor limite configurado.
+      // Útil para não desperdiçar slots em filas de R$100, R$200 onde ninguém entra.
+      if (pick && pick.players === 0 && cfg.maxValorEmpty > 0) {
+        const vEmpty = parseValor(pick.ch.embed_valor);
+        if (vEmpty !== null && vEmpty > cfg.maxValorEmpty) {
+          pick = undefined;
         }
       }
 

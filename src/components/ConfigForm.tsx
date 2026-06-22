@@ -73,6 +73,7 @@ type ConfigPayload = {
     image_url: string | null;
     blocked_names: string;
     max_valor: number;
+    max_valor_empty: number;
     token_strategy: string;
     token_strategy_n: number;
     timing_intra_min_ms: number;
@@ -141,6 +142,7 @@ export function ConfigForm({
   const [imageUrl, setImageUrl] = useState("");
   const [blockedNames, setBlockedNames] = useState("");
   const [maxValor, setMaxValor] = useState(0);
+  const [maxValorEmpty, setMaxValorEmpty] = useState(0);
   const [clicksPerOrg, setClicksPerOrg] = useState(10);
   const [hotOrgExtraClicks, setHotOrgExtraClicks] = useState(10);
   const [matchMsgDelayMinSec, setMatchMsgDelayMinSec] = useState(0);
@@ -206,6 +208,7 @@ export function ConfigForm({
       setImageUrl(cfg.config.image_url ?? "");
       setBlockedNames(cfg.config.blocked_names ?? "");
       setMaxValor(Number(cfg.config.max_valor ?? 0));
+      setMaxValorEmpty(Number(cfg.config.max_valor_empty ?? 0));
       setClicksPerOrg(Number(cfg.config.clicks_per_org ?? 10));
       setHotOrgExtraClicks(Number(cfg.config.hot_org_extra_clicks ?? 10));
       const minMs = Number(cfg.config.match_msg_delay_min_ms ?? cfg.config.match_msg_delay_ms ?? 0);
@@ -528,6 +531,7 @@ export function ConfigForm({
           image_url: imageUrl.trim() || null,
           blocked_names: blockedNames,
           max_valor: maxValor,
+          max_valor_empty: maxValorEmpty,
           clicks_per_org: clicksPerOrg,
           hot_org_extra_clicks: hotOrgExtraClicks,
           token_strategy: tokenStrategy,
@@ -1081,6 +1085,19 @@ export function ConfigForm({
         <p className="text-xs text-slate-500 mt-2">
           Controla quantas entradas em fila o bot pode fazer a cada janela de 60 segundos. Valores maiores aumentam agressividade e podem aumentar rate limit.
         </p>
+        <div className="mt-3 flex items-center gap-3">
+          <div>
+            <p className="text-xs text-slate-500 mb-1">Valor máx. filas vazias (R$ 0 = sem limite)</p>
+            <input
+              type="number" min={0} step={0.5} className="input text-center w-36"
+              value={maxValorEmpty}
+              onChange={(e) => setMaxValorEmpty(Math.max(0, Number(e.target.value)))}
+            />
+          </div>
+          <p className="text-xs text-slate-500 mt-4">
+            Ignora filas vazias com valor acima deste limite (ex: R$ 5 evita entrar em filas de R$ 20–R$ 200 quando não há ninguém esperando). Filas com jogadores não são afetadas.
+          </p>
+        </div>
       </Section>
       )}
 

@@ -259,6 +259,30 @@ class Manager {
       /^sua[\s_-]partida[\s_-]\d+$/i,
       /^aguardando-\d+$/i,
     ];
+
+    /**
+     * Procura botão "Confirmar" em message.components (estrutura de action rows).
+     * Retorna { custom_id, application_id } se encontrado, null caso contrário.
+     */
+    function findConfirmarButton(
+      components: any[],
+      msgApplicationId?: string,
+      authorId?: string,
+    ): { customId: string; applicationId: string } | null {
+      const appId = msgApplicationId ?? authorId ?? "";
+      if (!appId) return null;
+      for (const row of components) {
+        if (row?.type !== 1) continue;
+        for (const btn of (row?.components ?? [])) {
+          if (btn?.type !== 2 || !btn?.custom_id) continue;
+          const lbl = String(btn?.label ?? "").toLowerCase();
+          if (lbl.includes("confirmar") || lbl.includes("confirm")) {
+            return { customId: String(btn.custom_id), applicationId: appId };
+          }
+        }
+      }
+      return null;
+    }
     const seenMessageChannels = new Set<string>();
     // Deduplicação de DMs: conta apenas o primeiro contato por canal por sessão.
     // Compartilhado entre todos os tokens da instância para evitar contagem dupla.
@@ -409,12 +433,49 @@ class Manager {
         // MESSAGE_CREATE chega. Aí buscamos info do canal via REST.
         if (eventName === "MESSAGE_CREATE" && eventData?.channel_id) {
           const chId = String(eventData.channel_id);
-          if (seenMessageChannels.has(chId)) return;
           const myId = e.client.getUserId();
           const mentions: any[] = eventData?.mentions ?? [];
           const mentioned =
             !!myId &&
             mentions.some((m) => String(m?.id ?? m) === myId);
+
+          // ── Botão Confirmar (BLAZE e orgs similares) ────────────────────────
+          // Quando o bot da org envia um card de match com botão "Confirmar"
+          // mencionando nosso token, clicamos Confirmar para que o canal de
+          // partida seja criado. O THREAD_MEMBERS_UPDATE subsequente (com
+          // forceMatch=true) cuida de detectar e enviar a mensagem de partida.
+          if (mentioned && eventData?.guild_id) {
+            const components: any[] = eventData?.components ?? [];
+            const confirmar = findConfirmarButton(
+              components,
+              eventData?.application_id ? String(eventData.application_id) : undefined,
+              eventData?.author?.id ? String(eventData.author.id) : undefined,
+            );
+            if (confirmar) {
+              const msgId = String(eventData?.id ?? "");
+              const sessionId = e.client.getSessionId() ?? "0";
+              if (msgId) {
+                const cRest = new DiscordRest(e.token);
+                cRest.clickButton({
+                  guildId: String(eventData.guild_id),
+                  channelId: chId,
+                  messageId: msgId,
+                  applicationId: confirmar.applicationId,
+                  sessionId,
+                  customId: confirmar.customId,
+                }).then(() => {
+                  void this.log(instanceId, "INFO", "match",
+                    `[confirmar] Clicou Confirmar em canal=${chId} guild=${eventData.guild_id} msg=${msgId} (token #${e.position})`);
+                }).catch((err) => {
+                  void this.log(instanceId, "WARN", "match",
+                    `[confirmar] Falha ao clicar Confirmar canal=${chId}: ${err instanceof Error ? err.message : String(err)}`);
+                });
+              }
+            }
+          }
+
+          // ── Detecção de canal de partida via nome ────────────────────────────
+          if (seenMessageChannels.has(chId)) return;
           if (!mentioned) return;
           seenMessageChannels.add(chId);
           // Limita o set para não crescer infinito
@@ -473,7 +534,10 @@ class Manager {
               "GET",
               `/channels/${eventData.id}`,
             ).then(({ data }) => {
-              if (data) matchHandler.onChannelCreate(data, matchTokens).catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
+              if (data) matchHandler.onChannelCreate(
+                { ...data, forceMatch: true },
+                matchTokens,
+              ).catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
             }).catch((e) => console.warn("[manager]", e instanceof Error ? e.message : e));
           }
           return;

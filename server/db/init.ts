@@ -195,6 +195,11 @@ export async function initDatabase(): Promise<void> {
   await pool.query(
     `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS max_valor NUMERIC(10,2) NOT NULL DEFAULT 0`,
   );
+  // Valor máximo para filas VAZIAS (R$0 = sem limite). Evita entrar em filas de alto
+  // valor onde ninguém está esperando (ex: R$100 quando vazia).
+  await pool.query(
+    `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS max_valor_empty NUMERIC(10,2) NOT NULL DEFAULT 0`,
+  );
   // Estratégia de rotação de tokens: single | per_n_orgs | full_cycle
   await pool.query(
     `ALTER TABLE instance_configs ADD COLUMN IF NOT EXISTS token_strategy TEXT NOT NULL DEFAULT 'single'`,
