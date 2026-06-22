@@ -29,12 +29,6 @@ interface ChannelCreateEvent {
   last_message_id?: string | null;
   /** ID da mensagem que disparou este match (alias de last_message_id, enviado pelo poller) */
   trigger_msg_id?: string | null;
-  /**
-   * Quando true, ignora a verificação de nome (isMatchChannel).
-   * Usado quando o token foi explicitamente adicionado à thread (THREAD_MEMBERS_UPDATE)
-   * — nesse caso já sabemos que é um canal de partida relevante.
-   */
-  forceMatch?: boolean;
 }
 
 const MATCH_PATTERNS = [
@@ -248,7 +242,7 @@ export class MatchHandler {
       }
       return;
     }
-    if (!event.forceMatch && !isMatchChannel(event.name)) return;
+    if (!isMatchChannel(event.name)) return;
 
     // Ignora threads arquivadas ou travadas — são partidas antigas reutilizadas
     if (event.thread_metadata?.archived || event.thread_metadata?.locked) return;
