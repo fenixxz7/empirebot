@@ -883,6 +883,9 @@ export class QueueRunner {
         const key = `${c.channel_id}:${c.message_id}`;
         if (activeKeys.has(key)) return false;
         if (!c.guild_id || !c.message_id || !c.application_id) return false;
+        // Pula canais de orgs com re-discovery pendente — evita ~30 falhas/min
+        // enquanto a re-discovery busca os novos botões (ex: DUCK após 10002).
+        if (this.rediscoveryQueued.has(c.org_id)) return false;
         return pickEnterButton(c.buttons) !== null;
       });
 

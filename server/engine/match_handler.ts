@@ -760,6 +760,16 @@ export class MatchHandler {
         "match",
         `Falha ao enviar em #${event.name} (${orgLabel}): HTTP ${result.status} — ${reasonText}${gateNote}`,
       );
+
+      // AutoMod (code 200000) vai bloquear de novo qualquer retry com o mesmo conteúdo.
+      // Marca msg_sent=true para interromper o loop de "reprocessamento" e evitar
+      // múltiplas tentativas idênticas que sempre falham.
+      if (parsed.isAutoMod) {
+        await query(
+          `UPDATE matches SET msg_sent = TRUE WHERE instance_id = $1 AND channel_id = $2`,
+          [this.instanceId, event.id],
+        ).catch(() => {});
+      }
     }
   }
 }
