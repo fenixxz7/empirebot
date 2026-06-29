@@ -1707,6 +1707,13 @@ export class QueueRunner {
       this.scheduleOrgRediscovery(ch.org_id, ch.org_name, token.token, `clique HTTP ${r.status}`, token.tokenId, token.position);
       this.playerCache.delete(`${ch.channel_id}:${ch.message_id}`);
       return false;
+    } else if (r.status === 400 && (r.error ?? "").includes("10002")) {
+      // 10002 = Unknown Application — application_id gravado no banco ficou obsoleto
+      // (a org trocou ou removeu o bot que criava os botões de fila).
+      // Agenda re-discovery para buscar o novo application_id e botões corretos.
+      this.scheduleOrgRediscovery(ch.org_id, ch.org_name, token.token, `application_id obsoleto (10002)`, token.tokenId, token.position);
+      this.playerCache.delete(`${ch.channel_id}:${ch.message_id}`);
+      return false;
     } else if (r.status === 401) {
       // 401 = token inválido/expirado — loga mas não bloqueia org específica
       await this.manager.log(
@@ -2032,6 +2039,24 @@ export class QueueRunner {
             return `${r.name}(${total}ch:cat_null=${nullCat},mode_null=${nullMode})`;
           return `${r.name}(${total}ch:cat_ok)`;
         }).join(" ");
+
+        // Auto-agenda re-discovery para orgs com 0 canais cadastrados.
+        // Elas podem ter sido marcadas como "descobertas" mas sem filas válidas
+        // (last_discovered_at preenchido) — o que impede nova varredura automática.
+        const zeroChOrgs = diagRows.filter(r => Number(r.total) === 0);
+        if (zeroChOrgs.length > 0) {
+          const activeTokens = this.manager.getActiveTokens(this.instanceId);
+          const tkn = activeTokens[this.tokenCursor % Math.max(activeTokens.length, 1)];
+          if (tkn) {
+            for (const org of zeroChOrgs) {
+              this.scheduleOrgRediscovery(
+                org.id, org.name, tkn.token,
+                "0 canais no buf diag — re-discovery automático",
+                tkn.tokenId, tkn.position,
+              );
+            }
+          }
+        }
       } catch { /* não bloqueia o diag se a query falhar */ }
     }
 
