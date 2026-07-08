@@ -11,16 +11,28 @@ import { SendErrorsPanel } from "@/components/SendErrorsPanel";
 import { Accordion } from "@/components/Accordion";
 import OrgJoiner from "@/pages/OrgJoiner";
 
-export function App({ isAdmin = false, restricted = false, onLogout }: { isAdmin?: boolean; restricted?: boolean; onLogout?: () => void }) {
+export function App({ isAdmin = false, restricted: restrictedProp = false, onLogout }: { isAdmin?: boolean; restricted?: boolean; onLogout?: () => void }) {
   const [instances, setInstances] = useState<InstanceState[]>([]);
   const [activeIdx, setActiveIdx] = useState(0);
   const [activeTab, setActiveTab] = useState<MainTab>("fila");
   const [loggingOut, setLoggingOut] = useState(false);
+  const [restricted, setRestricted] = useState(restrictedProp);
   const wsRefs = useRef<Map<number, WebSocket>>(new Map());
 
   const instance = instances[activeIdx] ?? null;
   const connected = !!instance?.connected;
   const running = !!instance?.running;
+
+  // Busca o flag restricted direto da API — independente da cadeia de props
+  // para garantir que o tab BOT ORG suma mesmo sem HMR completo
+  useEffect(() => {
+    fetch("/api/auth/check")
+      .then(r => r.json())
+      .then((d: { restricted?: boolean }) => {
+        if (d.restricted) setRestricted(true);
+      })
+      .catch(() => {/* noop */});
+  }, []);
 
   async function reload() {
     try {
