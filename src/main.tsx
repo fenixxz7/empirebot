@@ -8,7 +8,7 @@ import AuditLog from "./pages/AuditLog";
 import Contas from "./pages/Contas";
 import "./index.css";
 
-type AuthState = { status: "loading" } | { status: "unauthenticated" } | { status: "authenticated"; isAdmin: boolean };
+type AuthState = { status: "loading" } | { status: "unauthenticated" } | { status: "authenticated"; isAdmin: boolean; restricted: boolean };
 
 function Root() {
   const [auth, setAuth] = useState<AuthState>({ status: "loading" });
@@ -16,9 +16,9 @@ function Root() {
   useEffect(() => {
     fetch("/api/auth/check")
       .then(r => r.json())
-      .then((data: { authenticated: boolean; is_admin: boolean }) => {
+      .then((data: { authenticated: boolean; is_admin: boolean; restricted: boolean }) => {
         setAuth(data.authenticated
-          ? { status: "authenticated", isAdmin: !!data.is_admin }
+          ? { status: "authenticated", isAdmin: !!data.is_admin, restricted: !!data.restricted }
           : { status: "unauthenticated" }
         );
       })
@@ -44,8 +44,8 @@ function Root() {
 
   if (auth.status === "unauthenticated") {
     return <Login onLogin={() => {
-      fetch("/api/auth/check").then(r => r.json()).then((data: { authenticated: boolean; is_admin: boolean }) => {
-        setAuth({ status: "authenticated", isAdmin: !!data.is_admin });
+      fetch("/api/auth/check").then(r => r.json()).then((data: { authenticated: boolean; is_admin: boolean; restricted: boolean }) => {
+        setAuth({ status: "authenticated", isAdmin: !!data.is_admin, restricted: !!data.restricted });
       });
     }} />;
   }
@@ -63,7 +63,7 @@ function Root() {
   if (path.startsWith("/auditoria")) {
     return auth.isAdmin ? <AuditLog /> : <App isAdmin={false} onLogout={handleLogout} />;
   }
-  return <App isAdmin={auth.isAdmin} onLogout={handleLogout} />;
+  return <App isAdmin={auth.isAdmin} restricted={auth.restricted} onLogout={handleLogout} />;
 }
 
 createRoot(document.getElementById("root")!).render(

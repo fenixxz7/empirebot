@@ -8,13 +8,16 @@ const TABS: { key: MainTab; label: string }[] = [
 export function TabNav({
   active,
   onChange,
+  hideOrg = false,
 }: {
   active: MainTab;
   onChange: (tab: MainTab) => void;
+  hideOrg?: boolean;
 }) {
+  const visibleTabs = hideOrg ? TABS.filter(t => t.key !== "org") : TABS;
   return (
     <div className="flex gap-1.5">
-      {TABS.map((t) => (
+      {visibleTabs.map((t) => (
         <button
           key={t.key}
           onClick={() => onChange(t.key)}

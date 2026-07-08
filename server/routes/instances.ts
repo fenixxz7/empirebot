@@ -1,11 +1,26 @@
 import { Router } from "express";
+import type { Request, Response, NextFunction } from "express";
 import { query } from "../db/pool.js";
 import { manager } from "../worker/manager.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 
 export const instancesRouter = Router();
 
+/** Bloqueia operações em instâncias fora do allowed_instance_ids do usuário */
+function guardInstance(req: Request, res: Response, next: NextFunction): void {
+  const allowed = res.locals.allowedInstanceIds as number[] | null;
+  if (allowed === null || allowed === undefined) { next(); return; }
+  const id = Number(req.params.id);
+  if (isNaN(id) || !allowed.includes(id)) {
+    res.status(403).json({ error: "Acesso negado a esta instância." });
+    return;
+  }
+  next();
+}
+
 instancesRouter.get("/", asyncHandler(async (_req, res) => {
+  const allowed = res.locals.allowedInstanceIds as number[] | null;
+
   const rows = await query<{
     id: number;
     name: string;
@@ -40,7 +55,10 @@ instancesRouter.get("/", asyncHandler(async (_req, res) => {
     ORDER BY i.id ASC
   `);
 
-  const instances = rows.map((r) => {
+  // Filtra instâncias permitidas para o usuário atual
+  const filteredRows = allowed ? rows.filter(r => allowed.includes(r.id)) : rows;
+
+  const instances = filteredRows.map((r) => {
     const startedAt = r.started_at ? new Date(r.started_at).getTime() : null;
     const uptimeSec = r.running && startedAt
       ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
@@ -69,7 +87,7 @@ instancesRouter.get("/", asyncHandler(async (_req, res) => {
   res.json(instances);
 }));
 
-instancesRouter.post("/:id/start", asyncHandler(async (req, res) => {
+instancesRouter.post("/:id/start", guardInstance, asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
   await query(`UPDATE instances SET running = TRUE WHERE id = $1`, [id]);
   await query(
@@ -87,7 +105,7 @@ instancesRouter.post("/:id/start", asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
-instancesRouter.post("/:id/stop", asyncHandler(async (req, res) => {
+instancesRouter.post("/:id/stop", guardInstance, asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
   await query(`UPDATE instances SET running = FALSE WHERE id = $1`, [id]);
   await manager.stop(id);
@@ -99,7 +117,7 @@ instancesRouter.post("/:id/stop", asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
-instancesRouter.post("/:id/reset-stats", asyncHandler(async (req, res) => {
+instancesRouter.post("/:id/reset-stats", guardInstance, asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
   await query(
     `UPDATE stats SET entradas = 0, na_fila = 0, partidas = 0, dms = 0,

@@ -24,8 +24,8 @@ function requireAuth(req: Request, res: Response, next: NextFunction) {
   }
 
   if (session.access_key_id) {
-    query<{ force_logout_at: string | null; expires_at: string | null }>(
-      `SELECT force_logout_at, expires_at FROM access_keys WHERE id = $1`,
+    query<{ force_logout_at: string | null; expires_at: string | null; allowed_instance_ids: number[] | null }>(
+      `SELECT force_logout_at, expires_at, allowed_instance_ids FROM access_keys WHERE id = $1`,
       [session.access_key_id]
     ).then(rows => {
       const key = rows[0];
@@ -37,11 +37,15 @@ function requireAuth(req: Request, res: Response, next: NextFunction) {
         res.status(401).json({ error: "Sessão encerrada pelo administrador." });
         return;
       }
+      // Instâncias permitidas: null = todas (admin), array = restrito
+      res.locals.allowedInstanceIds = key.allowed_instance_ids ?? null;
       next();
     }).catch(() => next());
     return;
   }
 
+  // Admin: acesso total
+  res.locals.allowedInstanceIds = null;
   next();
 }
 
@@ -122,16 +126,28 @@ export function mountApi(app: Express): void {
     res.json({ value: rows[0].value });
   }));
 
+  /** Guard inline para rotas já com :id no mount path */
+  function instanceIdGuard(req: Request, res: Response, next: NextFunction): void {
+    const allowed = res.locals.allowedInstanceIds as number[] | null;
+    if (allowed === null || allowed === undefined) { next(); return; }
+    const id = Number(req.params.id);
+    if (isNaN(id) || !allowed.includes(id)) {
+      res.status(403).json({ error: "Acesso negado a esta instância." });
+      return;
+    }
+    next();
+  }
+
   // Todas as rotas abaixo exigem autenticação
   app.use("/api/instances", requireAuth, instancesRouter);
-  app.use("/api/config", requireAuth, configRouter);
+  app.use("/api/config", requireAuth, configRouter);          // guard interno via instanceAccessGuard
   app.use("/api/orgs", requireAuth, orgsRouter);
-  app.use("/api/logs", requireAuth, logsRouter);
+  app.use("/api/logs", requireAuth, logsRouter);             // guard interno via instanceAccessGuard
   app.use("/api/discovery", requireAuth, discoveryRouter);
   app.use("/api/stats", requireAuth, statsRouter);
   app.use("/api/tokens", requireAuth, tokensRouter);
-  app.use("/api/instances/:id/blacklist", requireAuth, blacklistRouter);
-  app.use("/api/instances/:id/send-errors", requireAuth, sendErrorsRouter);
+  app.use("/api/instances/:id/blacklist", requireAuth, instanceIdGuard, blacklistRouter);
+  app.use("/api/instances/:id/send-errors", requireAuth, instanceIdGuard, sendErrorsRouter);
   app.use("/api/accounts", requireAuth, accountsRouter);
   app.use("/api/org-joiner", requireAuth, orgJoinerRouter);
 }

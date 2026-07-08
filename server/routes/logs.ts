@@ -2,7 +2,12 @@ import { Router } from "express";
 import { query } from "../db/pool.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 
+import { instanceAccessGuard } from "../lib/instanceAccess.js";
+
 export const logsRouter = Router();
+
+// Guard: restringe acesso às instâncias permitidas para o usuário atual
+logsRouter.use("/:instanceId", instanceAccessGuard("instanceId"));
 
 logsRouter.get("/:instanceId", asyncHandler(async (req, res) => {
   const id = Number(req.params.instanceId);

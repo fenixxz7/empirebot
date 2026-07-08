@@ -808,6 +808,64 @@ export async function initDatabase(): Promise<void> {
 
   console.log("[init] migrações de isolamento concluídas");
 
+  // ── Controle de acesso por instância ─────────────────────────────────────
+  // allowed_instance_ids: NULL = acesso total (admin); array = instâncias permitidas
+  await pool.query(`
+    ALTER TABLE access_keys
+      ADD COLUMN IF NOT EXISTS allowed_instance_ids INTEGER[],
+      ADD COLUMN IF NOT EXISTS is_permanent BOOLEAN NOT NULL DEFAULT FALSE
+  `);
+
+  // ── Seed: instância exclusiva do usuário morcego ──────────────────────────
+  const morcInstRows = await query<{ id: number }>(
+    `INSERT INTO instances (name, running)
+     VALUES ('BOT1 MORCEGO', FALSE)
+     ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+     RETURNING id`,
+    []
+  );
+  const morcInstId = morcInstRows[0]!.id;
+
+  await query(
+    `INSERT INTO instance_configs (instance_id) VALUES ($1) ON CONFLICT (instance_id) DO NOTHING`,
+    [morcInstId]
+  );
+  await query(
+    `INSERT INTO stats (instance_id) VALUES ($1) ON CONFLICT (instance_id) DO NOTHING`,
+    [morcInstId]
+  );
+  await query(
+    `INSERT INTO dm_config (instance_id) VALUES ($1) ON CONFLICT (instance_id) DO NOTHING`,
+    [morcInstId]
+  );
+  await query(
+    `INSERT INTO org_joiner_config (instance_id) VALUES ($1) ON CONFLICT (instance_id) DO NOTHING`,
+    [morcInstId]
+  );
+
+  // Seed: access key padrão do usuário morcego (permanente, visível e editável no painel).
+  // Usa label+password como chave natural para ser idempotente (sem constraint formal).
+  const morcKeyExists = await query<{ id: number }>(
+    `SELECT id FROM access_keys WHERE label = 'morcego' AND is_permanent = TRUE LIMIT 1`
+  );
+  if (morcKeyExists.length === 0) {
+    await query(
+      `INSERT INTO access_keys (label, password, allowed_instance_ids, is_permanent)
+       VALUES ('morcego', 'morcego', ARRAY[$1]::INTEGER[], TRUE)`,
+      [morcInstId]
+    );
+  } else {
+    // Garante que allowed_instance_ids e is_permanent estejam corretos em reinits
+    await query(
+      `UPDATE access_keys
+       SET allowed_instance_ids = ARRAY[$1]::INTEGER[], is_permanent = TRUE
+       WHERE id = $2`,
+      [morcInstId, morcKeyExists[0]!.id]
+    );
+  }
+
+  console.log("[init] acesso morcego e instância BOT1 MORCEGO garantidos (id:", morcInstId, ")");
+
 }
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);

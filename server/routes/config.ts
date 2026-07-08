@@ -9,7 +9,12 @@ import {
 import { validate } from "../lib/validate.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 
+import { instanceAccessGuard } from "../lib/instanceAccess.js";
+
 export const configRouter = Router();
+
+// Guard: restringe acesso às instâncias permitidas para o usuário atual
+configRouter.use("/:instanceId", instanceAccessGuard("instanceId"));
 
 // Body do PUT /:instanceId — validação tolerante.
 // Mantemos o comportamento original do código (que ignorava silenciosamente

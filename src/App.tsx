@@ -11,7 +11,7 @@ import { SendErrorsPanel } from "@/components/SendErrorsPanel";
 import { Accordion } from "@/components/Accordion";
 import OrgJoiner from "@/pages/OrgJoiner";
 
-export function App({ isAdmin = false, onLogout }: { isAdmin?: boolean; onLogout?: () => void }) {
+export function App({ isAdmin = false, restricted = false, onLogout }: { isAdmin?: boolean; restricted?: boolean; onLogout?: () => void }) {
   const [instances, setInstances] = useState<InstanceState[]>([]);
   const [activeIdx, setActiveIdx] = useState(0);
   const [activeTab, setActiveTab] = useState<MainTab>("fila");
@@ -156,7 +156,7 @@ export function App({ isAdmin = false, onLogout }: { isAdmin?: boolean; onLogout
 
           {/* Tabs */}
           <div className="mt-4 flex items-center gap-3 flex-wrap">
-            <TabNav active={activeTab} onChange={setActiveTab} />
+            <TabNav active={activeTab} onChange={setActiveTab} hideOrg={restricted} />
 
             {/* Status pills — only for BOT FILA */}
             {activeTab === "fila" && (
